@@ -12,6 +12,8 @@ import java.util.*;
  */
 public final class ConfigManager {
 
+    public static final String DEFAULT_WEB_BEARER_TOKEN = "vesuvio-secret-token-change-me";
+
     private final Plugin plugin;
     private FileConfiguration config;
 
@@ -114,6 +116,42 @@ public final class ConfigManager {
 
     public double getAnomalyRiskBoost() {
         return config.getDouble("layers.self-learning.anomaly-memory.risk-boost-factor", 1.75);
+    }
+
+    public int getOnlineClassifierMinTrainedSamples() {
+        return config.getInt("layers.self-learning.online-classifier.min-trained-samples-to-flag", 40);
+    }
+
+    public double getOnlineClassifierFlagThreshold() {
+        return config.getDouble("layers.self-learning.online-classifier.flag-threshold", 0.90);
+    }
+
+    public double getOnlineClassifierSilentRiskThreshold() {
+        return config.getDouble("layers.self-learning.online-classifier.silent-risk-threshold", 0.65);
+    }
+
+    public boolean isAutoCollectionEnabled() {
+        return config.getBoolean("layers.self-learning.auto-collection.enabled", true);
+    }
+
+    public double getAutoCollectLegitMinTrust() {
+        return config.getDouble("layers.self-learning.auto-collection.legit-min-trust", 85.0);
+    }
+
+    public double getAutoCollectLegitMaxRisk() {
+        return config.getDouble("layers.self-learning.auto-collection.legit-max-risk", 15.0);
+    }
+
+    public int getAutoCollectLegitIntervalMinutes() {
+        return config.getInt("layers.self-learning.auto-collection.legit-interval-minutes", 15);
+    }
+
+    public boolean isAutoCollectCheatOnBan() {
+        return config.getBoolean("layers.self-learning.auto-collection.cheat-on-ban", true);
+    }
+
+    public int getMaxDatasetSize() {
+        return config.getInt("layers.self-learning.auto-collection.max-dataset-size", 50000);
     }
 
     // Mechanics
@@ -297,7 +335,7 @@ public final class ConfigManager {
     }
 
     public String getWebBearerToken() {
-        return config.getString("web.bearer-token", "vesuvio-secret-token-change-me");
+        return config.getString("web.bearer-token", DEFAULT_WEB_BEARER_TOKEN);
     }
 
     // Database

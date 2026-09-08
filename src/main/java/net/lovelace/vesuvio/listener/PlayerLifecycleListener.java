@@ -1,5 +1,6 @@
 package net.lovelace.vesuvio.listener;
 
+import net.lovelace.vesuvio.check.selflearning.SelfLearningManager;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
 import net.lovelace.vesuvio.packet.BrandPacketListener;
@@ -26,19 +27,25 @@ public final class PlayerLifecycleListener implements Listener {
     private final BrandPacketListener brandListener;
     private final net.lovelace.vesuvio.engine.LagCompensator lagCompensator;
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
+    private final WorldInteractionListener worldInteractionListener;
+    private final SelfLearningManager selfLearningManager;
 
     public PlayerLifecycleListener(UserDataManager userDataManager,
                                    DatabaseManager databaseManager,
                                    SpectateManager spectateManager,
                                    BrandPacketListener brandListener,
                                    net.lovelace.vesuvio.engine.LagCompensator lagCompensator,
-                                   net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker) {
+                                   net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
+                                   WorldInteractionListener worldInteractionListener,
+                                   SelfLearningManager selfLearningManager) {
         this.userDataManager = userDataManager;
         this.databaseManager = databaseManager;
         this.spectateManager = spectateManager;
         this.brandListener = brandListener;
         this.lagCompensator = lagCompensator;
         this.hitboxTracker = hitboxTracker;
+        this.worldInteractionListener = worldInteractionListener;
+        this.selfLearningManager = selfLearningManager;
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -96,6 +103,12 @@ public final class PlayerLifecycleListener implements Listener {
         }
         if (hitboxTracker != null) {
             hitboxTracker.remove(player.getUniqueId());
+        }
+        if (worldInteractionListener != null) {
+            worldInteractionListener.forgetPlayer(player.getUniqueId());
+        }
+        if (selfLearningManager != null) {
+            selfLearningManager.getAutoDatasetCollector().forgetPlayer(player.getUniqueId());
         }
     }
 

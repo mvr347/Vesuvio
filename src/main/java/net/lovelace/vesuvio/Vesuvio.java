@@ -96,7 +96,7 @@ public final class Vesuvio extends JavaPlugin {
         initModels();
 
         // 5. Self-Learning Layer
-        this.selfLearningManager = new SelfLearningManager(getDataFolder().toPath());
+        this.selfLearningManager = new SelfLearningManager(getDataFolder().toPath(), configManager);
 
         // 6. Staff Services, Live Overlay & Spartan Enhancements
         this.alertService = new SmartAlertService(configManager);
@@ -135,14 +135,12 @@ public final class Vesuvio extends JavaPlugin {
         PacketEvents.getAPI().getEventManager().registerListener(brandListener);
 
         // 9. Register Bukkit Events
+        var worldInteractionListener = new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager);
         Bukkit.getPluginManager().registerEvents(
-                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker),
+                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, worldInteractionListener, selfLearningManager),
                 this
         );
-        Bukkit.getPluginManager().registerEvents(
-                new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager),
-                this
-        );
+        Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
 
         // 10. Register Commands
         VesuvioCommand cmdExecutor = new VesuvioCommand(
@@ -211,6 +209,13 @@ public final class Vesuvio extends JavaPlugin {
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
             userDataManager.performDecay(configManager.getVlDecayAmount());
         }, decayTicks, decayTicks);
+
+        // Schedulers: Automatic self-learning dataset collection (legit samples from trusted
+        // players) - runs every minute, AutoDatasetCollector internally rate-limits per player
+        // against the configured interval. Cheat samples are collected inline on ban instead.
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
+            selfLearningManager.getAutoDatasetCollector().sweepLegitSamples(userDataManager);
+        }, 20L * 60L, 20L * 60L);
 
         long elapsed = System.currentTimeMillis() - startMs;
         getLogger().info(String.format("Vesuvio 26.2 (Author: Lovelace) initialized in %dms. Hybrid 3-Layer Engine Active.", elapsed));

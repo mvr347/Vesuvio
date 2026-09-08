@@ -169,11 +169,12 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                         "<gradient:#ff4500:#ff8c00><b>--- Vesuvio Biometrics: %s ---</b></gradient><newline>"
                         + "<gray>VL:</gray> <yellow>%.1f</yellow> <gray>| Risk:</gray> <red>%.1f</red> <gray>| Trust:</gray> <green>%.1f</green><newline>"
                         + "<gray>Brand:</gray> <aqua>%s</aqua> <gray>| Sensitivity:</gray> <yellow>%.2fx</yellow><newline>"
-                        + "<gray>Last CPS:</gray> <white>%.1f</white> <gray>| ML Prob:</gray> <yellow>%.1f%%</yellow><newline>"
+                        + "<gray>Last CPS:</gray> <white>%.1f</white> <gray>| ONNX:</gray> <yellow>%.1f%%</yellow> <gray>| Self-Learn:</gray> <yellow>%.1f%%</yellow> <gray>(%d samples)</gray><newline>"
                         + "<gray>Click Signature:</gray> <dark_gray>%s</dark_gray>",
                         target.getName(), data.getVl(), data.getRiskIndex(), data.getTrustScore(),
                         data.getClientBrand(), data.getSensitivityMultiplier(),
                         data.getLastCalculatedCPS(), data.getLastMLProbability() * 100,
+                        data.getLastSelfLearnProbability() * 100, selfLearning.getOnlineClassifier().getTrainedSamplesCount(),
                         sigHex.substring(0, Math.min(32, sigHex.length())) + "...")));
             }
 

@@ -73,12 +73,14 @@ public final class DebugOverlayManager {
                     + "<white>CPS:%.1f Std:%.1f Dup:%.0f%% Ent:%.2f</white> <dark_gray>|</dark_gray> "
                     + "<aqua>Air:%d ΔY:%.2f Grnd:%s</aqua> <dark_gray>|</dark_gray> "
                     + "<gold>VL:%.0f</gold> <red>Risk:%.0f</red> <green>Trust:%.0f</green> <dark_gray>|</dark_gray> "
+                    + "<blue>SL:%.0f%%</blue> <dark_gray>|</dark_gray> "
                     + "<light_purple>%s</light_purple> <dark_gray>|</dark_gray> "
                     + "<gray>Clk:%d/64 Aim:%d/64</gray>",
                     target.getName(),
                     data.getLastCalculatedCPS(), data.getLastStdDevMs(), data.getLastDupRatio() * 100, data.getLastEntropy(),
                     data.getAirTicks(), data.getLastDeltaY(), data.isLastOnGround() ? "Y" : "N",
                     data.getVl(), data.getRiskIndex(), data.getTrustScore(),
+                    data.getLastSelfLearnProbability() * 100,
                     data.getLastTriggeredCheck(),
                     data.getClickBuffer().getCount(), data.getAimBuffer().getCount());
 

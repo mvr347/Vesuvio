@@ -28,6 +28,10 @@ public final class DatasetManager {
             String reviewer
     ) {}
 
+    // Bounded to avoid unbounded memory growth once auto-collection is continuously feeding
+    // samples in (see AutoDatasetCollector) - oldest samples are evicted first (FIFO).
+    private volatile int maxSize = 50_000;
+
     private final Queue<LabeledSample> dataset = new ConcurrentLinkedQueue<>();
     private final Path dataDirectory;
 
@@ -40,8 +44,15 @@ public final class DatasetManager {
         }
     }
 
+    public void setMaxSize(int maxSize) {
+        this.maxSize = Math.max(1000, maxSize);
+    }
+
     public void addSample(LabeledSample sample) {
         dataset.add(sample);
+        while (dataset.size() > maxSize) {
+            dataset.poll();
+        }
     }
 
     public int getDatasetSize() {

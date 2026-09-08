@@ -43,7 +43,7 @@ public final class WorldInteractionListener implements Listener {
     private final CheckPipeline pipeline;
     private final ConfigManager config;
 
-    private final Map<Player, Long> blockDamageTimes = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> blockDamageTimes = new ConcurrentHashMap<>();
 
     public WorldInteractionListener(UserDataManager userDataManager, CheckPipeline pipeline, ConfigManager config) {
         this.userDataManager = userDataManager;
@@ -74,8 +74,8 @@ public final class WorldInteractionListener implements Listener {
 
             CheckResult result = CheckResult.flag(
                     "AirPlace",
-                    15.0,
                     0.99,
+                    15.0,
                     "Placed block in empty air without adjacent surface",
                     details
             );
@@ -106,8 +106,8 @@ public final class WorldInteractionListener implements Listener {
 
                 CheckResult result = CheckResult.flag(
                         "Scaffold",
-                        12.0,
                         0.95,
+                        12.0,
                         String.format(Locale.US, "Unnatural downward placement angle (pitch: %.1f° < 40° limit)", pitch),
                         details
                 );
@@ -117,6 +117,15 @@ public final class WorldInteractionListener implements Listener {
             }
         }
         }
+    }
+
+    /**
+     * Evicts a departed player's tracking state. Call from PlayerQuitEvent to avoid an
+     * unbounded per-visitor memory leak in blockDamageTimes/miningProfiles over server uptime.
+     */
+    public void forgetPlayer(UUID uuid) {
+        blockDamageTimes.remove(uuid);
+        miningProfiles.remove(uuid);
     }
 
     private boolean hasAdjacentSolidBlock(Block b) {
@@ -147,8 +156,8 @@ public final class WorldInteractionListener implements Listener {
             if (data != null) {
                 CheckResult result = CheckResult.flag(
                         "BedrockBreaker",
-                        25.0,
                         0.99,
+                        25.0,
                         "Attempted to damage unbreakable block " + block.getType().name(),
                         Map.of("block", block.getType().name())
                 );
@@ -159,7 +168,7 @@ public final class WorldInteractionListener implements Listener {
             return;
         }
 
-        blockDamageTimes.put(player, System.currentTimeMillis());
+        blockDamageTimes.put(player.getUniqueId(), System.currentTimeMillis());
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
@@ -178,8 +187,8 @@ public final class WorldInteractionListener implements Listener {
             if (data != null) {
                 CheckResult result = CheckResult.flag(
                         "BedrockBreaker",
-                        35.0,
                         1.0,
+                        35.0,
                         "Broke unbreakable block " + block.getType().name(),
                         Map.of("block", block.getType().name())
                 );
@@ -191,7 +200,7 @@ public final class WorldInteractionListener implements Listener {
         }
 
         // FastBreak: instant break on hard blocks (obsidian, ancient debris, ores)
-        Long startTime = blockDamageTimes.remove(player);
+        Long startTime = blockDamageTimes.remove(player.getUniqueId());
         if (hardness >= 3.0f) { // e.g. Obsidian (50.0), Ancient Debris (30.0), Iron/Gold Ore (3.0), Diamond Ore (3.0)
             long elapsed = (startTime != null) ? (System.currentTimeMillis() - startTime) : 0L;
             if (elapsed < 150L && !player.hasPotionEffect(org.bukkit.potion.PotionEffectType.HASTE)) {
@@ -200,8 +209,8 @@ public final class WorldInteractionListener implements Listener {
                 if (data != null) {
                     CheckResult result = CheckResult.flag(
                             "FastBreak",
-                            15.0,
                             0.94,
+                            15.0,
                             String.format(Locale.US, "Impossible mining speed on %s (%d ms)", block.getType().name(), elapsed),
                             Map.of("block", block.getType().name(), "elapsedMs", elapsed, "hardness", hardness)
                     );
@@ -261,8 +270,8 @@ public final class WorldInteractionListener implements Listener {
             if (profile.burstOreCount >= 6) {
                 CheckResult result = CheckResult.flag(
                         "XrayBurst",
-                        15.0,
                         0.92,
+                        15.0,
                         String.format(Locale.US, "Rapid rare ore discoveries (%d %s in <60s)", profile.burstOreCount, mat.name()),
                         Map.of("ore", mat.name(), "burstCount", profile.burstOreCount)
                 );
@@ -278,8 +287,8 @@ public final class WorldInteractionListener implements Listener {
                 if (ratio > 0.25) {
                     CheckResult result = CheckResult.flag(
                             "XrayStatistical",
-                            20.0,
                             0.95,
+                            20.0,
                             String.format(Locale.US, "Abnormal ore-to-stone mining ratio: %.1f%% (straight-to-ore tunneling)", ratio * 100),
                             Map.of("oreCount", profile.diamondOreCount, "stoneCount", profile.stoneCount, "ratio", ratio)
                     );
@@ -323,8 +332,8 @@ public final class WorldInteractionListener implements Listener {
 
                         CheckResult result = CheckResult.flag(
                                 "VehicleFly",
-                                16.0,
                                 0.96,
+                                16.0,
                                 String.format(Locale.US, "Ascending mid-air while mounted on %s (ΔY: %.2f)", vehicle.getType().name(), deltaY),
                                 details
                         );

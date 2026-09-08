@@ -8,6 +8,7 @@ import net.lovelace.vesuvio.check.onnx.MLManager;
 import net.lovelace.vesuvio.check.onnx.MLResult;
 import net.lovelace.vesuvio.check.selflearning.ActiveLearning;
 import net.lovelace.vesuvio.check.selflearning.AnomalyMemory;
+import net.lovelace.vesuvio.check.selflearning.OnlineClassifier;
 import net.lovelace.vesuvio.check.selflearning.SelfLearningManager;
 import net.lovelace.vesuvio.check.statistical.StatisticalAimCheck;
 import net.lovelace.vesuvio.check.statistical.StatisticalClickCheck;
@@ -23,6 +24,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Logger;
@@ -156,6 +158,40 @@ public final class CheckPipeline {
                     selfLearning.getActiveLearning().requestReview(player, data, mlResult, featuresCopy);
                 }
             });
+        }
+
+        // -------------------------------------------------------------
+        // Layer 3a: Online Self-Learning Classifier (pure-Java SGD, trained continuously by
+        // AutoDatasetCollector + staff Active Learning verdicts). Gated on a minimum trained
+        // sample count so an undertrained model at server start can't produce noisy flags.
+        // -------------------------------------------------------------
+        if (config.isSelfLearningEnabled()) {
+            OnlineClassifier classifier = selfLearning.getOnlineClassifier();
+            if (classifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
+                double selfLearnProb = classifier.predict(features);
+                data.setLastSelfLearnProbability(selfLearnProb);
+
+                if (selfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
+                    data.addVl(1.6 * config.getSelfLearningWeight());
+                    data.adjustRisk(selfLearnProb * 9.0);
+                    data.setLastTriggeredCheck("ClickSelfLearn");
+
+                    Map<String, Object> slDetails = new HashMap<>();
+                    slDetails.put("probability", selfLearnProb);
+                    slDetails.put("trainedSamples", classifier.getTrainedSamplesCount());
+
+                    CheckResult slResult = CheckResult.flag("ClickSelfLearn", selfLearnProb, 1.6 * config.getSelfLearningWeight(),
+                            String.format(Locale.US, "Online self-learning classifier confidence: %.1f%% (trained on %d samples)",
+                                    selfLearnProb * 100, classifier.getTrainedSamplesCount()),
+                            slDetails);
+                    handleFlag(player, data, slResult);
+                } else if (selfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
+                    // Below the confident-flag bar but still elevated - contribute to Risk only,
+                    // silently, without a chat alert. This is the model corroborating other
+                    // signals rather than acting alone.
+                    data.adjustRisk((selfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
+                }
+            }
         }
 
         // -------------------------------------------------------------
@@ -471,6 +507,12 @@ public final class CheckPipeline {
                             .replace("%vl%", String.format(Locale.US, "%.0f", currentVl))
                             .replace("%risk%", String.format(Locale.US, "%.0f", data.getRiskIndex()))
                             .replace("%ml%", String.format(Locale.US, "%.1f", data.getLastMLProbability() * 100));
+
+                    // Auto-collect a confirmed-cheat training sample the moment a ban fires -
+                    // by now the pipeline is confident enough that this is safe ground truth.
+                    if ("ban".equalsIgnoreCase(rule.action())) {
+                        selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
+                    }
 
                     // Check if rule is a ban and Lava Wave mode is enabled
                     if ("ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null) {

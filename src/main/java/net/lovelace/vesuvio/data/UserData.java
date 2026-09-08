@@ -22,9 +22,11 @@ public final class UserData {
     private double vl = 0.0;
     private final AtomicLong lastViolationTime = new AtomicLong(System.currentTimeMillis());
 
-    // Trust (0 - 100) & Risk (0 - 100)
-    private volatile double trustScore = 50.0;
-    private volatile double riskIndex = 10.0;
+    // Trust (0 - 100) & Risk (0 - 100). Not volatile: all reads/writes go through synchronized
+    // accessors below so concurrent adjustTrust/adjustRisk calls (many can fire per tick across
+    // click/aim/movement checks running on different virtual threads) never lose an update.
+    private double trustScore = 50.0;
+    private double riskIndex = 10.0;
 
     // Client Brand (e.g. vanilla, fabric, lunar, or cheat signature)
     private volatile String clientBrand = "unknown";
@@ -93,28 +95,28 @@ public final class UserData {
         return lastViolationTime.get();
     }
 
-    public double getTrustScore() {
+    public synchronized double getTrustScore() {
         return trustScore;
     }
 
-    public void setTrustScore(double trustScore) {
+    public synchronized void setTrustScore(double trustScore) {
         this.trustScore = Math.max(0.0, Math.min(100.0, trustScore));
     }
 
-    public void adjustTrust(double delta) {
-        setTrustScore(this.trustScore + delta);
+    public synchronized void adjustTrust(double delta) {
+        this.trustScore = Math.max(0.0, Math.min(100.0, this.trustScore + delta));
     }
 
-    public double getRiskIndex() {
+    public synchronized double getRiskIndex() {
         return riskIndex;
     }
 
-    public void setRiskIndex(double riskIndex) {
+    public synchronized void setRiskIndex(double riskIndex) {
         this.riskIndex = Math.max(0.0, Math.min(100.0, riskIndex));
     }
 
-    public void adjustRisk(double delta) {
-        setRiskIndex(this.riskIndex + delta);
+    public synchronized void adjustRisk(double delta) {
+        this.riskIndex = Math.max(0.0, Math.min(100.0, this.riskIndex + delta));
     }
 
     // Manual Suspect flag (persists across reboots and reconnects)
@@ -129,7 +131,7 @@ public final class UserData {
     }
 
     public boolean isSuspect(double highRiskThreshold) {
-        return manualSuspect || riskIndex >= highRiskThreshold || vl >= 15.0;
+        return manualSuspect || getRiskIndex() >= highRiskThreshold || getVl() >= 15.0;
     }
 
     /**
@@ -145,8 +147,10 @@ public final class UserData {
      * -> smaller required threshold -> easier to flag).
      */
     public double getSensitivityMultiplier() {
-        double trustFactor = (60.0 - trustScore) / 60.0; // trust=50 -> +0.17 (slightly harsh), trust=100 -> -0.67 (lenient), trust=0 -> +1.0
-        double riskFactor = riskIndex / 100.0;            // risk=10 -> +0.10, risk=100 -> +1.0, risk=0 -> 0.0
+        double trust = getTrustScore();
+        double risk = getRiskIndex();
+        double trustFactor = (60.0 - trust) / 60.0; // trust=50 -> +0.17 (slightly harsh), trust=100 -> -0.67 (lenient), trust=0 -> +1.0
+        double riskFactor = risk / 100.0;            // risk=10 -> +0.10, risk=100 -> +1.0, risk=0 -> 0.0
         double sensitivity = 1.0 + (trustFactor * 0.6) + (riskFactor * 0.8);
         return Math.max(0.6, Math.min(2.5, sensitivity));
     }
@@ -233,6 +237,10 @@ public final class UserData {
     public void setLastMLProbability(double lastMLProbability) {
         this.lastMLProbability = lastMLProbability;
     }
+
+    private volatile double lastSelfLearnProbability = 0.0;
+    public double getLastSelfLearnProbability() { return lastSelfLearnProbability; }
+    public void setLastSelfLearnProbability(double v) { this.lastSelfLearnProbability = v; }
 
     public String getLastTriggeredCheck() {
         return lastTriggeredCheck;
