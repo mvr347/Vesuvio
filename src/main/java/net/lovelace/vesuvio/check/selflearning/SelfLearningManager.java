@@ -15,13 +15,17 @@ public final class SelfLearningManager {
     private final AnomalyMemory anomalyMemory = new AnomalyMemory();
     private final ActiveLearning activeLearning = new ActiveLearning();
     private final OnlineClassifier onlineClassifier = new OnlineClassifier(16);
+    // Separate classifier for aim features - different feature semantics (AimFeatureExtractor
+    // layout) and different priors (OnlineClassifier.AIM_PRIORS) than the click classifier, so
+    // they must not share weights.
+    private final OnlineClassifier aimClassifier = new OnlineClassifier(16, OnlineClassifier.AIM_PRIORS, -2.0);
     private final DatasetManager datasetManager;
     private final AutoDatasetCollector autoDatasetCollector;
 
     public SelfLearningManager(Path pluginFolder, ConfigManager config) {
         this.datasetManager = new DatasetManager(pluginFolder.resolve("datasets"));
         this.datasetManager.setMaxSize(config.getMaxDatasetSize());
-        this.autoDatasetCollector = new AutoDatasetCollector(config, datasetManager, onlineClassifier);
+        this.autoDatasetCollector = new AutoDatasetCollector(config, datasetManager, onlineClassifier, aimClassifier);
     }
 
     public AutoDatasetCollector getAutoDatasetCollector() {
@@ -38,6 +42,10 @@ public final class SelfLearningManager {
 
     public OnlineClassifier getOnlineClassifier() {
         return onlineClassifier;
+    }
+
+    public OnlineClassifier getAimClassifier() {
+        return aimClassifier;
     }
 
     public DatasetManager getDatasetManager() {

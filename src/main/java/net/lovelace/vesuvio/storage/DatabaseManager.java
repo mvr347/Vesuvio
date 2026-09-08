@@ -110,6 +110,23 @@ public final class DatabaseManager implements AutoCloseable {
                 );
             """);
 
+            // Ban-evasion / alt-account detection: a fingerprint snapshot taken the moment a
+            // player is banned, so a later join can be matched against it by IP and/or playstyle
+            // (click signature). See net.lovelace.vesuvio.evasion.BanEvasionManager.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS vesuvio_ban_fingerprints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uuid VARCHAR(36) NOT NULL,
+                    username VARCHAR(32) NOT NULL,
+                    ip_address VARCHAR(64),
+                    client_brand VARCHAR(64),
+                    click_signature VARCHAR(128),
+                    reason TEXT,
+                    created_at BIGINT NOT NULL
+                );
+            """);
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_vesuvio_ban_fp_ip ON vesuvio_ban_fingerprints(ip_address);");
+
         } catch (SQLException e) {
             LOGGER.log(Level.SEVERE, "Failed to initialize database tables", e);
         }
@@ -309,6 +326,86 @@ public final class DatabaseManager implements AutoCloseable {
             LOGGER.log(Level.WARNING, "Failed to load recent violations", e);
         }
         return result;
+    }
+
+    /**
+     * Persists a ban fingerprint snapshot. Call synchronously from an already-async context
+     * (e.g. the virtual thread that ran the check pipeline) - this is a single infrequent
+     * write (only on "ban" punishments), not worth routing through the batch queue.
+     */
+    public void recordBanFingerprint(BanFingerprintRecord record) {
+        String sql = "INSERT INTO vesuvio_ban_fingerprints (uuid, username, ip_address, client_brand, click_signature, reason, created_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, record.uuid().toString());
+            ps.setString(2, record.username());
+            ps.setString(3, record.ipAddress());
+            ps.setString(4, record.clientBrand());
+            ps.setString(5, record.clickSignature() != null ? net.lovelace.vesuvio.data.ClickSignature.toHexString(record.clickSignature()) : null);
+            ps.setString(6, record.reason());
+            ps.setLong(7, record.timestamp());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to record ban fingerprint for " + record.username(), e);
+        }
+    }
+
+    /**
+     * Finds the most recent ban fingerprint recorded for this IP address, if any. Used to catch
+     * a banned player rejoining on a fresh account from the same network.
+     */
+    public BanFingerprintRecord findBanFingerprintByIp(String ipAddress) {
+        if (ipAddress == null || ipAddress.isBlank()) return null;
+        String sql = "SELECT uuid, username, ip_address, client_brand, click_signature, reason, created_at " +
+                "FROM vesuvio_ban_fingerprints WHERE ip_address = ? ORDER BY created_at DESC LIMIT 1";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, ipAddress);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return mapBanFingerprint(rs);
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to look up ban fingerprint by IP", e);
+        }
+        return null;
+    }
+
+    /**
+     * Most recent ban fingerprints (newest first), for playstyle-signature comparison against a
+     * new player. Bounded so this stays cheap even on a server with a long ban history.
+     */
+    public java.util.List<BanFingerprintRecord> getRecentBanFingerprints(int limit) {
+        java.util.List<BanFingerprintRecord> result = new java.util.ArrayList<>();
+        String sql = "SELECT uuid, username, ip_address, client_brand, click_signature, reason, created_at " +
+                "FROM vesuvio_ban_fingerprints ORDER BY created_at DESC LIMIT ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, Math.min(limit, 5000)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(mapBanFingerprint(rs));
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to load recent ban fingerprints", e);
+        }
+        return result;
+    }
+
+    private BanFingerprintRecord mapBanFingerprint(ResultSet rs) throws SQLException {
+        String sigHex = rs.getString("click_signature");
+        return new BanFingerprintRecord(
+                UUID.fromString(rs.getString("uuid")),
+                rs.getString("username"),
+                rs.getString("ip_address"),
+                rs.getString("client_brand"),
+                sigHex != null ? net.lovelace.vesuvio.data.ClickSignature.fromHexString(sigHex) : null,
+                rs.getString("reason"),
+                rs.getLong("created_at")
+        );
     }
 
     @Override

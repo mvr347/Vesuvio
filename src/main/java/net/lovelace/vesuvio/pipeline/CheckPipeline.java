@@ -50,6 +50,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager;
     private final net.lovelace.vesuvio.staff.DiscordWebhookService discordService;
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
+    private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
@@ -76,7 +77,8 @@ public final class CheckPipeline {
                          net.lovelace.vesuvio.engine.LagCompensator lagCompensator,
                          net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
                          net.lovelace.vesuvio.staff.DiscordWebhookService discordService,
-                         net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker) {
+                         net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
+                         net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager) {
         this.plugin = plugin;
         this.config = config;
         this.mlManager = mlManager;
@@ -87,7 +89,12 @@ public final class CheckPipeline {
         this.waveManager = waveManager;
         this.discordService = discordService;
         this.hitboxTracker = hitboxTracker;
+        this.banEvasionManager = banEvasionManager;
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
+    }
+
+    public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
+        return banEvasionManager;
     }
 
     /**
@@ -223,6 +230,31 @@ public final class CheckPipeline {
                 }
             }
         }
+
+        // Ban-evasion: compare this (possibly brand-new) account's playstyle signature against
+        // recently banned players once it has the same 48-sample baseline used for
+        // fingerprinting above. Deliberately NOT gated on Trust (a ban-evading alt starts at
+        // default trust) and runs at most once per session (altCheckDone).
+        if (config.isBanEvasionEnabled() && config.isBanEvasionSignatureCheckEnabled() && banEvasionManager != null
+                && !data.isAltCheckDone() && data.getClickBuffer().getCount() >= 48) {
+            data.setAltCheckDone(true);
+            long[] signatureSnapshot = signature.clone();
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                var match = banEvasionManager.findSignatureMatch(
+                        signatureSnapshot, config.getBanEvasionSignatureThreshold(), config.getBanEvasionSignatureScanLimit());
+                match.ifPresent(m -> {
+                    data.adjustRisk(config.getBanEvasionSignatureMatchRisk());
+                    Map<String, Object> details = new HashMap<>();
+                    details.put("bannedUsername", m.bannedUsername());
+                    details.put("similarity", m.similarity());
+                    CheckResult result = CheckResult.flag("BanEvasion", 0.75, 1.5,
+                            String.format(Locale.US, "Playstyle matches banned player '%s' (similarity %.0f%%)",
+                                    m.bannedUsername(), m.similarity() * 100),
+                            details);
+                    handleFlag(player, data, result);
+                });
+            });
+        }
     }
 
     /**
@@ -283,6 +315,39 @@ public final class CheckPipeline {
                         handleFlag(player, data, res);
                     }
                 });
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Layer 3a: Online Self-Learning Classifier for aim (separate weights/priors from the
+        // click classifier - see SelfLearningManager.getAimClassifier / OnlineClassifier.AIM_PRIORS).
+        // Same minimum-trained-sample gate as the click classifier, and additionally requires
+        // combat context like the other aim checks to avoid scoring idle look-around.
+        // -------------------------------------------------------------
+        if (config.isSelfLearningEnabled() && data.isInCombat() && data.getAimBuffer().getCount() >= 16) {
+            OnlineClassifier aimClassifier = selfLearning.getAimClassifier();
+            if (aimClassifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
+                float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer());
+                double aimSelfLearnProb = aimClassifier.predict(aimFeatures);
+                data.setLastAimSelfLearnProbability(aimSelfLearnProb);
+
+                if (aimSelfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
+                    data.addVl(1.6 * config.getSelfLearningWeight());
+                    data.adjustRisk(aimSelfLearnProb * 9.0);
+                    data.setLastTriggeredCheck("AimSelfLearn");
+
+                    Map<String, Object> slDetails = new HashMap<>();
+                    slDetails.put("probability", aimSelfLearnProb);
+                    slDetails.put("trainedSamples", aimClassifier.getTrainedSamplesCount());
+
+                    CheckResult slResult = CheckResult.flag("AimSelfLearn", aimSelfLearnProb, 1.6 * config.getSelfLearningWeight(),
+                            String.format(Locale.US, "Online aim self-learning classifier confidence: %.1f%% (trained on %d samples)",
+                                    aimSelfLearnProb * 100, aimClassifier.getTrainedSamplesCount()),
+                            slDetails);
+                    handleFlag(player, data, slResult);
+                } else if (aimSelfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
+                    data.adjustRisk((aimSelfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
+                }
             }
         }
     }
@@ -510,8 +575,22 @@ public final class CheckPipeline {
 
                     // Auto-collect a confirmed-cheat training sample the moment a ban fires -
                     // by now the pipeline is confident enough that this is safe ground truth.
+                    // Also snapshot a ban-evasion fingerprint (IP + playstyle signature) so a
+                    // fresh account rejoining later can be matched against it.
                     if ("ban".equalsIgnoreCase(rule.action())) {
                         selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
+
+                        if (banEvasionManager != null && config.isBanEvasionEnabled()) {
+                            String ip = null;
+                            try {
+                                if (player.getAddress() != null && player.getAddress().getAddress() != null) {
+                                    ip = player.getAddress().getAddress().getHostAddress();
+                                }
+                            } catch (Throwable ignored) {}
+                            banEvasionManager.recordBanFingerprint(
+                                    player.getUniqueId(), player.getName(), ip, data.getClientBrand(),
+                                    data.getClickBuffer().getSignature(), formatted);
+                        }
                     }
 
                     // Check if rule is a ban and Lava Wave mode is enabled

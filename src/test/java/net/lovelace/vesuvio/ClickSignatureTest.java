@@ -27,4 +27,26 @@ public class ClickSignatureTest {
         float ham = ClickSignature.hammingSimilarity(sigA, sigB);
         assertEquals(0.0f, ham, 0.0001f);
     }
+
+    @Test
+    public void testHexRoundTrip() {
+        // Used by BanEvasionManager to persist/reload a click signature from the database.
+        long[] original = new long[]{0x123456789ABCDEF0L, -1L, 0L, 42L, Long.MIN_VALUE, Long.MAX_VALUE, 777L, -777L};
+
+        String hex = ClickSignature.toHexString(original);
+        assertEquals(128, hex.length());
+
+        long[] roundTripped = ClickSignature.fromHexString(hex);
+        assertArrayEquals(original, roundTripped);
+
+        // Same signature -> perfect similarity after round-tripping through hex
+        assertEquals(1.0f, ClickSignature.hammingSimilarity(original, roundTripped), 0.0001f);
+    }
+
+    @Test
+    public void testFromHexStringRejectsMalformedInput() {
+        assertNull(ClickSignature.fromHexString(null));
+        assertNull(ClickSignature.fromHexString(""));
+        assertNull(ClickSignature.fromHexString("not-hex-and-wrong-length"));
+    }
 }

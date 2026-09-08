@@ -239,6 +239,34 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.invmove.enabled", true);
     }
 
+    public boolean isBanEvasionEnabled() {
+        return config.getBoolean("mechanics.ban-evasion.enabled", true);
+    }
+
+    public boolean isBanEvasionIpCheckEnabled() {
+        return config.getBoolean("mechanics.ban-evasion.ip-check", true);
+    }
+
+    public boolean isBanEvasionSignatureCheckEnabled() {
+        return config.getBoolean("mechanics.ban-evasion.signature-check", true);
+    }
+
+    public float getBanEvasionSignatureThreshold() {
+        return (float) config.getDouble("mechanics.ban-evasion.signature-threshold", 0.86);
+    }
+
+    public int getBanEvasionSignatureScanLimit() {
+        return config.getInt("mechanics.ban-evasion.signature-scan-limit", 1000);
+    }
+
+    public double getBanEvasionIpMatchRisk() {
+        return config.getDouble("mechanics.ban-evasion.ip-match-risk", 45.0);
+    }
+
+    public double getBanEvasionSignatureMatchRisk() {
+        return config.getDouble("mechanics.ban-evasion.signature-match-risk", 25.0);
+    }
+
     public boolean isKillauraAngleEnabled() {
         return config.getBoolean("mechanics.combat.angle.enabled", true);
     }

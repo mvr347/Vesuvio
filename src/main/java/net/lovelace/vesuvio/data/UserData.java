@@ -242,6 +242,16 @@ public final class UserData {
     public double getLastSelfLearnProbability() { return lastSelfLearnProbability; }
     public void setLastSelfLearnProbability(double v) { this.lastSelfLearnProbability = v; }
 
+    private volatile double lastAimSelfLearnProbability = 0.0;
+    public double getLastAimSelfLearnProbability() { return lastAimSelfLearnProbability; }
+    public void setLastAimSelfLearnProbability(double v) { this.lastAimSelfLearnProbability = v; }
+
+    // Ban-evasion: whether the one-time playstyle-signature-vs-banlist check has run this
+    // session yet (see BanEvasionManager / CheckPipeline#processClick).
+    private volatile boolean altCheckDone = false;
+    public boolean isAltCheckDone() { return altCheckDone; }
+    public void setAltCheckDone(boolean v) { this.altCheckDone = v; }
+
     public String getLastTriggeredCheck() {
         return lastTriggeredCheck;
     }

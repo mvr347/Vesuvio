@@ -37,18 +37,11 @@ layers:
         threshold: 0.80
         weight: 1.4
         input-name: "float_input"
-      reach_model:
-        enabled: false
-        file: "models/reach_model.onnx"
-        threshold: 0.88
-        weight: 1.2
-        input-name: "float_input"
-      scaffold_model:
-        enabled: false
-        file: "models/scaffold_model.onnx"
-        threshold: 0.85
-        weight: 1.3
-        input-name: "float_input"
+      # No reach_model / scaffold_model here on purpose: nobody has trained those yet, and a
+      # config entry with no matching .onnx file and no code path is just a lie about what the
+      # plugin does. Reach and Scaffold are covered today by the statistical layer instead
+      # (mechanics.reach, WorldInteractionListener's Scaffold heuristic). Add a real entry back
+      # here once an actual trained model exists.
 
   # Уровень 3: Самообучение и память аномалий
   self-learning:
@@ -140,6 +133,17 @@ mechanics:
       enabled: true         # Детект чита Step Up (подъем >0.6 блока)
     invmove:
       enabled: true         # Детект бега при открытом сундуке/инвентаре
+
+  # Обход бана / alt-аккаунты: снимок IP + почерка клика забаненного игрока сверяется
+  # с новыми аккаунтами (см. net.lovelace.vesuvio.evasion.BanEvasionManager).
+  ban-evasion:
+    enabled: true
+    ip-check: true          # точное совпадение IP с забаненным аккаунтом
+    signature-check: true   # сверка "почерка" клика (та же биометрия, что и в fingerprinting)
+    signature-threshold: 0.86  # порог схожести Hamming для срабатывания (0.0-1.0)
+    signature-scan-limit: 1000 # сколько последних банов сверять при проверке почерка
+    ip-match-risk: 45.0
+    signature-match-risk: 25.0
 
   # Дополнительные боевые проверки
   combat:

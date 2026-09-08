@@ -25,8 +25,14 @@ public final class DatasetManager {
             float[] features,
             int label, // 1 = cheat, 0 = legit
             long timestamp,
-            String reviewer
-    ) {}
+            String reviewer,
+            String domain // "click" or "aim" - which feature extractor/classifier this sample belongs to
+    ) {
+        /** Legacy 6-arg constructor, defaults to the click domain (all pre-existing call sites). */
+        public LabeledSample(UUID playerUuid, String playerName, float[] features, int label, long timestamp, String reviewer) {
+            this(playerUuid, playerName, features, label, timestamp, reviewer, "click");
+        }
+    }
 
     // Bounded to avoid unbounded memory growth once auto-collection is continuously feeding
     // samples in (see AutoDatasetCollector) - oldest samples are evicted first (FIFO).
@@ -73,6 +79,7 @@ public final class DatasetManager {
             for (int i = 0; i < 16; i++) {
                 sb.append(",f").append(i);
             }
+            sb.append(",domain");
             writer.write(sb.toString());
             writer.newLine();
 
@@ -87,6 +94,7 @@ public final class DatasetManager {
                 for (float f : s.features()) {
                     line.append(",").append(String.format(Locale.US, "%.6f", f));
                 }
+                line.append(",").append(s.domain());
                 writer.write(line.toString());
                 writer.newLine();
             }
@@ -121,8 +129,11 @@ public final class DatasetManager {
                 for (int i = 0; i < 16; i++) {
                     features[i] = Float.parseFloat(parts[5 + i]);
                 }
+                // Older exports (before the domain column existed) have exactly 21 columns and
+                // default to "click"; newer exports carry domain as column 22.
+                String domain = (parts.length >= 22) ? parts[21] : "click";
 
-                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer));
+                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain));
                 imported++;
             }
         } catch (Exception e) {

@@ -106,6 +106,7 @@ public final class Vesuvio extends JavaPlugin {
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
+        var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
 
         // 7. Check Pipeline
         this.checkPipeline = new CheckPipeline(
@@ -118,7 +119,8 @@ public final class Vesuvio extends JavaPlugin {
                 lagCompensator,
                 waveManager,
                 discordService,
-                hitboxTracker
+                hitboxTracker,
+                banEvasionManager
         );
 
         // 8. Register Packet Listeners
@@ -137,7 +139,7 @@ public final class Vesuvio extends JavaPlugin {
         // 9. Register Bukkit Events
         var worldInteractionListener = new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager);
         Bukkit.getPluginManager().registerEvents(
-                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, worldInteractionListener, selfLearningManager),
+                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager),
                 this
         );
         Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
@@ -254,11 +256,13 @@ public final class Vesuvio extends JavaPlugin {
             }
         }
 
-        // Reach Model Scaffold
-        mlManager.registerModel(new ModelConfig("reach_model", false, "models/reach_model.onnx", 0.88, 1.2, "float_input"));
-
-        // Scaffold Model Scaffold
-        mlManager.registerModel(new ModelConfig("scaffold_model", false, "models/scaffold_model.onnx", 0.85, 1.3, "float_input"));
+        // Note: there is deliberately no "reach_model"/"scaffold_model" ONNX registration here.
+        // Nobody has trained those models yet, and evaluateAsync() is only ever called with
+        // "click_model"/"aim_model" by name - a registered-but-never-loaded entry would just be
+        // a config option that silently does nothing. Reach and Scaffold are covered today by
+        // StatisticalReachCheck and the Scaffold heuristic in WorldInteractionListener instead.
+        // Drop real .onnx files into models/ and register them here (see click/aim above) once
+        // trained models exist.
     }
 
     private void extractModelResource(String modelName, Path modelsDir) {
