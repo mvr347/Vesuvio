@@ -1,0 +1,290 @@
+# ==============================================================================
+#                      VESUVIO 26.2 - АНТИЧИТ НОВОГО ПОКОЛЕНИЯ
+#                              Автор: Lovelace
+#         Оптимизировано для: Выживание с RPG, Ивенты, Активности и Клан-PvP
+# ==============================================================================
+
+settings:
+  prefix: "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> "
+  debug: false
+  virtual-threads: true
+
+# ------------------------------------------------------------------------------
+# 1. УРОВНИ ОБНАРУЖЕНИЯ (Гибридный 3-уровневый движок)
+# ------------------------------------------------------------------------------
+layers:
+  # Уровень 1: Быстрые статистические эвристики (Zero-Allocation, Netty/Worker)
+  statistical:
+    enabled: true
+    weight: 1.0
+    certainty-cutoff: 0.90  # При уверенности > 90% флаг ставится мгновенно
+
+  # Уровень 2: Предобученные ONNX нейросети (Машинное обучение)
+  onnx:
+    enabled: true
+    weight: 1.5
+    default-threshold: 0.82
+    models:
+      click_model:
+        enabled: true
+        file: "models/click_model.onnx"
+        threshold: 0.82
+        weight: 1.5
+        input-name: "float_input"
+      aim_model:
+        enabled: true
+        file: "models/aim_model.onnx"
+        threshold: 0.80
+        weight: 1.4
+        input-name: "float_input"
+      reach_model:
+        enabled: false
+        file: "models/reach_model.onnx"
+        threshold: 0.88
+        weight: 1.2
+        input-name: "float_input"
+      scaffold_model:
+        enabled: false
+        file: "models/scaffold_model.onnx"
+        threshold: 0.85
+        weight: 1.3
+        input-name: "float_input"
+
+  # Уровень 3: Самообучение и память аномалий
+  self-learning:
+    enabled: true
+    weight: 1.2
+    # Активное обучение: зона неуверенности, запрос вердикта у персонала
+    active-learning:
+      enabled: true
+      min-probability: 0.55
+      max-probability: 0.78
+      auto-collect-trusted: true  # Автосбор паттернов у игроков с Trust > 85
+    # Память аномалий: отслеживание подозрительных серий на игрока
+    anomaly-memory:
+      enabled: true
+      cache-size: 2000
+      history-per-player: 12
+      similarity-threshold: 0.78
+      risk-boost-factor: 1.75
+    # Онлайн-классификатор (SGD обучение в реальном времени)
+    online-classifier:
+      enabled: true
+      learning-rate: 0.05
+      l2-regularization: 0.001
+
+# ------------------------------------------------------------------------------
+# 2. МЕХАНИКИ ОБНАРУЖЕНИЯ И АДАПТАЦИЯ К RPG / ПВП
+# ------------------------------------------------------------------------------
+mechanics:
+  # Сигнатурный отпечаток клика (Fingerprinting)
+  click-fingerprinting:
+    enabled: true
+    max-deviation: 0.65     # Порог расхождения между стилем сессии и профилем
+    risk-penalty: 25.0      # Штраф к индексу риска при резкой смене стиля
+
+  # Проверка временной усталости (Temporal Consistency)
+  temporal-consistency:
+    enabled: true
+    early-window-seconds: 3 # 0-3 сек боя
+    late-window-seconds: 12 # 8-15 сек длительного боя
+    max-variance-drop: 0.80 # Флаг при отсутствии естественной усталости человека
+
+  # Компенсация лагов и защита от ложных флагов (Ивенты / Замесы кланов)
+  lag-compensation:
+    enabled: true
+    min-tps: 17.5           # Защита при просадках TPS во время масштабных ивентов
+    max-ping-spike-ms: 130  # Допуск на сетевые скачки пинга в клановых битвах
+
+  # Боевые проверки (GrimAC / Polar / Themis)
+  gcd-aim:
+    enabled: true
+    min-rotation: 1.2       # Минимальный угол поворота для анализа квантования
+  bad-packets:
+    enabled: true
+    no-swing: true          # Удар без взмаха руки
+    pitch-bounds: true      # Невозможный наклон головы (|pitch| > 90°)
+    inventory-attack: true  # Удар из закрытого инвентаря
+  reach:
+    enabled: true
+    max-reach: 3.10         # Оптимальная дистанция для RPG оружия и ивентов
+
+  # Проверки перемещения (Movement Checks)
+  movement:
+    fly:
+      enabled: true         # Детект Fly, AirJump, Hover
+    speed:
+      enabled: true         # Детект превышения скорости бега
+    nofall:
+      enabled: true         # Детект спуфинга пакета земли при падении
+    timer:
+      enabled: true         # Детект ускорения таймера игры (>23 пак/сек)
+    step:
+      enabled: true         # Детект чита Step Up (подъем >0.6 блока)
+    invmove:
+      enabled: true         # Детект бега при открытом сундуке/инвентаре
+
+  # Дополнительные боевые проверки
+  combat:
+    angle:
+      enabled: true         # Детект ударов вне поля зрения (Silent Aim / Killaura)
+    autocriticals:
+      enabled: true         # Детект микро-прыжков пакетов Auto Criticals
+
+  # Взаимодействие с миром и блоками
+  world:
+    airplace:
+      enabled: true         # Детект установки блоков в воздухе (Air Place)
+    scaffold:
+      enabled: true         # Детект установки под себя при беге вперед (Scaffold)
+    fastbreak:
+      enabled: true         # Детект мгновенного ломания и Bedrock Breaker
+    vehiclefly:
+      enabled: true         # Детект полета на лодках/свиньях (Boat/Pig Fly)
+    xray:
+      enabled: true         # Статистический детект паттернов X-Ray и выкапывания руд
+
+  # Бесшумный режим проверок (логирование без спама в чат)
+  silent-checks:
+    click-statistical: false
+    click-ml: false
+    aim-statistical: false
+    aim-ml: false
+    gcd-aim: false
+    bad-packets: false
+    reach: false
+    fly: false
+    speed: false
+    nofall: false
+    timer: false
+    stepup: false
+    invmove: false
+    autocriticals: false
+    airplace: false
+    scaffold: false
+    fastbreak: false
+    vehiclefly: false
+    killauraangle: false
+    brand-detection: true   # Анализ бренда клиента бесшумен (только снижает Trust)
+
+  # Обнаружение чит-клиентов и софт-модов по бренду
+  client-brand:
+    enabled: true
+    penalize-suspicious: true
+    suspicious-brands:
+      - "meteor"
+      - "liquidbounce"
+      - "vape"
+      - "wurst"
+      - "aristois"
+      - "inertia"
+      - "sigma"
+      - "bleachhack"
+      - "rusherhack"
+      - "future"
+      - "cheatutils"
+
+# ------------------------------------------------------------------------------
+# 3. УРОВНИ НАРУШЕНИЙ (VL) И СИСТЕМА ДОВЕРИЯ / РИСКА
+# ------------------------------------------------------------------------------
+scoring:
+  trust:
+    initial: 50.0
+    max: 100.0
+    min: 0.0
+    decay-clean-hours: 1.5   # Trust растет на +1.0 за каждый час чистой игры в PvP
+  risk:
+    max: 100.0
+    min: 0.0
+    high-risk-threshold: 75.0
+  sensitivity:
+    dynamic: true           # Авто-адаптация строгости проверок к Trust/Risk игрока
+  vl:
+    decay-seconds: 2.0      # Снижение VL каждые 2 сек
+    decay-amount: 1.0
+
+# ------------------------------------------------------------------------------
+# 4. ИНСТРУМЕНТЫ ПЕРСОНАЛА И ОПОВЕЩЕНИЯ
+# ------------------------------------------------------------------------------
+staff:
+  smart-alerts:
+    enabled: true
+    hover-details: true
+    clickable-actions: true
+  live-overlay:
+    update-interval-ticks: 2 # Обновление BossBar / ActionBar каждые 100мс
+    bossbar-color: "RED"
+    bossbar-style: "SOLID"
+  # Оповещения в Discord (Вебхуки)
+  discord:
+    enabled: false
+    webhook-url: ""
+    min-risk-to-send: 70.0
+
+# ------------------------------------------------------------------------------
+# 5. НАКАЗАНИЯ И ВОЛНЫ БАНОВ (LAVA WAVE)
+# ------------------------------------------------------------------------------
+punishments:
+  enabled: true
+  # Волна банов: отложенная массовая зачистка читеров
+  wave:
+    enabled: true
+    interval-minutes: 45
+    broadcast-announcement: true
+  thresholds:
+    15:
+      action: "log"
+      command: ""
+    35:
+      action: "notify-staff"
+      command: ""
+    60:
+      action: "kick"
+      command: "kick %player% <red>[Vesuvio] Обнаружена подозрительная боевая активность (VL: %vl%).</red>"
+    100:
+      action: "ban"
+      command: "ban %player% 14d <red>[Vesuvio] Использование стороннего ПО в PvP (ML: %ml% | Риск: %risk%). Апелляция: discord.gg/example</red>"
+
+# ------------------------------------------------------------------------------
+# 6. ВЕБ-ПАНЕЛЬ УПРАВЛЕНИЯ И REST API
+# ------------------------------------------------------------------------------
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8085 # Порт 8085 для исключения конфликта с LoveWebAdmin (8080)
+  bearer-token: "vesuvio-secret-token-change-me"
+  cors-enabled: true
+
+# ------------------------------------------------------------------------------
+# 7. БАЗА ДАННЫХ (HikariCP)
+# ------------------------------------------------------------------------------
+database:
+  type: "sqlite"            # "sqlite" или "postgresql"
+  sqlite:
+    file: "vesuvio.db"
+  postgresql:
+    host: "localhost"
+    port: 5432
+    database: "vesuvio"
+    username: "postgres"
+    password: "password"
+    ssl: false
+  pool:
+    maximum-pool-size: 8
+    minimum-idle: 2
+    connection-timeout-ms: 10000
+    idle-timeout-ms: 600000
+    max-lifetime-ms: 1800000
+  batch-flush-interval-seconds: 5
+
+# ------------------------------------------------------------------------------
+# 8. ИНТЕГРАЦИИ С ДРУГИМИ ПЛАГИНАМИ
+# ------------------------------------------------------------------------------
+integrations:
+  # Интеграция с LoveHunt для создания ивента "Lava Bounty"
+  lovehunt:
+    lava-bounty: true
+    reward-item: "DIAMOND"
+    reward-amount: 5
+    broadcast: true
+

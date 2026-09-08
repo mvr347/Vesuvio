@@ -1,0 +1,339 @@
+package net.lovelace.vesuvio.config;
+
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.plugin.Plugin;
+
+import java.util.*;
+
+/**
+ * Strongly-typed access to Vesuvio configuration settings.
+ *
+ * Author: Lovelace
+ */
+public final class ConfigManager {
+
+    private final Plugin plugin;
+    private FileConfiguration config;
+
+    public record PunishmentRule(int vlThreshold, String action, String command) {}
+
+    private final List<PunishmentRule> punishmentRules = new ArrayList<>();
+    private final Set<String> suspiciousBrands = new HashSet<>();
+    private final Map<String, Boolean> silentChecks = new HashMap<>();
+
+    public ConfigManager(Plugin plugin) {
+        this.plugin = plugin;
+        reload();
+    }
+
+    public void reload() {
+        plugin.saveDefaultConfig();
+        plugin.reloadConfig();
+        this.config = plugin.getConfig();
+
+        punishmentRules.clear();
+        var punishmentsSection = config.getConfigurationSection("punishments.thresholds");
+        if (punishmentsSection != null) {
+            for (String key : punishmentsSection.getKeys(false)) {
+                try {
+                    int vl = Integer.parseInt(key);
+                    String action = punishmentsSection.getString(key + ".action", "log");
+                    String cmd = punishmentsSection.getString(key + ".command", "");
+                    punishmentRules.add(new PunishmentRule(vl, action, cmd));
+                } catch (NumberFormatException ignored) {}
+            }
+            punishmentRules.sort(Comparator.comparingInt(PunishmentRule::vlThreshold));
+        }
+
+        suspiciousBrands.clear();
+        suspiciousBrands.addAll(config.getStringList("mechanics.client-brand.suspicious-brands"));
+
+        silentChecks.clear();
+        var silentSection = config.getConfigurationSection("mechanics.silent-checks");
+        if (silentSection != null) {
+            for (String key : silentSection.getKeys(false)) {
+                silentChecks.put(key.toLowerCase(), silentSection.getBoolean(key, false));
+            }
+        }
+    }
+
+    public String getPrefix() {
+        return config.getString("settings.prefix", "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> ");
+    }
+
+    public boolean isDebug() {
+        return config.getBoolean("settings.debug", false);
+    }
+
+    // Layer 1
+    public boolean isStatisticalEnabled() {
+        return config.getBoolean("layers.statistical.enabled", true);
+    }
+
+    public double getStatisticalWeight() {
+        return config.getDouble("layers.statistical.weight", 1.0);
+    }
+
+    public double getStatisticalCutoff() {
+        return config.getDouble("layers.statistical.certainty-cutoff", 0.92);
+    }
+
+    // Layer 2
+    public boolean isOnnxEnabled() {
+        return config.getBoolean("layers.onnx.enabled", true);
+    }
+
+    public double getOnnxWeight() {
+        return config.getDouble("layers.onnx.weight", 1.5);
+    }
+
+    public double getOnnxDefaultThreshold() {
+        return config.getDouble("layers.onnx.default-threshold", 0.85);
+    }
+
+    // Layer 3
+    public boolean isSelfLearningEnabled() {
+        return config.getBoolean("layers.self-learning.enabled", true);
+    }
+
+    public double getSelfLearningWeight() {
+        return config.getDouble("layers.self-learning.weight", 1.2);
+    }
+
+    public double getActiveLearningMinProb() {
+        return config.getDouble("layers.self-learning.active-learning.min-probability", 0.55);
+    }
+
+    public double getActiveLearningMaxProb() {
+        return config.getDouble("layers.self-learning.active-learning.max-probability", 0.78);
+    }
+
+    public float getAnomalySimilarityThreshold() {
+        return (float) config.getDouble("layers.self-learning.anomaly-memory.similarity-threshold", 0.78);
+    }
+
+    public double getAnomalyRiskBoost() {
+        return config.getDouble("layers.self-learning.anomaly-memory.risk-boost-factor", 1.75);
+    }
+
+    // Mechanics
+    public boolean isFingerprintingEnabled() {
+        return config.getBoolean("mechanics.click-fingerprinting.enabled", true);
+    }
+
+    public double getFingerprintDeviationThreshold() {
+        return config.getDouble("mechanics.click-fingerprinting.max-deviation", 0.65);
+    }
+
+    public double getFingerprintRiskPenalty() {
+        return config.getDouble("mechanics.click-fingerprinting.risk-penalty", 25.0);
+    }
+
+    public boolean isTemporalConsistencyEnabled() {
+        return config.getBoolean("mechanics.temporal-consistency.enabled", true);
+    }
+
+    public boolean isLagCompensationEnabled() {
+        return config.getBoolean("mechanics.lag-compensation.enabled", true);
+    }
+
+    public double getMinServerTps() {
+        return config.getDouble("mechanics.lag-compensation.min-tps", 18.0);
+    }
+
+    public int getMaxPingSpikeMs() {
+        return config.getInt("mechanics.lag-compensation.max-ping-spike-ms", 120);
+    }
+
+    public boolean isGcdAimEnabled() {
+        return config.getBoolean("mechanics.gcd-aim.enabled", true);
+    }
+
+    public double getGcdAimMinRotation() {
+        return config.getDouble("mechanics.gcd-aim.min-rotation", 1.2);
+    }
+
+    public boolean isBadPacketsEnabled() {
+        return config.getBoolean("mechanics.bad-packets.enabled", true);
+    }
+
+    public boolean isBadPacketsNoSwing() {
+        return config.getBoolean("mechanics.bad-packets.no-swing", true);
+    }
+
+    public boolean isBadPacketsPitchBounds() {
+        return config.getBoolean("mechanics.bad-packets.pitch-bounds", true);
+    }
+
+    public boolean isBadPacketsInventoryAttack() {
+        return config.getBoolean("mechanics.bad-packets.inventory-attack", true);
+    }
+
+    public boolean isReachEnabled() {
+        return config.getBoolean("mechanics.reach.enabled", true);
+    }
+
+    public double getMaxReach() {
+        return config.getDouble("mechanics.reach.max-reach", 3.05);
+    }
+
+    public boolean isFlyEnabled() {
+        return config.getBoolean("mechanics.movement.fly.enabled", true);
+    }
+
+    public boolean isSpeedEnabled() {
+        return config.getBoolean("mechanics.movement.speed.enabled", true);
+    }
+
+    public boolean isNoFallEnabled() {
+        return config.getBoolean("mechanics.movement.nofall.enabled", true);
+    }
+
+    public boolean isTimerEnabled() {
+        return config.getBoolean("mechanics.movement.timer.enabled", true);
+    }
+
+    public boolean isStepEnabled() {
+        return config.getBoolean("mechanics.movement.step.enabled", true);
+    }
+
+    public boolean isInvMoveEnabled() {
+        return config.getBoolean("mechanics.movement.invmove.enabled", true);
+    }
+
+    public boolean isKillauraAngleEnabled() {
+        return config.getBoolean("mechanics.combat.angle.enabled", true);
+    }
+
+    public boolean isAutoCriticalsEnabled() {
+        return config.getBoolean("mechanics.combat.autocriticals.enabled", true);
+    }
+
+    public boolean isAirPlaceEnabled() {
+        return config.getBoolean("mechanics.world.airplace.enabled", true);
+    }
+
+    public boolean isScaffoldEnabled() {
+        return config.getBoolean("mechanics.world.scaffold.enabled", true);
+    }
+
+    public boolean isFastBreakEnabled() {
+        return config.getBoolean("mechanics.world.fastbreak.enabled", true);
+    }
+
+    public boolean isVehicleFlyEnabled() {
+        return config.getBoolean("mechanics.world.vehiclefly.enabled", true);
+    }
+
+    public boolean isXrayEnabled() {
+        return config.getBoolean("mechanics.world.xray.enabled", true);
+    }
+
+    public boolean isWavePunishmentEnabled() {
+        return config.getBoolean("punishments.wave.enabled", true);
+    }
+
+    public int getWaveIntervalMinutes() {
+        return config.getInt("punishments.wave.interval-minutes", 60);
+    }
+
+    public boolean isWaveBroadcastEnabled() {
+        return config.getBoolean("punishments.wave.broadcast-announcement", true);
+    }
+
+    public boolean isDiscordEnabled() {
+        return config.getBoolean("staff.discord.enabled", false);
+    }
+
+    public String getDiscordWebhookUrl() {
+        return config.getString("staff.discord.webhook-url", "");
+    }
+
+    public double getDiscordMinRisk() {
+        return config.getDouble("staff.discord.min-risk-to-send", 70.0);
+    }
+
+    public boolean isSilent(String checkName) {
+        if (checkName == null) return false;
+        return silentChecks.getOrDefault(checkName.toLowerCase(), false);
+    }
+
+    public boolean isBrandCheckEnabled() {
+        return config.getBoolean("mechanics.client-brand.enabled", true);
+    }
+
+    public Set<String> getSuspiciousBrands() {
+        return Collections.unmodifiableSet(suspiciousBrands);
+    }
+
+    // Scoring
+    public double getInitialTrust() {
+        return config.getDouble("scoring.trust.initial", 50.0);
+    }
+
+    public double getHighRiskThreshold() {
+        return config.getDouble("scoring.risk.high-risk-threshold", 75.0);
+    }
+
+    public double getVlDecayAmount() {
+        return config.getDouble("scoring.vl.decay-amount", 1.0);
+    }
+
+    public double getVlDecaySeconds() {
+        return config.getDouble("scoring.vl.decay-seconds", 2.0);
+    }
+
+    // Web
+    public boolean isWebEnabled() {
+        return config.getBoolean("web.enabled", true);
+    }
+
+    public String getWebHost() {
+        return config.getString("web.host", "0.0.0.0");
+    }
+
+    public int getWebPort() {
+        return config.getInt("web.port", 8085);
+    }
+
+    public String getWebBearerToken() {
+        return config.getString("web.bearer-token", "vesuvio-secret-token-change-me");
+    }
+
+    // Database
+    public String getDatabaseType() {
+        return config.getString("database.type", "sqlite");
+    }
+
+    public String getSqliteFileName() {
+        return config.getString("database.sqlite.file", "vesuvio.db");
+    }
+
+    public String getPostgresHost() {
+        return config.getString("database.postgresql.host", "localhost");
+    }
+
+    public int getPostgresPort() {
+        return config.getInt("database.postgresql.port", 5432);
+    }
+
+    public String getPostgresDatabase() {
+        return config.getString("database.postgresql.database", "vesuvio");
+    }
+
+    public String getPostgresUser() {
+        return config.getString("database.postgresql.username", "postgres");
+    }
+
+    public String getPostgresPassword() {
+        return config.getString("database.postgresql.password", "password");
+    }
+
+    public int getDatabasePoolSize() {
+        return config.getInt("database.pool.maximum-pool-size", 8);
+    }
+
+    public List<PunishmentRule> getPunishmentRules() {
+        return Collections.unmodifiableList(punishmentRules);
+    }
+}

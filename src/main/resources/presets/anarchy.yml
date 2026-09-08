@@ -1,0 +1,21 @@
+# ==============================================================================
+#                      PRESET: ANARCHY (SILENT / TELEMETRY ONLY)
+#   Optimal for Anarchy servers. All auto-kicks and auto-bans are disabled.
+#   All telemetry, database logging, and web dashboard charts remain active for staff.
+# ==============================================================================
+description: "Анархия (Только аналитика и телеметрия, без автоматических киков и банов)"
+
+layers:
+  statistical:
+    certainty-cutoff: 0.90
+  onnx:
+    default-threshold: 0.85
+
+punishments:
+  enabled: false
+  wave:
+    enabled: false
+
+scoring:
+  risk:
+    high-risk-threshold: 80.0

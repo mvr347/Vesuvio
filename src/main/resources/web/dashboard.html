@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vesuvio 26.2 - AntiCheat Operations Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #08090d;
+            --bg-surface: rgba(18, 20, 29, 0.72);
+            --bg-surface-hover: rgba(26, 29, 43, 0.85);
+            --border-glass: rgba(255, 255, 255, 0.07);
+            --border-accent: rgba(255, 87, 34, 0.35);
+            --lava-primary: #ff4500;
+            --lava-glow: #ff6b35;
+            --lava-red: #ff2a55;
+            --gold-accent: #ffb703;
+            --cyan-accent: #00f0ff;
+            --text-main: #f0f2f5;
+            --text-muted: #8892b0;
+            --font-display: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-base);
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(255, 69, 0, 0.07) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(255, 42, 85, 0.06) 0%, transparent 45%),
+                radial-gradient(circle at 50% 50%, rgba(10, 12, 18, 0.95) 0%, var(--bg-base) 100%);
+            color: var(--text-main);
+            font-family: var(--font-display);
+            min-height: 100vh;
+            padding: 24px 32px;
+            overflow-x: hidden;
+        }
+
+        /* Glassmorphism base */
+        .glass-panel {
+            background: var(--bg-surface);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-panel:hover {
+            border-color: rgba(255, 107, 53, 0.25);
+            box-shadow: 0 12px 40px 0 rgba(255, 69, 0, 0.08);
+        }
+
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 28px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid var(--border-glass);
+        }
+
+        .brand-container {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .logo-icon {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, var(--lava-primary), var(--lava-red));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 24px rgba(255, 69, 0, 0.5);
+            font-size: 22px;
+            font-weight: 800;
+        }
+
+        .brand-title {
+            font-size: 26px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(90deg, #ffffff 40%, var(--lava-glow) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-subtitle {
+            font-size: 13px;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .auth-input {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border-glass);
+            color: #fff;
+            padding: 9px 14px;
+            border-radius: 8px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            width: 240px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .auth-input:focus {
+            border-color: var(--lava-glow);
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #222638, #181b29);
+            border: 1px solid var(--border-glass);
+            color: #fff;
+            padding: 9px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            background: linear-gradient(135deg, #2d334d, #202438);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .btn-lava {
+            background: linear-gradient(135deg, var(--lava-primary), var(--lava-red));
+            border: none;
+            box-shadow: 0 4px 16px rgba(255, 69, 0, 0.35);
+        }
+
+        .btn-lava:hover {
+            box-shadow: 0 6px 22px rgba(255, 69, 0, 0.55);
+        }
+
+        /* Metric Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 18px;
+            margin-bottom: 28px;
+        }
+
+        .metric-card {
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--card-accent, var(--lava-primary)), transparent);
+        }
+
+        .metric-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 32px;
+            font-weight: 800;
+            font-family: var(--font-mono);
+            letter-spacing: -1px;
+            color: #fff;
+        }
+
+        .metric-footer {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+            box-shadow: 0 0 10px #10b981;
+            display: inline-block;
+        }
+
+        /* Dashboard Main Layout */
+        .main-layout {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 24px;
+        }
+
+        .section-header {
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .section-title {
+            font-size: 17px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Tables */
+        .table-responsive {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th {
+            text-align: left;
+            padding: 14px 20px;
+            color: var(--text-muted);
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-glass);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        td {
+            padding: 14px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            vertical-align: middle;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            padding: 4px 9px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            display: inline-block;
+        }
+
+        .badge-risk {
+            background: rgba(255, 42, 85, 0.15);
+            color: #ff5e7e;
+            border: 1px solid rgba(255, 42, 85, 0.3);
+        }
+
+        .badge-trust {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-vl {
+            background: rgba(255, 183, 3, 0.15);
+            color: #facc15;
+            border: 1px solid rgba(255, 183, 3, 0.3);
+        }
+
+        /* Review List */
+        .review-card {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-glass);
+            transition: background 0.2s;
+        }
+
+        .review-card:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .review-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .review-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .btn-review-legit {
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            padding: 5px 12px;
+            font-size: 11px;
+            font-weight: 700;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .btn-review-cheat {
+            background: rgba(255, 42, 85, 0.2);
+            color: #ff5e7e;
+            border: 1px solid rgba(255, 42, 85, 0.4);
+            padding: 5px 12px;
+            font-size: 11px;
+            font-weight: 700;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .progress-bar-container {
+            width: 100px;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 3px;
+            overflow: hidden;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ffb703, #ff4500);
+            border-radius: 3px;
+        }
+
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand-container">
+            <div class="logo-icon">🌋</div>
+            <div>
+                <div class="brand-title">VESUVIO 26.2</div>
+                <div class="brand-subtitle">ГИБРИДНЫЙ 3-УРОВНЕВЫЙ АНТИЧИТ // АВТОР: LOVELACE</div>
+            </div>
+        </div>
+        <div class="header-controls">
+            <input type="password" id="bearerToken" class="auth-input" placeholder="Bearer токен доступа...">
+            <button class="btn btn-lava" onclick="fetchDashboardData()">
+                <span>⚡ Обновить</span>
+            </button>
+            <button class="btn" onclick="hotReloadModels()">
+                <span>🔄 Перезагрузить ONNX</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Metrics Grid -->
+    <div class="metrics-grid">
+        <div class="glass-panel metric-card" style="--card-accent: #00f0ff;">
+            <div class="metric-label">Состояние сервера и TPS</div>
+            <div class="metric-value" id="valTps">20.00</div>
+            <div class="metric-footer">
+                <span class="status-dot"></span> Виртуальные потоки активны
+            </div>
+        </div>
+        <div class="glass-panel metric-card" style="--card-accent: #ff4500;">
+            <div class="metric-label">Подозрительные игроки</div>
+            <div class="metric-value" id="valSuspects">0</div>
+            <div class="metric-footer">Индекс риска ≥ 75.0</div>
+        </div>
+        <div class="glass-panel metric-card" style="--card-accent: #ffb703;">
+            <div class="metric-label">Всего обнаружений</div>
+            <div class="metric-value" id="valFlags">0</div>
+            <div class="metric-footer">По всем 3 уровням проверок</div>
+        </div>
+        <div class="glass-panel metric-card" style="--card-accent: #10b981;">
+            <div class="metric-label">Запросы к нейросетям</div>
+            <div class="metric-value" id="valMlQueries">0</div>
+            <div class="metric-footer">Асинхронный ONNX Runtime</div>
+        </div>
+    </div>
+
+    <!-- Main Layout -->
+    <div class="main-layout">
+        <!-- Suspects Table -->
+        <div class="glass-panel">
+            <div class="section-header">
+                <div class="section-title">
+                    <span>🎯 Активные подозреваемые и угрозы</span>
+                </div>
+                <span id="playerCountLabel" style="font-size: 12px; color: var(--text-muted);">0 игроков онлайн</span>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Игрок</th>
+                            <th>Индекс риска</th>
+                            <th>Доверие</th>
+                            <th>VL</th>
+                            <th>Клиент</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="suspectsTableBody">
+                        <tr>
+                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                                Нет активных подозреваемых. Все игроки играют честно.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Right Column: Active Learning & Models -->
+        <div style="display: flex; flex-direction: column; gap: 24px;">
+            <!-- Active Learning Review Queue -->
+            <div class="glass-panel">
+                <div class="section-header">
+                    <div class="section-title">
+                        <span>🧠 Очередь Active Learning</span>
+                    </div>
+                    <span class="badge badge-vl" id="reviewCountBadge">0 в ожидании</span>
+                </div>
+                <div id="reviewQueueList" style="max-height: 380px; overflow-y: auto;">
+                    <div style="text-align: center; color: var(--text-muted); padding: 24px; font-size: 13px;">
+                        Нет сомнительных образцов для проверки.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pretrained ONNX Models Status -->
+            <div class="glass-panel" style="padding: 20px;">
+                <div class="section-title" style="margin-bottom: 16px;">
+                    <span>📦 Нейросетевой движок ONNX</span>
+                </div>
+                <div id="modelsStatusList" style="font-size: 13px; display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>click_model.onnx</span>
+                        <span class="badge badge-trust">АКТИВНА</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>aim_model.onnx</span>
+                        <span class="badge badge-trust">АКТИВНА</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>reach_model.onnx</span>
+                        <span class="badge badge-vl">РЕЗЕРВ</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>scaffold_model.onnx</span>
+                        <span class="badge badge-vl">РЕЗЕРВ</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const tokenInput = document.getElementById('bearerToken');
+        if (localStorage.getItem('vesuvio_token')) {
+            tokenInput.value = localStorage.getItem('vesuvio_token');
+        }
+        tokenInput.addEventListener('change', () => {
+            localStorage.setItem('vesuvio_token', tokenInput.value);
+        });
+
+        function getAuthHeaders() {
+            const token = tokenInput.value || localStorage.getItem('vesuvio_token') || '';
+            return {
+                'Authorization': 'Bearer ' + token,
+                'Content-Type': 'application/json'
+            };
+        }
+
+        async function fetchDashboardData() {
+            try {
+                const res = await fetch('/api/v1/overview', { headers: getAuthHeaders() });
+                if (res.status === 401) {
+                    console.warn('Unauthorized. Check Bearer token.');
+                    return;
+                }
+                const data = await res.json();
+                document.getElementById('valTps').innerText = (data.tps || 20.0).toFixed(2);
+                document.getElementById('valSuspects').innerText = data.suspectsCount || 0;
+                document.getElementById('valFlags').innerText = data.totalFlags || 0;
+                document.getElementById('valMlQueries').innerText = data.mlQueries || 0;
+                document.getElementById('playerCountLabel').innerText = (data.onlineCount || 0) + ' игроков онлайн';
+
+                loadSuspects();
+                loadReviews();
+            } catch (e) {
+                console.error('Error polling dashboard:', e);
+            }
+        }
+
+        async function loadSuspects() {
+            try {
+                const res = await fetch('/api/v1/suspects', { headers: getAuthHeaders() });
+                if (!res.ok) return;
+                const suspects = await res.json();
+                const tbody = document.getElementById('suspectsTableBody');
+                if (!suspects || suspects.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">Нет активных подозреваемых. Все игроки играют честно.</td></tr>`;
+                    return;
+                }
+                tbody.innerHTML = suspects.map(s => `
+                    <tr>
+                        <td><b>${s.name}</b><br><span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono)">${s.uuid}</span></td>
+                        <td>
+                            <div class="progress-bar-container"><div class="progress-bar-fill" style="width:${Math.min(100, s.risk)}%"></div></div>
+                            <span class="badge badge-risk">${s.risk.toFixed(1)}</span>
+                        </td>
+                        <td><span class="badge badge-trust">${s.trust.toFixed(0)}</span></td>
+                        <td><span class="badge badge-vl">${s.vl.toFixed(0)}</span></td>
+                        <td><span style="font-family:var(--font-mono);font-size:12px;">${s.brand || 'Vanilla'}</span></td>
+                        <td>
+                            <button class="btn" style="padding:4px 8px;font-size:11px;" onclick="playerAction('${s.uuid}', 'reset_vl')">Сброс VL</button>
+                            <button class="btn" style="padding:4px 8px;font-size:11px;color:#ff5e7e;" onclick="playerAction('${s.uuid}', 'kick')">Кик</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load suspects', e);
+            }
+        }
+
+        async function loadReviews() {
+            try {
+                const res = await fetch('/api/v1/reviews/pending', { headers: getAuthHeaders() });
+                if (!res.ok) return;
+                const reviews = await res.json();
+                const badge = document.getElementById('reviewCountBadge');
+                const list = document.getElementById('reviewQueueList');
+                badge.innerText = (reviews ? reviews.length : 0) + ' в ожидании';
+                if (!reviews || reviews.length === 0) {
+                    list.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 24px; font-size: 13px;">Нет сомнительных образцов для проверки.</div>`;
+                    return;
+                }
+                list.innerHTML = reviews.map(r => `
+                    <div class="review-card">
+                        <div class="review-meta">
+                            <span>Образец <b>#${r.id}</b> (${r.playerName})</span>
+                            <span>Вероятность: ${(r.probability * 100).toFixed(1)}%</span>
+                        </div>
+                        <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">
+                            Дубли: ${(r.duplicateRatio * 100).toFixed(0)}% | Разброс: ${r.stdDev.toFixed(1)}мс | Среднее: ${r.meanDelay.toFixed(1)}мс
+                        </div>
+                        <div class="review-actions">
+                            <button class="btn-review-legit" onclick="submitReview('${r.id}', 'legit')">✔ Чисто</button>
+                            <button class="btn-review-cheat" onclick="submitReview('${r.id}', 'cheat')">✖ Чит</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load reviews', e);
+            }
+        }
+
+        async function playerAction(uuid, action) {
+            if (!confirm(`Выполнить ${action} для игрока ${uuid}?`)) return;
+            await fetch(`/api/v1/player/${uuid}/action`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ action })
+            });
+            fetchDashboardData();
+        }
+
+        async function submitReview(sampleId, verdict) {
+            await fetch(`/api/v1/review/${sampleId}`, {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ verdict })
+            });
+            loadReviews();
+        }
+
+        async function hotReloadModels() {
+            const res = await fetch('/api/v1/models/reload', {
+                method: 'POST',
+                headers: getAuthHeaders()
+            });
+            if (res.ok) {
+                alert('Модели ONNX успешно перезагружены!');
+            }
+        }
+
+        fetchDashboardData();
+        setInterval(fetchDashboardData, 3000);
+    </script>
+</body>
+</html>

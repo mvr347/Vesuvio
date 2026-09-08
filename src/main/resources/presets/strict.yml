@@ -1,0 +1,45 @@
+# ==============================================================================
+#                      PRESET: STRICT (COMPETITIVE PVP)
+#   Optimal for Ranked Duels, Competitive BedWars, and Tournaments.
+# ==============================================================================
+description: "Строгий соревновательный режим (Ranked PvP, Duels, BedWars, Fast Waves)"
+
+layers:
+  statistical:
+    certainty-cutoff: 0.88
+  onnx:
+    default-threshold: 0.78
+  self-learning:
+    active-learning:
+      min-probability: 0.50
+      max-probability: 0.75
+
+mechanics:
+  reach:
+    max-reach: 3.02
+  gcd-aim:
+    min-rotation: 1.0
+  lag-compensation:
+    min-tps: 19.0
+    max-ping-spike-ms: 80
+
+scoring:
+  risk:
+    high-risk-threshold: 65.0
+
+punishments:
+  enabled: true
+  wave:
+    enabled: true
+    interval-minutes: 15
+  thresholds:
+    10:
+      action: "log"
+    25:
+      action: "notify-staff"
+    45:
+      action: "kick"
+      command: "kick %player% <red>[Vesuvio] Strict Check Violation (VL: %vl%).</red>"
+    75:
+      action: "ban"
+      command: "ban %player% 30d <red>[Vesuvio] Unfair Advantage Detected (Competitive Strict).</red>"

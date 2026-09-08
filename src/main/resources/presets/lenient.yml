@@ -1,0 +1,45 @@
+# ==============================================================================
+#                      PRESET: LENIENT (CASUAL / HIGH PING / CROSSPLAY)
+#   Optimal for servers with high network latency, Geyser/Bedrock crossplay, or Wi-Fi players.
+# ==============================================================================
+description: "Мягкий режим для серверов с высоким пингом, мобильными игроками или Bedrock"
+
+layers:
+  statistical:
+    certainty-cutoff: 0.95
+  onnx:
+    default-threshold: 0.92
+  self-learning:
+    active-learning:
+      min-probability: 0.60
+      max-probability: 0.85
+
+mechanics:
+  reach:
+    max-reach: 3.35
+  gcd-aim:
+    min-rotation: 1.8
+  lag-compensation:
+    min-tps: 16.0
+    max-ping-spike-ms: 200
+
+scoring:
+  risk:
+    high-risk-threshold: 85.0
+
+punishments:
+  enabled: true
+  wave:
+    enabled: true
+    interval-minutes: 120
+  thresholds:
+    25:
+      action: "log"
+    50:
+      action: "notify-staff"
+    80:
+      action: "kick"
+      command: "kick %player% <red>[Vesuvio] Extreme combat desync detected.</red>"
+    130:
+      action: "ban"
+      command: "ban %player% 3d <red>[Vesuvio] Unfair Advantage (Confirmed ML).</red>"

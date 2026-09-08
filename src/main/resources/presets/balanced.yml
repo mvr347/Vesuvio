@@ -1,0 +1,45 @@
+# ==============================================================================
+#                      PRESET: BALANCED (DEFAULT)
+#   Optimal for general survival, economy, mini-games, and casual PvP servers.
+# ==============================================================================
+description: "Стандартный сбалансированный режим (Survival, SkyBlock, MiniGames)"
+
+layers:
+  statistical:
+    certainty-cutoff: 0.92
+  onnx:
+    default-threshold: 0.85
+  self-learning:
+    active-learning:
+      min-probability: 0.55
+      max-probability: 0.78
+
+mechanics:
+  reach:
+    max-reach: 3.05
+  gcd-aim:
+    min-rotation: 1.2
+  lag-compensation:
+    min-tps: 18.0
+    max-ping-spike-ms: 120
+
+scoring:
+  risk:
+    high-risk-threshold: 75.0
+
+punishments:
+  enabled: true
+  wave:
+    enabled: true
+    interval-minutes: 60
+  thresholds:
+    15:
+      action: "log"
+    35:
+      action: "notify-staff"
+    60:
+      action: "kick"
+      command: "kick %player% <red>[Vesuvio] Suspicious combat activity detected (VL: %vl%).</red>"
+    100:
+      action: "ban"
+      command: "ban %player% 7d <red>[Vesuvio] Unfair Advantage (ML: %ml% | Risk: %risk%).</red>"

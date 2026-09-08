@@ -1,0 +1,345 @@
+Напиши высокопроизводительный Paper/Purpur античит-плагин Vesuvio версии 26.2 (автор: Lovelace) для Minecraft 1.21.11 / 26.2 на Java 21+ (рекомендуется Java 25).
+
+Цель: создать античит-монстра, который работает из коробки, ловит даже платные читы с humanization, имеет три уровня детекта, самообучение, несколько моделей и мощную веб-панель.
+
+### Основные зависимости
+- PacketEvents 2.13.0+ (желательно shaded)
+- com.microsoft.onnxruntime:onnxruntime (последняя стабильная)
+- HikariCP + SQLite (по умолчанию) / PostgreSQL
+- Javalin 6.x с virtual threads (или JDK HttpServer + virtual threads)
+- Kyori Adventure MiniMessage
+- Smile или Tribuo (для самообучения на чистой Java, опционально)
+
+### Архитектура детекта (Hybrid 3-Layer)
+
+1. Statistical Engine (работает всегда, из коробки)
+2. Pretrained ONNX Models (несколько моделей)
+3. Self-Learning Layer
+
+Все уровни работают параллельно, имеют отдельные веса и тумблеры. VL суммируется с учётом весов.
+
+#### Поддерживаемые модели (с первого дня):
+- click_model.onnx
+- aim_model.onnx
+- reach_model.onnx (заготовка)
+- scaffold_model.onnx (заготовка)
+- Любые кастомные через config
+
+Каждая модель: свой threshold, weight, enabled.
+
+### Ключевые продвинутые механики (обязательно реализовать)
+
+1.1 Click Signature Fingerprinting
+Строить компактный "отпечаток" стиля клика игрока (микро-паузы, ускорение внутри серии, паттерны после хита). Использовать для сравнения с предыдущими сессиями и выявления чужого почерка.
+
+1.2 Temporal Consistency Check
+Сравнивать характеристики клика/айма в начале боя и через 8–15 секунд. Ловить деградацию или переключение режимов у платных читов.
+
+2.1 Active Learning
+При неуверенном вердикте модели (0.55–0.78) отправлять стаффу алерт с кнопками «Legit» / «Cheater». Выбранные примеры сразу попадают в датасет самообучения.
+
+2.3 Anomaly Memory
+Запоминать аномальные, но не дотянувшие до флага паттерны у конкретного игрока. При повторении — повышать чувствительность и Risk Score.
+
+3.1 Silent Check Mode
+Часть проверок может работать полностью молча (только база + Risk Score), без алертов в чат. Настраивается per-check.
+
+3.3 Client Brand + Soft Mod Detection
+Лёгкая проверка client brand и известных сигнатур. Не банит, а только снижает Trust Score / повышает Risk Index.
+
+4.1 Live Spectate + Overlay
+При алерте или команде — мгновенный спектатор + ActionBar/BossBar с live CPS, VL, probability, Risk Score, Trust Score.
+
+4.3 Smart Alerts
+Алерты не просто "ClickML 0.91", а с кратким человекочитаемым объяснением (какие именно фичи сработали).
+
+5.1 Check Pipeline с приоритетами
+Сначала быстрые статистические проверки → при подозрении запускается ONNX → при сером результате подключается Self-Learning / Anomaly Memory.
+
+5.3 Hot-Reload моделей
+Возможность заменить .onnx файл и перезагрузить только ML-часть командой без рестарта всего плагина.
+
+6.3 Public API для веб-админки и сторонних плагинов
+Полноценный REST API + возможность другим плагинам запрашивать Trust Score / Risk Score игрока.
+
+### Data Pipeline & Производительность
+- Перехват ArmAnimation + Interact Entity через PacketEvents
+- GC-free кольцевые буферы (long[]) размера 64 в Netty-потоке
+- Все тяжёлые вычисления (фичи, ONNX, self-learning) строго асинхронно
+- 0% влияния на TPS
+
+### Feature Engineering (Click)
+- Mean Delay, Std Dev, Kurtosis, Skewness, Duplicate Ratio
+- Entropy, Peak CPS, Consecutive Same Intervals
+- Click Signature vector
+- Temporal delta features
+
+### Violation Level + Trust / Risk System
+- Динамический VL с весами от разных слоёв
+- Passive decay
+- Trust Score (0–100) и Risk Index
+- Dynamic Sensitivity (новые аккаунты и низкий Trust — жёстче)
+
+### Самообучение
+- Сбор фичей только от trusted-игроков и вручную помеченных
+- Active Learning через стафф
+- Anomaly Memory
+- Периодическое обновление адаптивных порогов и/или лёгкой Java-модели
+- Возможность экспорта/импорта датасета
+### Веб-панель и API (встроенный)
+- Javalin / JDK HttpServer
+- Bearer-токен авторизация
+- Эндпоинты:
+  - GET /api/v1/overview
+  - GET /api/v1/suspects
+  - GET /api/v1/player/{uuid}/history
+  - GET /api/v1/punishments
+  - POST /api/v1/player/{uuid}/action
+  - GET /api/v1/player/{uuid}/score (Trust + Risk) — для сторонних плагинов
+
+### Структура проекта
+- Vesuvio (main)
+- packet.ClickPacketListener / AimPacketListener
+- data.UserData + RingBuffer + ClickSignature
+- check.statistical.*
+- check.onnx.MLManager (поддержка нескольких моделей + hot-reload)
+- check.selflearning.SelfLearningManager + ActiveLearning + AnomalyMemory
+- pipeline.CheckPipeline
+- staff.LiveOverlay + SmartAlertService
+- storage.DatabaseManager (HikariCP + batch)
+- web.ApiServer
+- api.VesuvioAPI (для других плагинов)
+
+### Требования к качеству кода
+- Production-ready
+- Полная потокобезопасность
+- Корректная очистка при PlayerQuitEvent
+- Закрытие OrtSession, HikariDataSource и HTTP-сервера в onDisable
+- Понятные комментарии
+- Максимальная расширяемость (легко добавлять новые проверки и модели)
+
+Сделай плагин так, чтобы он сразу работал на статистике, становился значительно сильнее при наличии моделей и со временем адаптировался под сервер и актуальные платные читы.
+Примеры кода
+ public final class ClickRingBuffer {
+
+    private static final int SIZE = 64;
+    private static final int MASK = SIZE - 1;
+
+    private final long[] intervals = new long[SIZE]; // наносекунды
+    private int head = 0;
+    private int count = 0;
+    private long lastClickNanos = 0;
+
+    // Компактный signature (8 long = 64 байта)
+    private final long[] signature = new long[8];
+
+    public void addClick(long nowNanos) {
+        if (lastClickNanos != 0) {
+            long delta = nowNanos - lastClickNanos;
+
+            // Игнорируем паузы > 500 мс
+            if (delta > 500_000_000L) {
+                reset();
+                lastClickNanos = nowNanos;
+                return;
+            }
+
+            intervals[head] = delta;
+            head = (head + 1) & MASK;
+            if (count < SIZE) count++;
+
+            updateSignature(delta);
+        }
+        lastClickNanos = nowNanos;
+    }
+
+    private void updateSignature(long delta) {
+        // Простейший rolling hash + микро-статистика без аллокаций
+        long x = delta ^ (delta >>> 16);
+        signature[0] = signature[0] * 31 + x;
+        signature[1] += delta;
+        signature[2] ^= delta;
+        // ... остальные слоты под разные характеристики
+    }
+
+    public boolean isFull() {
+        return count == SIZE;
+    }
+
+    public void copyIntervals(long[] dest) {
+        // Копируем в правильном порядке без аллокаций
+        int idx = (head - count) & MASK;
+        for (int i = 0; i < count; i++) {
+            dest[i] = intervals[idx];
+            idx = (idx + 1) & MASK;
+        }
+    }
+
+    public void reset() {
+        head = 0;
+        count = 0;
+        lastClickNanos = 0;
+        java.util.Arrays.fill(signature, 0L);
+    }
+
+    public long[] getSignature() {
+        return signature; // можно возвращать копию при необходимости
+    }
+}
+ public final class FeatureExtractor {
+
+    private static final ThreadLocal<long[]> TEMP_BUFFER = ThreadLocal.withInitial(() -> new long[64]);
+    private static final ThreadLocal<float[]> FEATURE_BUFFER = ThreadLocal.withInitial(() -> new float[16]);
+
+    public static float[] extract(ClickRingBuffer buffer) {
+        long[] data = TEMP_BUFFER.get();
+        buffer.copyIntervals(data);
+        int n = 64;
+
+        float[] features = FEATURE_BUFFER.get();
+
+        // 1. Mean
+        double sum = 0;
+        for (int i = 0; i < n; i++) sum += data[i];
+        double mean = sum / n;
+        features[0] = (float) (mean / 1_000_000.0); // в мс
+
+        // 2. Variance + Std
+        double variance = 0;
+        for (int i = 0; i < n; i++) {
+            double d = data[i] - mean;
+            variance += d * d;
+        }
+        variance /= n;
+        double std = Math.sqrt(variance);
+        features[1] = (float) (std / 1_000_000.0);
+
+        // 3. Skewness + Kurtosis (одна проходка)
+        double m3 = 0, m4 = 0;
+        for (int i = 0; i < n; i++) {
+            double d = (data[i] - mean) / std;
+            double d2 = d * d;
+            m3 += d2 * d;
+            m4 += d2 * d2;
+        }
+        features[2] = (float) (m3 / n);          // skewness
+        features[3] = (float) (m4 / n - 3.0);    // excess kurtosis
+
+        // 4. Duplicate Ratio (почти одинаковые интервалы ±2%)
+        int duplicates = 0;
+        for (int i = 1; i < n; i++) {
+            long a = data[i - 1];
+            long b = data[i];
+            if (Math.abs(a - b) < a * 0.02) duplicates++;
+        }
+        features[4] = (float) duplicates / (n - 1);
+
+        // 5. Entropy (грубая, но быстрая)
+        // ... (можно добавить)
+
+        return features;
+    }
+}
+ public final class CheckPipeline {
+
+    private final StatisticalClickCheck statistical;
+    private final MLManager mlManager;
+    private final SelfLearningManager selfLearning;
+    private final AnomalyMemory anomalyMemory;
+
+    public void process(Player player, UserData data) {
+        // 1. Быстрый статистический слой
+        CheckResult statResult = statistical.check(data);
+        if (statResult.isFlag()) {
+            data.addVL(statResult.vl() * config.statisticalWeight());
+            if (statResult.confidence() > 0.92) {
+                // Уже очень уверены — можно не гонять ML
+                handleFlag(player, data, statResult);
+                return;
+            }
+        }
+
+        // 2. ONNX слой (только если нужно)
+        if (config.onnxEnabled() && data.shouldRunML()) {
+            mlManager.evaluateAsync(player, data.getFeatures())
+                .thenAccept(mlResult -> {
+                    if (mlResult.probability() > config.threshold()) {
+                        data.addVL(mlResult.vl());
+                        handleFlag(player, data, mlResult);
+                    } else if (mlResult.probability() > 0.55 && mlResult.probability() < 0.78) {
+                        // Active Learning зона
+                        activeLearning.requestReview(player, data, mlResult);
+                    }
+                });
+        }
+
+        // 3. Anomaly Memory + Self-Learning
+        anomalyMemory.observe(player.getUniqueId(), data.getSignature(), statResult);
+    }
+}
+ public final class MLManager {
+
+    private final ConcurrentHashMap<String, OrtSession> sessions = new ConcurrentHashMap<>();
+    private final OrtEnvironment env = OrtEnvironment.getEnvironment();
+
+    public void loadModel(String name, Path path) throws OrtException {
+        OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
+        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+        OrtSession session = env.createSession(path.toString(), opts);
+        sessions.put(name, session);
+    }
+
+    public void hotReload(String name, Path newPath) {
+        // Асинхронно
+        CompletableFuture.runAsync(() -> {
+            try {
+                OrtSession old = sessions.get(name);
+                loadModel(name, newPath);
+                if (old != null) old.close();
+            } catch (Exception e) {
+                // log
+            }
+        });
+    }
+
+    public CompletableFuture<MLResult> evaluateAsync(String modelName, float[] features) {
+        return CompletableFuture.supplyAsync(() -> {
+            OrtSession session = sessions.get(modelName);
+            if (session == null) return MLResult.empty();
+
+            try (OnnxTensor tensor = OnnxTensor.createTensor(env, new float[][]{features})) {
+                var results = session.run(Map.of("float_input", tensor));
+                float[] probs = (float[]) results.get(1).getValue(); // вероятность класса 1
+                return new MLResult(probs[1], ...);
+            } catch (Exception e) {
+                return MLResult.empty();
+            }
+        });
+    }
+}
+ public final class AnomalyMemory {
+
+    // uuid -> список последних аномальных signature
+    private final LoadingCache<UUID, CircularFifoQueue<long[]>> memory =
+            Caffeine.newBuilder()
+                    .maximumSize(2000)
+                    .expireAfterAccess(30, TimeUnit.MINUTES)
+                    .build(u -> new CircularFifoQueue<>(12));
+
+    public void observe(UUID uuid, long[] signature, CheckResult result) {
+        if (result.confidence() > 0.45 && result.confidence() < 0.82) {
+            memory.get(uuid).add(signature.clone());
+        }
+    }
+
+    public float getRepeatScore(UUID uuid, long[] current) {
+        CircularFifoQueue<long[]> history = memory.getIfPresent(uuid);
+        if (history == null || history.isEmpty()) return 0f;
+
+        int matches = 0;
+        for (long[] old : history) {
+            if (hammingSimilarity(old, current) > 0.78) matches++;
+        }
+        return (float) matches / history.size();
+    }
+}

@@ -1,0 +1,30 @@
+name: Vesuvio
+version: '26.2'
+main: net.lovelace.vesuvio.Vesuvio
+api-version: '1.21'
+author: Lovelace
+description: Next-Gen Hybrid 3-Layer AntiCheat for Paper/Purpur 1.21.11 / 26.2
+softdepend:
+  - PacketEvents
+  - PlaceholderAPI
+  - LoveHunt
+
+commands:
+  vesuvio:
+    description: Main command for Vesuvio AntiCheat
+    permission: vesuvio.admin
+    aliases: [vs, veso]
+
+permissions:
+  vesuvio.admin:
+    description: Full administrative access to Vesuvio
+    default: op
+  vesuvio.alerts:
+    description: Receive smart detection alerts
+    default: op
+  vesuvio.spectate:
+    description: Use the live spectate overlay
+    default: op
+  vesuvio.review:
+    description: Review active learning samples
+    default: op
