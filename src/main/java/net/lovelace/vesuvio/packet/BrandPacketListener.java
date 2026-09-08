@@ -55,6 +55,15 @@ public final class BrandPacketListener extends PacketListenerAbstract {
     public void processBrand(Player player, String brand) {
         if (brand == null || brand.isBlank()) return;
 
+        // Sanitize before storing: brand is fully attacker-controlled and later gets interpolated
+        // into MiniMessage templates for staff alerts (SmartAlertService) - strip anything that
+        // could break out of quoting or inject MiniMessage tags/click-actions.
+        brand = brand.replaceAll("[<>'\\\\]", "");
+        if (brand.length() > 64) {
+            brand = brand.substring(0, 64);
+        }
+        if (brand.isBlank()) return;
+
         UserData userData = userDataManager.getOrCreate(player);
         userData.setClientBrand(brand);
 

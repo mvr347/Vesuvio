@@ -370,6 +370,12 @@ public final class CheckPipeline {
                 data.adjustRisk(flyResult.confidence() * 12.0);
                 data.setLastTriggeredCheck(flyResult.checkName());
                 handleFlag(player, data, flyResult);
+
+                // Fly is one of the fastest and hardest checks - on a high-confidence flag there is
+                // little value in also running Speed/NoFall/StepUp/InvMove this same tick.
+                if (flyResult.confidence() >= config.getStatisticalCutoff()) {
+                    return;
+                }
             }
         }
 
@@ -419,6 +425,16 @@ public final class CheckPipeline {
     }
 
     public void handleFlag(Player player, UserData data, CheckResult result) {
+        // 0. Verbose console diagnostics (settings.debug: true) - dumps the exact feature values
+        // that triggered the flag, so server owners can tune thresholds without guessing.
+        if (config.isDebug()) {
+            LOGGER.info(String.format(Locale.US,
+                    "[FLAG] %s | check=%s confidence=%.2f vl+=%.2f -> VL=%.1f Risk=%.1f Trust=%.1f | %s | details=%s",
+                    player.getName(), result.checkName(), result.confidence(), result.vl(),
+                    data.getVl(), data.getRiskIndex(), data.getTrustScore(),
+                    result.explanation(), result.details()));
+        }
+
         // 1. Broadcast smart MiniMessage alert to staff
         alertService.broadcastAlert(player, data, result);
 

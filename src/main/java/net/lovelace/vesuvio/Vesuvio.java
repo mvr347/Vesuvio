@@ -44,6 +44,7 @@ public final class Vesuvio extends JavaPlugin {
     private SelfLearningManager selfLearningManager;
     private SmartAlertService alertService;
     private SpectateManager spectateManager;
+    private net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
     private net.lovelace.vesuvio.config.PresetManager presetManager;
     private CheckPipeline checkPipeline;
     private ApiServer apiServer;
@@ -100,6 +101,7 @@ public final class Vesuvio extends JavaPlugin {
         // 6. Staff Services, Live Overlay & Spartan Enhancements
         this.alertService = new SmartAlertService(configManager);
         this.spectateManager = new SpectateManager(userDataManager);
+        this.debugOverlayManager = new net.lovelace.vesuvio.staff.DebugOverlayManager(userDataManager);
         var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager);
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
@@ -153,7 +155,8 @@ public final class Vesuvio extends JavaPlugin {
                 alertService,
                 spectateManager,
                 waveManager,
-                presetManager
+                presetManager,
+                debugOverlayManager
         );
         var cmd = getCommand("vesuvio");
         if (cmd != null) {
@@ -193,6 +196,9 @@ public final class Vesuvio extends JavaPlugin {
 
         // Schedulers: Live Spectate Overlay (every 2 ticks = 100ms)
         Bukkit.getScheduler().runTaskTimer(this, spectateManager::tickOverlay, 2L, 2L);
+
+        // Schedulers: /vesuvio debug live telemetry overlay (every 2 ticks = 100ms)
+        Bukkit.getScheduler().runTaskTimer(this, debugOverlayManager::tick, 2L, 2L);
 
         // Schedulers: Lava Wave Execution
         if (configManager.isWavePunishmentEnabled()) {
@@ -283,6 +289,9 @@ public final class Vesuvio extends JavaPlugin {
         // Clean up spectating staff
         if (spectateManager != null) {
             spectateManager.cleanup();
+        }
+        if (debugOverlayManager != null) {
+            debugOverlayManager.cleanup();
         }
 
         // Flush and close Database connection pool

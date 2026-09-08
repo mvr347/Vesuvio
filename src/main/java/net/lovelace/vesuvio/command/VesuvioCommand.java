@@ -39,6 +39,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     private final SpectateManager spectateManager;
     private final net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager;
     private final net.lovelace.vesuvio.config.PresetManager presetManager;
+    private final net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     public VesuvioCommand(Plugin plugin,
@@ -50,7 +51,8 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                           SmartAlertService alertService,
                           SpectateManager spectateManager,
                           net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
-                          net.lovelace.vesuvio.config.PresetManager presetManager) {
+                          net.lovelace.vesuvio.config.PresetManager presetManager,
+                          net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager) {
         this.plugin = plugin;
         this.config = config;
         this.userDataManager = userDataManager;
@@ -61,6 +63,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
         this.spectateManager = spectateManager;
         this.waveManager = waveManager;
         this.presetManager = presetManager;
+        this.debugOverlayManager = debugOverlayManager;
     }
 
     @Override
@@ -172,6 +175,30 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                         data.getClientBrand(), data.getSensitivityMultiplier(),
                         data.getLastCalculatedCPS(), data.getLastMLProbability() * 100,
                         sigHex.substring(0, Math.min(32, sigHex.length())) + "...")));
+            }
+
+            case "debug" -> {
+                if (!sender.hasPermission("vesuvio.debug") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.debug).</red>"));
+                    return true;
+                }
+                if (!(sender instanceof Player staff)) {
+                    sender.sendMessage("This command can only be run by a player.");
+                    return true;
+                }
+                if (args.length < 2) {
+                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio debug <player></red>"));
+                    return true;
+                }
+                Player target = Bukkit.getPlayer(args[1]);
+                if (target == null) {
+                    sender.sendMessage(mm.deserialize("<red>Player not found.</red>"));
+                    return true;
+                }
+                boolean enabled = debugOverlayManager.toggle(staff, target);
+                staff.sendMessage(mm.deserialize(String.format(
+                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Live debug telemetry for <gold>%s</gold> is now %s</gray>",
+                        target.getName(), enabled ? "<green><b>ENABLED</b></green>" : "<red><b>DISABLED</b></red>")));
             }
 
             case "reset" -> {
@@ -435,6 +462,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 "<gradient:#ff4500:#ff8c00><b>================ VESUVIO 26.2 ================</b></gradient><newline>"
                 + "<gold>/vesuvio alerts</gold> <gray>- Переключить умные оповещения в чате</gray><newline>"
                 + "<gold>/vesuvio spectate <игрок></gold> <gray>- Наблюдение в реальном времени с оверлеем</gray><newline>"
+                + "<gold>/vesuvio debug <игрок></gold> <gray>- Живая ActionBar телеметрия чеков (CPS/StdDev/AirTicks/VL...)</gray><newline>"
                 + "<gold>/vesuvio learn <игрок> <legit|cheat></gold> <gray>- Обучить модель на текущем поведении</gray><newline>"
                 + "<gold>/vesuvio suspect <игрок> [add|remove|check]</gold> <gray>- Установка/снятие подозрения с сохранением в БД</gray><newline>"
                 + "<gold>/vesuvio preset [list|название|save]</gold> <gray>- Управление профилями (balanced, strict, lenient, anarchy)</gray><newline>"
@@ -450,10 +478,10 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(List.of("alerts", "spectate", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "dataset"), args[0]);
+            return filter(List.of("alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "dataset"), args[0]);
         }
         if (args.length == 2) {
-            if ("spectate".equalsIgnoreCase(args[0]) || "info".equalsIgnoreCase(args[0]) || "reset".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0]) || "suspect".equalsIgnoreCase(args[0])) {
+            if ("spectate".equalsIgnoreCase(args[0]) || "debug".equalsIgnoreCase(args[0]) || "info".equalsIgnoreCase(args[0]) || "reset".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0]) || "suspect".equalsIgnoreCase(args[0])) {
                 List<String> names = new ArrayList<>();
                 for (Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
                 return filter(names, args[1]);

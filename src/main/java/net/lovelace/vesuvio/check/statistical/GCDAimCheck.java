@@ -27,9 +27,9 @@ import java.util.Map;
  */
 public final class GCDAimCheck {
 
-    private static final float MIN_ROTATION = 1.5f;  // Minimum rotation on both axes to analyze cross-axis GCD
-    private static final float MAX_ROTATION = 30.0f; // Exclude flick/teleport/180 turns
-    private static final int STREAK_THRESHOLD = 5;   // Must fail 5 consecutive times during combat
+    private static final float MIN_ROTATION = 0.3f;  // Minimum rotation on both axes to analyze cross-axis GCD
+    private static final float MAX_ROTATION = 55.0f; // Exclude flick/teleport/180 turns
+    private static final int STREAK_THRESHOLD = 3;   // Must fail 3 consecutive times during combat
 
     public CheckResult check(UserData data, float deltaYaw, float deltaPitch) {
         // 1. Only analyze aimbot rotations during combat interactions (not while walking/jumping around)

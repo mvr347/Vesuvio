@@ -134,13 +134,21 @@ public final class UserData {
 
     /**
      * Dynamic sensitivity multiplier.
-     * Low trust / high risk = higher multiplier (> 1.0) -> harsher thresholds.
-     * High trust / low risk = lower multiplier (< 1.0) -> more lenient.
+     * Baseline (fresh account: trust=50, risk=10) resolves to ~1.0 (neutral, not lenient) so that
+     * out-of-the-box detection works from a player's very first session.
+     * Low trust / high risk push the multiplier above 1.0 (harsher thresholds).
+     * High trust / low risk (earned over time) push it below 1.0 (more lenient, fewer false positives).
+     *
+     * Callers must apply this consistently: for "flag if metric < threshold" checks, multiply the
+     * threshold by this value (higher sensitivity -> larger allowed threshold -> easier to flag).
+     * For "flag if metric > threshold" checks, divide the threshold by this value (higher sensitivity
+     * -> smaller required threshold -> easier to flag).
      */
     public double getSensitivityMultiplier() {
-        double trustFactor = (100.0 - trustScore) / 50.0; // 0.0 (trust=100) to 2.0 (trust=0)
-        double riskFactor = (riskIndex / 50.0);           // 0.0 (risk=0) to 2.0 (risk=100)
-        return Math.max(0.7, Math.min(2.2, 0.5 * (trustFactor + riskFactor)));
+        double trustFactor = (60.0 - trustScore) / 60.0; // trust=50 -> +0.17 (slightly harsh), trust=100 -> -0.67 (lenient), trust=0 -> +1.0
+        double riskFactor = riskIndex / 100.0;            // risk=10 -> +0.10, risk=100 -> +1.0, risk=0 -> 0.0
+        double sensitivity = 1.0 + (trustFactor * 0.6) + (riskFactor * 0.8);
+        return Math.max(0.6, Math.min(2.5, sensitivity));
     }
 
     public String getClientBrand() {
@@ -233,6 +241,18 @@ public final class UserData {
     public void setLastTriggeredCheck(String lastTriggeredCheck) {
         this.lastTriggeredCheck = lastTriggeredCheck;
     }
+
+    // Live debug metrics (/vesuvio debug) - populated by StatisticalClickCheck on every evaluation
+    private volatile double lastStdDevMs = 0.0;
+    private volatile double lastDupRatio = 0.0;
+    private volatile double lastEntropy = 0.0;
+
+    public double getLastStdDevMs() { return lastStdDevMs; }
+    public void setLastStdDevMs(double v) { this.lastStdDevMs = v; }
+    public double getLastDupRatio() { return lastDupRatio; }
+    public void setLastDupRatio(double v) { this.lastDupRatio = v; }
+    public double getLastEntropy() { return lastEntropy; }
+    public void setLastEntropy(double v) { this.lastEntropy = v; }
 
     // Swing and Rotation Tracking for BadPackets & GCD
     private volatile long lastSwingNanos = 0L;
@@ -380,4 +400,16 @@ public final class UserData {
     public long getLastVelocityMillis() { return lastVelocityMillis; }
     public void recordVelocity() { this.lastVelocityMillis = System.currentTimeMillis(); }
     public boolean hasRecentVelocity() { return (System.currentTimeMillis() - lastVelocityMillis) < 1200L; }
+
+    // Vertical velocity of the previous air tick, used by FlyCheck to detect gravity that
+    // fails to accelerate the player downward (sustained-flight / hover engines).
+    private volatile double prevAirDeltaY = 0.0;
+    public double getPrevAirDeltaY() { return prevAirDeltaY; }
+    public void setPrevAirDeltaY(double value) { this.prevAirDeltaY = value; }
+
+    // Consecutive near-perfect (sub-degree) aim-lock hits during combat, tracked by KillauraAngleCheck.
+    private volatile int perfectAimStreak = 0;
+    public int getPerfectAimStreak() { return perfectAimStreak; }
+    public void incrementPerfectAimStreak() { this.perfectAimStreak++; }
+    public void resetPerfectAimStreak() { this.perfectAimStreak = 0; }
 }
