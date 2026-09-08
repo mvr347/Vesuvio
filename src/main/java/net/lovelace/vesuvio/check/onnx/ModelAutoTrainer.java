@@ -151,7 +151,7 @@ public final class ModelAutoTrainer {
             return;
         }
 
-        Path stagingDir = pluginFolder.resolve("models").resolve("staging");
+        Path stagingDir = modelsDir.resolve("staging");
         try {
             Files.createDirectories(stagingDir);
         } catch (IOException e) {

@@ -185,8 +185,10 @@ mechanics:
   silent-checks:
     click-statistical: false
     click-ml: false
+    click-self-learn: false
     aim-statistical: false
     aim-ml: false
+    aim-self-learn: false
     gcd-aim: false
     bad-packets: false
     reach: false
@@ -202,6 +204,11 @@ mechanics:
     fastbreak: false
     vehiclefly: false
     killauraangle: false
+    silentaim: false        # KillauraAngleCheck's crosshair-miss sub-flag (separate from killauraangle)
+    wallhit: false           # KillauraAngleCheck's attack-through-wall sub-flag
+    perfectaimlock: false    # KillauraAngleCheck's sub-degree aim-lock streak sub-flag
+    temporalconsistency: false
+    banevasion: false        # Recommend keeping this visible - staff should see evasion attempts immediately
     brand-detection: true   # Анализ бренда клиента бесшумен (только снижает Trust)
 
   # Обнаружение чит-клиентов и софт-модов по бренду

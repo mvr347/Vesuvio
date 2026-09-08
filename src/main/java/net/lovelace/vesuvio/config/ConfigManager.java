@@ -54,9 +54,19 @@ public final class ConfigManager {
         var silentSection = config.getConfigurationSection("mechanics.silent-checks");
         if (silentSection != null) {
             for (String key : silentSection.getKeys(false)) {
-                silentChecks.put(key.toLowerCase(), silentSection.getBoolean(key, false));
+                silentChecks.put(normalizeCheckName(key), silentSection.getBoolean(key, false));
             }
         }
+    }
+
+    /**
+     * Normalizes a check name for silent-checks lookup: lowercase with separators stripped, so
+     * a readable hyphenated config key (e.g. "click-statistical") matches the actual check name
+     * used at runtime (CheckResult.flag's checkName, e.g. "ClickStatistical" has no separator at
+     * all). Without this, isSilent() previously never matched any hyphenated config key.
+     */
+    private static String normalizeCheckName(String name) {
+        return name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
     }
 
     public String getPrefix() {
@@ -345,7 +355,7 @@ public final class ConfigManager {
 
     public boolean isSilent(String checkName) {
         if (checkName == null) return false;
-        return silentChecks.getOrDefault(checkName.toLowerCase(), false);
+        return silentChecks.getOrDefault(normalizeCheckName(checkName), false);
     }
 
     public boolean isBrandCheckEnabled() {

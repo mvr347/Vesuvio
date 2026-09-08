@@ -253,6 +253,14 @@ public final class CheckPipeline {
                             details);
                     handleFlag(player, data, result);
                 });
+            }).exceptionally(ex -> {
+                // altCheckDone is already set above (this check only ever needs to run once per
+                // session - the signature snapshot it compares only gets more stable over time,
+                // not less), but a failure here would otherwise vanish silently since nothing
+                // else observes this future. Log it so an operator can see the check misfired.
+                LOGGER.log(java.util.logging.Level.WARNING,
+                        "[Vesuvio] Ban-evasion signature check failed for " + player.getName(), ex);
+                return null;
             });
         }
     }

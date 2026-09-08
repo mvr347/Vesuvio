@@ -136,8 +136,10 @@ public final class UserData {
 
     /**
      * Dynamic sensitivity multiplier.
-     * Baseline (fresh account: trust=50, risk=10) resolves to ~1.0 (neutral, not lenient) so that
-     * out-of-the-box detection works from a player's very first session.
+     * Baseline (fresh account: trust=50, risk=10) resolves to ~1.18 - moderately harsh, never the
+     * lenient end of the range - so that out-of-the-box detection works from a player's very
+     * first session instead of giving brand-new (and therefore unproven) accounts the benefit
+     * of the doubt.
      * Low trust / high risk push the multiplier above 1.0 (harsher thresholds).
      * High trust / low risk (earned over time) push it below 1.0 (more lenient, fewer false positives).
      *
