@@ -282,7 +282,7 @@ public final class CheckPipeline {
 
         // Mathematical GCD Mouse Quantization Check (GrimAC/Polar)
         if (config.isGcdAimEnabled() && (deltaYaw > 0 || deltaPitch > 0)) {
-            CheckResult gcdResult = gcdAimCheck.check(data, deltaYaw, deltaPitch);
+            CheckResult gcdResult = gcdAimCheck.check(data, deltaYaw, deltaPitch, (float) config.getGcdAimMinRotation());
             if (gcdResult.isFlag()) {
                 data.addVl(gcdResult.vl() * config.getStatisticalWeight());
                 data.adjustRisk(gcdResult.confidence() * 7.0);
@@ -370,12 +370,19 @@ public final class CheckPipeline {
     public void processAttack(Player player, int targetEntityId, UserData data) {
         // 1. BadPackets: NoSwing check
         if (config.isBadPacketsEnabled() && config.isBadPacketsNoSwing()) {
-            CheckResult swingResult = badPacketsCheck.checkNoSwing(data.getLastSwingNanos());
-            if (swingResult.isFlag()) {
-                data.addVl(swingResult.vl());
-                data.adjustRisk(18.0);
-                data.setLastTriggeredCheck(swingResult.checkName());
-                handleFlag(player, data, swingResult);
+            if (!data.isFirstAttackSeen()) {
+                // First attack of the session has no swing baseline yet - vanilla clients can
+                // deliver this Interact packet before their Animation packet, so lastSwingNanos
+                // being 0 here isn't a violation. Skip once, then judge normally from here on.
+                data.setFirstAttackSeen(true);
+            } else {
+                CheckResult swingResult = badPacketsCheck.checkNoSwing(data.getLastSwingNanos());
+                if (swingResult.isFlag()) {
+                    data.addVl(swingResult.vl());
+                    data.adjustRisk(18.0);
+                    data.setLastTriggeredCheck(swingResult.checkName());
+                    handleFlag(player, data, swingResult);
+                }
             }
         }
 

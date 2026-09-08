@@ -278,6 +278,12 @@ public final class UserData {
     private volatile long lastSwingNanos = 0L;
     private volatile float lastYaw = 0f;
     private volatile float lastPitch = 0f;
+    // Vanilla clients can send the very first attack's Interact packet before its Animation
+    // (swing) packet within the same client tick, so lastSwingNanos==0 on a player's first-ever
+    // attack this session isn't evidence of a NoSwing cheat - just no baseline yet. Exempts
+    // exactly that one attack from BadPacketsCheck.checkNoSwing(); every attack after it is
+    // judged normally, so a client that genuinely never swings is still caught starting there.
+    private volatile boolean firstAttackSeen = false;
 
     public long getLastSwingNanos() {
         return lastSwingNanos;
@@ -285,6 +291,14 @@ public final class UserData {
 
     public void setLastSwingNanos(long lastSwingNanos) {
         this.lastSwingNanos = lastSwingNanos;
+    }
+
+    public boolean isFirstAttackSeen() {
+        return firstAttackSeen;
+    }
+
+    public void setFirstAttackSeen(boolean firstAttackSeen) {
+        this.firstAttackSeen = firstAttackSeen;
     }
 
     public float getLastYaw() {

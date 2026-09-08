@@ -44,7 +44,14 @@ public final class ConfigManager {
                     punishmentRules.add(new PunishmentRule(vl, action, cmd));
                 } catch (NumberFormatException ignored) {}
             }
-            punishmentRules.sort(Comparator.comparingInt(PunishmentRule::vlThreshold));
+            // Descending: evaluatePunishments() walks this list and fires the FIRST rule whose
+            // threshold is met (with a non-blank command), then stops. With an ascending sort
+            // that was always the lowest-severity rule (e.g. "kick" at VL 60), so a player who
+            // blew straight past the "ban" threshold (VL 100) would only ever get kicked forever
+            // - VL is never auto-reset after a punishment fires, so the loop hit the same low
+            // threshold again next flag. Descending order makes the loop find the HIGHEST
+            // (most severe) satisfied threshold instead, which is the correct escalation semantics.
+            punishmentRules.sort(Comparator.comparingInt(PunishmentRule::vlThreshold).reversed());
         }
 
         suspiciousBrands.clear();
@@ -222,7 +229,9 @@ public final class ConfigManager {
     }
 
     public double getGcdAimMinRotation() {
-        return config.getDouble("mechanics.gcd-aim.min-rotation", 1.2);
+        // Default matches GCDAimCheck's tuned MIN_ROTATION - lower catches smaller/subtler
+        // aimbot rotations, at the cost of a bit more analysis noise on tiny mouse movements.
+        return config.getDouble("mechanics.gcd-aim.min-rotation", 0.3);
     }
 
     public boolean isBadPacketsEnabled() {

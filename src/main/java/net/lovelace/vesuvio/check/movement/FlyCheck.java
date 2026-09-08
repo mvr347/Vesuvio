@@ -5,7 +5,6 @@ import net.lovelace.vesuvio.data.UserData;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.potion.PotionEffectType;
 
@@ -68,9 +67,12 @@ public final class FlyCheck {
             return CheckResult.pass("Fly");
         }
 
-        // Check near solid blocks
-        boolean nearSolid = isNearSolid(loc);
-        if (nearSolid || onGround) {
+        // Check climbing state (ladder/vine/scaffolding) and cobweb - these legitimately break
+        // the gravity invariant. Deliberately NOT a "any solid block nearby" scan: that used to
+        // exempt the whole check within 1 block of any wall/floor/ceiling, which is most of a
+        // built server (bases, cities, mob farms) - a real Fly hack flown next to any structure
+        // went completely undetected. Water/lava are already excluded above.
+        if (player.isClimbing() || isInCobweb(loc) || onGround) {
             data.resetAirTicks();
             data.decrementFlyStreak();
             data.setPrevAirDeltaY(0.0);
@@ -153,25 +155,10 @@ public final class FlyCheck {
         return CheckResult.pass("Fly");
     }
 
-    private boolean isNearSolid(Location loc) {
-        if (loc.getWorld() == null) return true;
-        int bx = loc.getBlockX();
-        int by = loc.getBlockY();
-        int bz = loc.getBlockZ();
-
-        for (int x = -1; x <= 1; x++) {
-            for (int z = -1; z <= 1; z++) {
-                for (int y = -1; y <= 1; y++) {
-                    Block b = loc.getWorld().getBlockAt(bx + x, by + y, bz + z);
-                    Material m = b.getType();
-                    if (m.isSolid() || m == Material.LADDER || m == Material.VINE
-                            || m == Material.SCAFFOLDING || m == Material.COBWEB
-                            || m == Material.WATER || m == Material.LAVA) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+    private boolean isInCobweb(Location loc) {
+        if (loc.getWorld() == null) return false;
+        Material feet = loc.getBlock().getType();
+        Material head = loc.clone().add(0, 1, 0).getBlock().getType();
+        return feet == Material.COBWEB || head == Material.COBWEB;
     }
 }

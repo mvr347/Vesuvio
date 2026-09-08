@@ -178,4 +178,19 @@ public final class PlayerLifecycleListener implements Listener {
             data.resetGcdStreak();
         }
     }
+
+    /**
+     * Fires whenever the server pushes velocity onto the player - combat knockback, explosions,
+     * fishing rod pulls, wind charges, elytra firework boosts, etc. Feeds UserData#recordVelocity()
+     * so the movement checks' hasRecentVelocity() grace period actually has data to work with;
+     * without this, every real knockback event looked identical to Fly/Speed/StepUp/InvMove
+     * hacking, since nothing was ever marking "the server just applied external velocity."
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onVelocity(org.bukkit.event.player.PlayerVelocityEvent event) {
+        UserData data = userDataManager.get(event.getPlayer().getUniqueId());
+        if (data != null) {
+            data.recordVelocity();
+        }
+    }
 }

@@ -200,6 +200,9 @@ mechanics:
     invmove: false
     autocriticals: false
     airplace: false
+    bedrockbreaker: false
+    xrayburst: false
+    xraystatistical: false
     scaffold: false
     fastbreak: false
     vehiclefly: false
