@@ -42,6 +42,7 @@ public final class Vesuvio extends JavaPlugin {
     private UserDataManager userDataManager;
     private MLManager mlManager;
     private SelfLearningManager selfLearningManager;
+    private net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
     private SmartAlertService alertService;
     private SpectateManager spectateManager;
     private net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
@@ -97,6 +98,17 @@ public final class Vesuvio extends JavaPlugin {
 
         // 5. Self-Learning Layer
         this.selfLearningManager = new SelfLearningManager(getDataFolder().toPath(), configManager);
+
+        // 5b. Fully-automatic ONNX retraining from the live dataset (see ModelAutoTrainer).
+        // Extracted/started after models are registered below so it can hot-reload into an
+        // MLManager that already knows about click_model/aim_model.
+        this.modelAutoTrainer = new net.lovelace.vesuvio.check.onnx.ModelAutoTrainer(
+                configManager,
+                selfLearningManager.getDatasetManager(),
+                mlManager,
+                getDataFolder().toPath(),
+                this::getResource
+        );
 
         // 6. Staff Services, Live Overlay & Spartan Enhancements
         this.alertService = new SmartAlertService(configManager);
@@ -156,7 +168,8 @@ public final class Vesuvio extends JavaPlugin {
                 spectateManager,
                 waveManager,
                 presetManager,
-                debugOverlayManager
+                debugOverlayManager,
+                modelAutoTrainer
         );
         var cmd = getCommand("vesuvio");
         if (cmd != null) {
@@ -219,6 +232,10 @@ public final class Vesuvio extends JavaPlugin {
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
             selfLearningManager.getAutoDatasetCollector().sweepLegitSamples(userDataManager);
         }, 20L * 60L, 20L * 60L);
+
+        // Schedulers: fully-automatic ONNX retraining (extracts the bundled Python script and,
+        // if enabled, schedules the periodic retrain cycle - see ModelAutoTrainer).
+        modelAutoTrainer.start();
 
         long elapsed = System.currentTimeMillis() - startMs;
         getLogger().info(String.format("Vesuvio 26.2 (Author: Lovelace) initialized in %dms. Hybrid 3-Layer Engine Active.", elapsed));
@@ -302,6 +319,17 @@ public final class Vesuvio extends JavaPlugin {
         }
         if (debugOverlayManager != null) {
             debugOverlayManager.cleanup();
+        }
+
+        // Stop the automatic retrain scheduler (does not interrupt an in-flight training run's
+        // subprocess timeout handling, just stops scheduling new ones)
+        if (modelAutoTrainer != null) {
+            modelAutoTrainer.stop();
+        }
+
+        // Flush and close the persistent dataset writer
+        if (selfLearningManager != null) {
+            selfLearningManager.close();
         }
 
         // Flush and close Database connection pool

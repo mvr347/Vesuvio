@@ -51,4 +51,9 @@ public final class SelfLearningManager {
     public DatasetManager getDatasetManager() {
         return datasetManager;
     }
+
+    /** Flushes and closes the persistent dataset writer. Call from plugin onDisable. */
+    public void close() {
+        datasetManager.close();
+    }
 }

@@ -40,6 +40,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     private final net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager;
     private final net.lovelace.vesuvio.config.PresetManager presetManager;
     private final net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
+    private final net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     public VesuvioCommand(Plugin plugin,
@@ -52,7 +53,8 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                           SpectateManager spectateManager,
                           net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
                           net.lovelace.vesuvio.config.PresetManager presetManager,
-                          net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager) {
+                          net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager,
+                          net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer) {
         this.plugin = plugin;
         this.config = config;
         this.userDataManager = userDataManager;
@@ -63,6 +65,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
         this.spectateManager = spectateManager;
         this.waveManager = waveManager;
         this.presetManager = presetManager;
+        this.modelAutoTrainer = modelAutoTrainer;
         this.debugOverlayManager = debugOverlayManager;
     }
 
@@ -282,6 +285,17 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(mm.deserialize("<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Configuration reloaded and ONNX model hot-reload dispatched asynchronously.</green>"));
             }
 
+            case "retrain" -> {
+                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.admin).</red>"));
+                    return true;
+                }
+                modelAutoTrainer.triggerNow();
+                sender.sendMessage(mm.deserialize(
+                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Manual ONNX retrain triggered - watch the console for progress "
+                        + "(<yellow>Vesuvio-AutoTrain</yellow> logger). Models hot-reload automatically on success.</green>"));
+            }
+
             case "dataset" -> {
                 if (args.length < 2) {
                     sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio dataset [export|import|stats]</red>"));
@@ -472,6 +486,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 + "<gold>/vesuvio reset <игрок></gold> <gray>- Сбросить уровень нарушений (VL/Risk)</gray><newline>"
                 + "<gold>/vesuvio wave [trigger|list|clear]</gold> <gray>- Управление волной банов Lava Wave</gray><newline>"
                 + "<gold>/vesuvio reload</gold> <gray>- Перезагрузить конфиг и модели ONNX</gray><newline>"
+                + "<gold>/vesuvio retrain</gold> <gray>- Запустить переобучение ONNX-моделей на текущем датасете вручную</gray><newline>"
                 + "<gold>/vesuvio dataset [export|import|stats]</gold> <gray>- Управление датасетом обучения</gray><newline>"
                 + "<gradient:#ff4500:#ff8c00><b>==============================================</b></gradient>"));
     }
@@ -479,7 +494,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(List.of("alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "dataset"), args[0]);
+            return filter(List.of("alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset"), args[0]);
         }
         if (args.length == 2) {
             if ("spectate".equalsIgnoreCase(args[0]) || "debug".equalsIgnoreCase(args[0]) || "info".equalsIgnoreCase(args[0]) || "reset".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0]) || "suspect".equalsIgnoreCase(args[0])) {

@@ -93,6 +93,30 @@ public final class ConfigManager {
         return config.getDouble("layers.onnx.default-threshold", 0.85);
     }
 
+    public boolean isAutoRetrainEnabled() {
+        return config.getBoolean("layers.onnx.auto-retrain.enabled", true);
+    }
+
+    public int getAutoRetrainIntervalHours() {
+        return config.getInt("layers.onnx.auto-retrain.interval-hours", 24);
+    }
+
+    public int getAutoRetrainInitialDelayHours() {
+        return config.getInt("layers.onnx.auto-retrain.initial-delay-hours", 2);
+    }
+
+    public int getAutoRetrainMinSamplesPerClass() {
+        return config.getInt("layers.onnx.auto-retrain.min-samples-per-class", 150);
+    }
+
+    public int getAutoRetrainTimeoutMinutes() {
+        return config.getInt("layers.onnx.auto-retrain.timeout-minutes", 15);
+    }
+
+    public String getAutoRetrainPythonExecutable() {
+        return config.getString("layers.onnx.auto-retrain.python-executable", "python3");
+    }
+
     // Layer 3
     public boolean isSelfLearningEnabled() {
         return config.getBoolean("layers.self-learning.enabled", true);

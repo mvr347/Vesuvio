@@ -43,6 +43,22 @@ layers:
       # (mechanics.reach, WorldInteractionListener's Scaffold heuristic). Add a real entry back
       # here once an actual trained model exists.
 
+    # Fully automatic retraining of click_model.onnx / aim_model.onnx from the live,
+    # continuously-collected dataset (see check.selflearning.AutoDatasetCollector and
+    # check.onnx.ModelAutoTrainer). Runs a bundled Python script (scripts/train_models.py,
+    # extracted to the plugin folder on startup) on a schedule and hot-reloads the result -
+    # no manual export/train/import steps. Needs Python 3 + scikit-learn + skl2onnx installed
+    # on the server host (see scripts/requirements.txt); if missing, this logs clear setup
+    # instructions once and the rest of the plugin (including the always-on, pure-Java
+    # OnlineClassifier self-learning layer) keeps working unaffected.
+    auto-retrain:
+      enabled: true
+      interval-hours: 24
+      initial-delay-hours: 2
+      min-samples-per-class: 150
+      timeout-minutes: 15
+      python-executable: "python3"
+
   # Уровень 3: Самообучение и память аномалий
   self-learning:
     enabled: true
