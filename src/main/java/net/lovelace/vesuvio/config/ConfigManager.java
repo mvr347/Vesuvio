@@ -12,6 +12,8 @@ import java.util.*;
  */
 public final class ConfigManager {
 
+    public static final String DEFAULT_WEB_BEARER_TOKEN = "vesuvio-secret-token-change-me";
+
     private final Plugin plugin;
     private FileConfiguration config;
 
@@ -42,7 +44,14 @@ public final class ConfigManager {
                     punishmentRules.add(new PunishmentRule(vl, action, cmd));
                 } catch (NumberFormatException ignored) {}
             }
-            punishmentRules.sort(Comparator.comparingInt(PunishmentRule::vlThreshold));
+            // Descending: evaluatePunishments() walks this list and fires the FIRST rule whose
+            // threshold is met (with a non-blank command), then stops. With an ascending sort
+            // that was always the lowest-severity rule (e.g. "kick" at VL 60), so a player who
+            // blew straight past the "ban" threshold (VL 100) would only ever get kicked forever
+            // - VL is never auto-reset after a punishment fires, so the loop hit the same low
+            // threshold again next flag. Descending order makes the loop find the HIGHEST
+            // (most severe) satisfied threshold instead, which is the correct escalation semantics.
+            punishmentRules.sort(Comparator.comparingInt(PunishmentRule::vlThreshold).reversed());
         }
 
         suspiciousBrands.clear();
@@ -52,9 +61,19 @@ public final class ConfigManager {
         var silentSection = config.getConfigurationSection("mechanics.silent-checks");
         if (silentSection != null) {
             for (String key : silentSection.getKeys(false)) {
-                silentChecks.put(key.toLowerCase(), silentSection.getBoolean(key, false));
+                silentChecks.put(normalizeCheckName(key), silentSection.getBoolean(key, false));
             }
         }
+    }
+
+    /**
+     * Normalizes a check name for silent-checks lookup: lowercase with separators stripped, so
+     * a readable hyphenated config key (e.g. "click-statistical") matches the actual check name
+     * used at runtime (CheckResult.flag's checkName, e.g. "ClickStatistical" has no separator at
+     * all). Without this, isSilent() previously never matched any hyphenated config key.
+     */
+    private static String normalizeCheckName(String name) {
+        return name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
     }
 
     public String getPrefix() {
@@ -91,6 +110,30 @@ public final class ConfigManager {
         return config.getDouble("layers.onnx.default-threshold", 0.85);
     }
 
+    public boolean isAutoRetrainEnabled() {
+        return config.getBoolean("layers.onnx.auto-retrain.enabled", true);
+    }
+
+    public int getAutoRetrainIntervalHours() {
+        return config.getInt("layers.onnx.auto-retrain.interval-hours", 24);
+    }
+
+    public int getAutoRetrainInitialDelayHours() {
+        return config.getInt("layers.onnx.auto-retrain.initial-delay-hours", 2);
+    }
+
+    public int getAutoRetrainMinSamplesPerClass() {
+        return config.getInt("layers.onnx.auto-retrain.min-samples-per-class", 150);
+    }
+
+    public int getAutoRetrainTimeoutMinutes() {
+        return config.getInt("layers.onnx.auto-retrain.timeout-minutes", 15);
+    }
+
+    public String getAutoRetrainPythonExecutable() {
+        return config.getString("layers.onnx.auto-retrain.python-executable", "python3");
+    }
+
     // Layer 3
     public boolean isSelfLearningEnabled() {
         return config.getBoolean("layers.self-learning.enabled", true);
@@ -114,6 +157,42 @@ public final class ConfigManager {
 
     public double getAnomalyRiskBoost() {
         return config.getDouble("layers.self-learning.anomaly-memory.risk-boost-factor", 1.75);
+    }
+
+    public int getOnlineClassifierMinTrainedSamples() {
+        return config.getInt("layers.self-learning.online-classifier.min-trained-samples-to-flag", 40);
+    }
+
+    public double getOnlineClassifierFlagThreshold() {
+        return config.getDouble("layers.self-learning.online-classifier.flag-threshold", 0.90);
+    }
+
+    public double getOnlineClassifierSilentRiskThreshold() {
+        return config.getDouble("layers.self-learning.online-classifier.silent-risk-threshold", 0.65);
+    }
+
+    public boolean isAutoCollectionEnabled() {
+        return config.getBoolean("layers.self-learning.auto-collection.enabled", true);
+    }
+
+    public double getAutoCollectLegitMinTrust() {
+        return config.getDouble("layers.self-learning.auto-collection.legit-min-trust", 85.0);
+    }
+
+    public double getAutoCollectLegitMaxRisk() {
+        return config.getDouble("layers.self-learning.auto-collection.legit-max-risk", 15.0);
+    }
+
+    public int getAutoCollectLegitIntervalMinutes() {
+        return config.getInt("layers.self-learning.auto-collection.legit-interval-minutes", 15);
+    }
+
+    public boolean isAutoCollectCheatOnBan() {
+        return config.getBoolean("layers.self-learning.auto-collection.cheat-on-ban", true);
+    }
+
+    public int getMaxDatasetSize() {
+        return config.getInt("layers.self-learning.auto-collection.max-dataset-size", 50000);
     }
 
     // Mechanics
@@ -150,7 +229,9 @@ public final class ConfigManager {
     }
 
     public double getGcdAimMinRotation() {
-        return config.getDouble("mechanics.gcd-aim.min-rotation", 1.2);
+        // Default matches GCDAimCheck's tuned MIN_ROTATION - lower catches smaller/subtler
+        // aimbot rotations, at the cost of a bit more analysis noise on tiny mouse movements.
+        return config.getDouble("mechanics.gcd-aim.min-rotation", 0.3);
     }
 
     public boolean isBadPacketsEnabled() {
@@ -199,6 +280,34 @@ public final class ConfigManager {
 
     public boolean isInvMoveEnabled() {
         return config.getBoolean("mechanics.movement.invmove.enabled", true);
+    }
+
+    public boolean isBanEvasionEnabled() {
+        return config.getBoolean("mechanics.ban-evasion.enabled", true);
+    }
+
+    public boolean isBanEvasionIpCheckEnabled() {
+        return config.getBoolean("mechanics.ban-evasion.ip-check", true);
+    }
+
+    public boolean isBanEvasionSignatureCheckEnabled() {
+        return config.getBoolean("mechanics.ban-evasion.signature-check", true);
+    }
+
+    public float getBanEvasionSignatureThreshold() {
+        return (float) config.getDouble("mechanics.ban-evasion.signature-threshold", 0.86);
+    }
+
+    public int getBanEvasionSignatureScanLimit() {
+        return config.getInt("mechanics.ban-evasion.signature-scan-limit", 1000);
+    }
+
+    public double getBanEvasionIpMatchRisk() {
+        return config.getDouble("mechanics.ban-evasion.ip-match-risk", 45.0);
+    }
+
+    public double getBanEvasionSignatureMatchRisk() {
+        return config.getDouble("mechanics.ban-evasion.signature-match-risk", 25.0);
     }
 
     public boolean isKillauraAngleEnabled() {
@@ -255,7 +364,7 @@ public final class ConfigManager {
 
     public boolean isSilent(String checkName) {
         if (checkName == null) return false;
-        return silentChecks.getOrDefault(checkName.toLowerCase(), false);
+        return silentChecks.getOrDefault(normalizeCheckName(checkName), false);
     }
 
     public boolean isBrandCheckEnabled() {
@@ -297,7 +406,7 @@ public final class ConfigManager {
     }
 
     public String getWebBearerToken() {
-        return config.getString("web.bearer-token", "vesuvio-secret-token-change-me");
+        return config.getString("web.bearer-token", DEFAULT_WEB_BEARER_TOKEN);
     }
 
     // Database

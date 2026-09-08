@@ -38,7 +38,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
 
         if (type == PacketType.Play.Client.ANIMATION) {
             Player player = (Player) event.getPlayer();
-            if (player == null) return;
+            if (player == null || player.hasMetadata("NPC")) return;
 
             UserData data = userDataManager.getOrCreate(player);
             long now = System.nanoTime();
@@ -53,7 +53,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
 
         } else if (type == PacketType.Play.Client.INTERACT_ENTITY) {
             Player player = (Player) event.getPlayer();
-            if (player == null) return;
+            if (player == null || player.hasMetadata("NPC")) return;
 
             WrapperPlayClientInteractEntity wrapper = new WrapperPlayClientInteractEntity(event);
             if (wrapper.getAction() == WrapperPlayClientInteractEntity.InteractAction.ATTACK) {

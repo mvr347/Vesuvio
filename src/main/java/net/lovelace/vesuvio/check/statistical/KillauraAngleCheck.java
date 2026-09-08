@@ -108,7 +108,33 @@ public final class KillauraAngleCheck {
             String explanation = String.format(Locale.US,
                     "Attack outside field of view (Angle: %.1f°, Max: 75.0°)", angleDegrees);
 
+            data.resetPerfectAimStreak();
             return CheckResult.flag("KillauraAngle", 0.96, 3.0, explanation, details);
+        }
+
+        // -------------------------------------------------------------
+        // 4. Perfect-Aim Streak: many consecutive hits landing dead-center on the hitbox
+        // (sub-degree crosshair error) is not humanly sustainable across a real fight -
+        // catches basic/free KillAura variants that snap-lock exactly onto the target's
+        // center every single tick instead of the natural jitter of manual tracking.
+        // -------------------------------------------------------------
+        if (angleDegrees < 0.6) {
+            data.incrementPerfectAimStreak();
+            if (data.getPerfectAimStreak() >= 6) {
+                Map<String, Object> details = new HashMap<>();
+                details.put("angle", angleDegrees);
+                details.put("streak", data.getPerfectAimStreak());
+                details.put("target", target.getName() != null ? target.getName() : target.getType().name());
+
+                String explanation = String.format(Locale.US,
+                        "Inhuman aim-lock precision streak: %d consecutive sub-degree hits (Angle: %.3f°)",
+                        data.getPerfectAimStreak(), angleDegrees);
+
+                data.resetPerfectAimStreak();
+                return CheckResult.flag("PerfectAimLock", 0.89, 2.0, explanation, details);
+            }
+        } else {
+            data.resetPerfectAimStreak();
         }
 
         return CheckResult.pass("KillauraAngle");

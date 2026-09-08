@@ -72,8 +72,8 @@ public final class StepUpCheck {
                 double confidence = Math.min(1.0, 0.85 + (deltaY - 0.6) * 0.2);
                 return CheckResult.flag(
                         "StepUp",
-                        12.0,
                         confidence,
+                        12.0,
                         String.format(Locale.US, "Unnatural step height (ΔY: %.2fb > 0.6b limit)", deltaY),
                         details
                 );

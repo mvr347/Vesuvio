@@ -57,8 +57,8 @@ public final class InvMoveCheck {
 
                 return CheckResult.flag(
                         "InvMove",
-                        8.0,
                         0.92,
+                        8.0,
                         String.format(Locale.US, "Movement with open %s container (speed: %.2fb/t)", type.name(), Math.sqrt(horizontalSq)),
                         details
                 );

@@ -37,18 +37,27 @@ layers:
         threshold: 0.80
         weight: 1.4
         input-name: "float_input"
-      reach_model:
-        enabled: false
-        file: "models/reach_model.onnx"
-        threshold: 0.88
-        weight: 1.2
-        input-name: "float_input"
-      scaffold_model:
-        enabled: false
-        file: "models/scaffold_model.onnx"
-        threshold: 0.85
-        weight: 1.3
-        input-name: "float_input"
+      # No reach_model / scaffold_model here on purpose: nobody has trained those yet, and a
+      # config entry with no matching .onnx file and no code path is just a lie about what the
+      # plugin does. Reach and Scaffold are covered today by the statistical layer instead
+      # (mechanics.reach, WorldInteractionListener's Scaffold heuristic). Add a real entry back
+      # here once an actual trained model exists.
+
+    # Fully automatic retraining of click_model.onnx / aim_model.onnx from the live,
+    # continuously-collected dataset (see check.selflearning.AutoDatasetCollector and
+    # check.onnx.ModelAutoTrainer). Runs a bundled Python script (scripts/train_models.py,
+    # extracted to the plugin folder on startup) on a schedule and hot-reloads the result -
+    # no manual export/train/import steps. Needs Python 3 + scikit-learn + skl2onnx installed
+    # on the server host (see scripts/requirements.txt); if missing, this logs clear setup
+    # instructions once and the rest of the plugin (including the always-on, pure-Java
+    # OnlineClassifier self-learning layer) keeps working unaffected.
+    auto-retrain:
+      enabled: true
+      interval-hours: 24
+      initial-delay-hours: 2
+      min-samples-per-class: 150
+      timeout-minutes: 15
+      python-executable: "python3"
 
   # Уровень 3: Самообучение и память аномалий
   self-learning:
@@ -72,6 +81,23 @@ layers:
       enabled: true
       learning-rate: 0.05
       l2-regularization: 0.001
+      # Классификатор начинает реально влиять на VL/Risk только после N обученных образцов,
+      # чтобы недообученная модель не давала случайные флаги в первые часы работы сервера.
+      min-trained-samples-to-flag: 40
+      flag-threshold: 0.90
+      silent-risk-threshold: 0.65
+    # Автосбор датасета: без участия персонала пополняет обучающую выборку и тренирует
+    # онлайн-классификатор на подтверждённых случаях (бан = чит, надёжный игрок = легит)
+    auto-collection:
+      enabled: true
+      # "Чистые" образцы берутся у игроков с Trust >= min-trust, Risk <= max-risk и VL = 0
+      legit-min-trust: 85.0
+      legit-max-risk: 15.0
+      legit-interval-minutes: 15
+      # "Читерские" образцы берутся автоматически в момент бана (VL достиг порога "ban")
+      cheat-on-ban: true
+      # Максимальный размер датасета в памяти (старые образцы вытесняются новыми)
+      max-dataset-size: 50000
 
 # ------------------------------------------------------------------------------
 # 2. МЕХАНИКИ ОБНАРУЖЕНИЯ И АДАПТАЦИЯ К RPG / ПВП
@@ -124,6 +150,17 @@ mechanics:
     invmove:
       enabled: true         # Детект бега при открытом сундуке/инвентаре
 
+  # Обход бана / alt-аккаунты: снимок IP + почерка клика забаненного игрока сверяется
+  # с новыми аккаунтами (см. net.lovelace.vesuvio.evasion.BanEvasionManager).
+  ban-evasion:
+    enabled: true
+    ip-check: true          # точное совпадение IP с забаненным аккаунтом
+    signature-check: true   # сверка "почерка" клика (та же биометрия, что и в fingerprinting)
+    signature-threshold: 0.86  # порог схожести Hamming для срабатывания (0.0-1.0)
+    signature-scan-limit: 1000 # сколько последних банов сверять при проверке почерка
+    ip-match-risk: 45.0
+    signature-match-risk: 25.0
+
   # Дополнительные боевые проверки
   combat:
     angle:
@@ -148,8 +185,10 @@ mechanics:
   silent-checks:
     click-statistical: false
     click-ml: false
+    click-self-learn: false
     aim-statistical: false
     aim-ml: false
+    aim-self-learn: false
     gcd-aim: false
     bad-packets: false
     reach: false
@@ -161,10 +200,18 @@ mechanics:
     invmove: false
     autocriticals: false
     airplace: false
+    bedrockbreaker: false
+    xrayburst: false
+    xraystatistical: false
     scaffold: false
     fastbreak: false
     vehiclefly: false
     killauraangle: false
+    silentaim: false        # KillauraAngleCheck's crosshair-miss sub-flag (separate from killauraangle)
+    wallhit: false           # KillauraAngleCheck's attack-through-wall sub-flag
+    perfectaimlock: false    # KillauraAngleCheck's sub-degree aim-lock streak sub-flag
+    temporalconsistency: false
+    banevasion: false        # Recommend keeping this visible - staff should see evasion attempts immediately
     brand-detection: true   # Анализ бренда клиента бесшумен (только снижает Trust)
 
   # Обнаружение чит-клиентов и софт-модов по бренду

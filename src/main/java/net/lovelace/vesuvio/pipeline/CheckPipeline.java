@@ -8,6 +8,7 @@ import net.lovelace.vesuvio.check.onnx.MLManager;
 import net.lovelace.vesuvio.check.onnx.MLResult;
 import net.lovelace.vesuvio.check.selflearning.ActiveLearning;
 import net.lovelace.vesuvio.check.selflearning.AnomalyMemory;
+import net.lovelace.vesuvio.check.selflearning.OnlineClassifier;
 import net.lovelace.vesuvio.check.selflearning.SelfLearningManager;
 import net.lovelace.vesuvio.check.statistical.StatisticalAimCheck;
 import net.lovelace.vesuvio.check.statistical.StatisticalClickCheck;
@@ -23,6 +24,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Logger;
@@ -48,6 +50,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager;
     private final net.lovelace.vesuvio.staff.DiscordWebhookService discordService;
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
+    private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
@@ -74,7 +77,8 @@ public final class CheckPipeline {
                          net.lovelace.vesuvio.engine.LagCompensator lagCompensator,
                          net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
                          net.lovelace.vesuvio.staff.DiscordWebhookService discordService,
-                         net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker) {
+                         net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
+                         net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager) {
         this.plugin = plugin;
         this.config = config;
         this.mlManager = mlManager;
@@ -85,7 +89,12 @@ public final class CheckPipeline {
         this.waveManager = waveManager;
         this.discordService = discordService;
         this.hitboxTracker = hitboxTracker;
+        this.banEvasionManager = banEvasionManager;
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
+    }
+
+    public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
+        return banEvasionManager;
     }
 
     /**
@@ -159,6 +168,40 @@ public final class CheckPipeline {
         }
 
         // -------------------------------------------------------------
+        // Layer 3a: Online Self-Learning Classifier (pure-Java SGD, trained continuously by
+        // AutoDatasetCollector + staff Active Learning verdicts). Gated on a minimum trained
+        // sample count so an undertrained model at server start can't produce noisy flags.
+        // -------------------------------------------------------------
+        if (config.isSelfLearningEnabled()) {
+            OnlineClassifier classifier = selfLearning.getOnlineClassifier();
+            if (classifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
+                double selfLearnProb = classifier.predict(features);
+                data.setLastSelfLearnProbability(selfLearnProb);
+
+                if (selfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
+                    data.addVl(1.6 * config.getSelfLearningWeight());
+                    data.adjustRisk(selfLearnProb * 9.0);
+                    data.setLastTriggeredCheck("ClickSelfLearn");
+
+                    Map<String, Object> slDetails = new HashMap<>();
+                    slDetails.put("probability", selfLearnProb);
+                    slDetails.put("trainedSamples", classifier.getTrainedSamplesCount());
+
+                    CheckResult slResult = CheckResult.flag("ClickSelfLearn", selfLearnProb, 1.6 * config.getSelfLearningWeight(),
+                            String.format(Locale.US, "Online self-learning classifier confidence: %.1f%% (trained on %d samples)",
+                                    selfLearnProb * 100, classifier.getTrainedSamplesCount()),
+                            slDetails);
+                    handleFlag(player, data, slResult);
+                } else if (selfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
+                    // Below the confident-flag bar but still elevated - contribute to Risk only,
+                    // silently, without a chat alert. This is the model corroborating other
+                    // signals rather than acting alone.
+                    data.adjustRisk((selfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
+                }
+            }
+        }
+
+        // -------------------------------------------------------------
         // Layer 3: Anomaly Memory & Click Fingerprinting
         // -------------------------------------------------------------
         long[] signature = data.getClickBuffer().getSignature();
@@ -187,6 +230,39 @@ public final class CheckPipeline {
                 }
             }
         }
+
+        // Ban-evasion: compare this (possibly brand-new) account's playstyle signature against
+        // recently banned players once it has the same 48-sample baseline used for
+        // fingerprinting above. Deliberately NOT gated on Trust (a ban-evading alt starts at
+        // default trust) and runs at most once per session (altCheckDone).
+        if (config.isBanEvasionEnabled() && config.isBanEvasionSignatureCheckEnabled() && banEvasionManager != null
+                && !data.isAltCheckDone() && data.getClickBuffer().getCount() >= 48) {
+            data.setAltCheckDone(true);
+            long[] signatureSnapshot = signature.clone();
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                var match = banEvasionManager.findSignatureMatch(
+                        signatureSnapshot, config.getBanEvasionSignatureThreshold(), config.getBanEvasionSignatureScanLimit());
+                match.ifPresent(m -> {
+                    data.adjustRisk(config.getBanEvasionSignatureMatchRisk());
+                    Map<String, Object> details = new HashMap<>();
+                    details.put("bannedUsername", m.bannedUsername());
+                    details.put("similarity", m.similarity());
+                    CheckResult result = CheckResult.flag("BanEvasion", 0.75, 1.5,
+                            String.format(Locale.US, "Playstyle matches banned player '%s' (similarity %.0f%%)",
+                                    m.bannedUsername(), m.similarity() * 100),
+                            details);
+                    handleFlag(player, data, result);
+                });
+            }).exceptionally(ex -> {
+                // altCheckDone is already set above (this check only ever needs to run once per
+                // session - the signature snapshot it compares only gets more stable over time,
+                // not less), but a failure here would otherwise vanish silently since nothing
+                // else observes this future. Log it so an operator can see the check misfired.
+                LOGGER.log(java.util.logging.Level.WARNING,
+                        "[Vesuvio] Ban-evasion signature check failed for " + player.getName(), ex);
+                return null;
+            });
+        }
     }
 
     /**
@@ -206,7 +282,7 @@ public final class CheckPipeline {
 
         // Mathematical GCD Mouse Quantization Check (GrimAC/Polar)
         if (config.isGcdAimEnabled() && (deltaYaw > 0 || deltaPitch > 0)) {
-            CheckResult gcdResult = gcdAimCheck.check(data, deltaYaw, deltaPitch);
+            CheckResult gcdResult = gcdAimCheck.check(data, deltaYaw, deltaPitch, (float) config.getGcdAimMinRotation());
             if (gcdResult.isFlag()) {
                 data.addVl(gcdResult.vl() * config.getStatisticalWeight());
                 data.adjustRisk(gcdResult.confidence() * 7.0);
@@ -249,6 +325,39 @@ public final class CheckPipeline {
                 });
             }
         }
+
+        // -------------------------------------------------------------
+        // Layer 3a: Online Self-Learning Classifier for aim (separate weights/priors from the
+        // click classifier - see SelfLearningManager.getAimClassifier / OnlineClassifier.AIM_PRIORS).
+        // Same minimum-trained-sample gate as the click classifier, and additionally requires
+        // combat context like the other aim checks to avoid scoring idle look-around.
+        // -------------------------------------------------------------
+        if (config.isSelfLearningEnabled() && data.isInCombat() && data.getAimBuffer().getCount() >= 16) {
+            OnlineClassifier aimClassifier = selfLearning.getAimClassifier();
+            if (aimClassifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
+                float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer());
+                double aimSelfLearnProb = aimClassifier.predict(aimFeatures);
+                data.setLastAimSelfLearnProbability(aimSelfLearnProb);
+
+                if (aimSelfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
+                    data.addVl(1.6 * config.getSelfLearningWeight());
+                    data.adjustRisk(aimSelfLearnProb * 9.0);
+                    data.setLastTriggeredCheck("AimSelfLearn");
+
+                    Map<String, Object> slDetails = new HashMap<>();
+                    slDetails.put("probability", aimSelfLearnProb);
+                    slDetails.put("trainedSamples", aimClassifier.getTrainedSamplesCount());
+
+                    CheckResult slResult = CheckResult.flag("AimSelfLearn", aimSelfLearnProb, 1.6 * config.getSelfLearningWeight(),
+                            String.format(Locale.US, "Online aim self-learning classifier confidence: %.1f%% (trained on %d samples)",
+                                    aimSelfLearnProb * 100, aimClassifier.getTrainedSamplesCount()),
+                            slDetails);
+                    handleFlag(player, data, slResult);
+                } else if (aimSelfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
+                    data.adjustRisk((aimSelfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
+                }
+            }
+        }
     }
 
     public void processAim(Player player, UserData data) {
@@ -261,12 +370,19 @@ public final class CheckPipeline {
     public void processAttack(Player player, int targetEntityId, UserData data) {
         // 1. BadPackets: NoSwing check
         if (config.isBadPacketsEnabled() && config.isBadPacketsNoSwing()) {
-            CheckResult swingResult = badPacketsCheck.checkNoSwing(data.getLastSwingNanos());
-            if (swingResult.isFlag()) {
-                data.addVl(swingResult.vl());
-                data.adjustRisk(18.0);
-                data.setLastTriggeredCheck(swingResult.checkName());
-                handleFlag(player, data, swingResult);
+            if (!data.isFirstAttackSeen()) {
+                // First attack of the session has no swing baseline yet - vanilla clients can
+                // deliver this Interact packet before their Animation packet, so lastSwingNanos
+                // being 0 here isn't a violation. Skip once, then judge normally from here on.
+                data.setFirstAttackSeen(true);
+            } else {
+                CheckResult swingResult = badPacketsCheck.checkNoSwing(data.getLastSwingNanos());
+                if (swingResult.isFlag()) {
+                    data.addVl(swingResult.vl());
+                    data.adjustRisk(18.0);
+                    data.setLastTriggeredCheck(swingResult.checkName());
+                    handleFlag(player, data, swingResult);
+                }
             }
         }
 
@@ -370,6 +486,12 @@ public final class CheckPipeline {
                 data.adjustRisk(flyResult.confidence() * 12.0);
                 data.setLastTriggeredCheck(flyResult.checkName());
                 handleFlag(player, data, flyResult);
+
+                // Fly is one of the fastest and hardest checks - on a high-confidence flag there is
+                // little value in also running Speed/NoFall/StepUp/InvMove this same tick.
+                if (flyResult.confidence() >= config.getStatisticalCutoff()) {
+                    return;
+                }
             }
         }
 
@@ -419,6 +541,16 @@ public final class CheckPipeline {
     }
 
     public void handleFlag(Player player, UserData data, CheckResult result) {
+        // 0. Verbose console diagnostics (settings.debug: true) - dumps the exact feature values
+        // that triggered the flag, so server owners can tune thresholds without guessing.
+        if (config.isDebug()) {
+            LOGGER.info(String.format(Locale.US,
+                    "[FLAG] %s | check=%s confidence=%.2f vl+=%.2f -> VL=%.1f Risk=%.1f Trust=%.1f | %s | details=%s",
+                    player.getName(), result.checkName(), result.confidence(), result.vl(),
+                    data.getVl(), data.getRiskIndex(), data.getTrustScore(),
+                    result.explanation(), result.details()));
+        }
+
         // 1. Broadcast smart MiniMessage alert to staff
         alertService.broadcastAlert(player, data, result);
 
@@ -455,6 +587,26 @@ public final class CheckPipeline {
                             .replace("%vl%", String.format(Locale.US, "%.0f", currentVl))
                             .replace("%risk%", String.format(Locale.US, "%.0f", data.getRiskIndex()))
                             .replace("%ml%", String.format(Locale.US, "%.1f", data.getLastMLProbability() * 100));
+
+                    // Auto-collect a confirmed-cheat training sample the moment a ban fires -
+                    // by now the pipeline is confident enough that this is safe ground truth.
+                    // Also snapshot a ban-evasion fingerprint (IP + playstyle signature) so a
+                    // fresh account rejoining later can be matched against it.
+                    if ("ban".equalsIgnoreCase(rule.action())) {
+                        selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
+
+                        if (banEvasionManager != null && config.isBanEvasionEnabled()) {
+                            String ip = null;
+                            try {
+                                if (player.getAddress() != null && player.getAddress().getAddress() != null) {
+                                    ip = player.getAddress().getAddress().getHostAddress();
+                                }
+                            } catch (Throwable ignored) {}
+                            banEvasionManager.recordBanFingerprint(
+                                    player.getUniqueId(), player.getName(), ip, data.getClientBrand(),
+                                    data.getClickBuffer().getSignature(), formatted);
+                        }
+                    }
 
                     // Check if rule is a ban and Lava Wave mode is enabled
                     if ("ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null) {

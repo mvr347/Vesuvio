@@ -20,19 +20,44 @@ public final class OnlineClassifier {
 
     private final AtomicLong trainedSamples = new AtomicLong(0);
 
+    /**
+     * Click-domain classifier (default priors match ClickFeatureExtractor's 16-feature layout).
+     * Kept for backward compatibility - equivalent to {@code OnlineClassifier(featureCount, CLICK_PRIORS, -2.0)}.
+     */
     public OnlineClassifier(int featureCount) {
+        this(featureCount, featureCount >= 16 ? CLICK_PRIORS : null, -2.0);
+    }
+
+    /**
+     * Domain-agnostic constructor: pass a feature-count-sized prior weight array tailored to the
+     * feature extractor this instance will score (e.g. AimFeatureExtractor's layout instead of
+     * ClickFeatureExtractor's). Priors are just a warm start - SGD training overwrites them.
+     *
+     * @param priorWeights initial weights, or null to start from all-zero weights
+     * @param priorBias    initial bias (sigmoid intercept)
+     */
+    public OnlineClassifier(int featureCount, double[] priorWeights, double priorBias) {
         this.featureCount = featureCount;
         this.weights = new double[featureCount];
-        // Initialize weights with domain priors (positive for low variance, high dup ratio, high CPS)
-        if (featureCount >= 16) {
-            weights[0] = -0.05; // mean delay (shorter = more suspect)
-            weights[1] = -0.40; // std dev (lower = more suspect)
-            weights[4] = 2.50;  // duplicate ratio
-            weights[5] = -0.80; // entropy (lower = more suspect)
-            weights[7] = 2.20;  // consecutive identical
-            weights[14] = 0.35; // CPS (higher = more suspect)
+        this.bias = priorBias;
+        if (priorWeights != null) {
+            System.arraycopy(priorWeights, 0, this.weights, 0, Math.min(priorWeights.length, featureCount));
         }
     }
+
+    // Domain priors for ClickFeatureExtractor's 16-feature layout (positive = more suspect):
+    // low variance, high duplicate ratio, low entropy, many consecutive identical, high CPS.
+    private static final double[] CLICK_PRIORS = {
+            -0.05, -0.40, 0.0, 0.0, 2.50, -0.80, 0.0, 2.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35, 0.0
+    };
+
+    // Domain priors for AimFeatureExtractor's layout (indices 0-7 populated; 8-15 unused/zero):
+    // meanYaw, meanPitch, varYaw, varPitch, snapRatio, zeroRatio, jerk, gcdConsistency.
+    // High snapRatio/zeroRatio (snap-then-freeze) and low gcdConsistency (smooth trig aim,
+    // fails vanilla mouse quantization) push toward "suspect".
+    public static final double[] AIM_PRIORS = {
+            0.0, 0.0, 0.0, 0.0, 1.80, 1.20, 0.0, -1.00, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    };
 
     /**
      * Calculates probability that features represent an unfair advantage.

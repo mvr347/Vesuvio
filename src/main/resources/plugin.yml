@@ -28,3 +28,6 @@ permissions:
   vesuvio.review:
     description: Review active learning samples
     default: op
+  vesuvio.debug:
+    description: Use the live /vesuvio debug telemetry overlay
+    default: op

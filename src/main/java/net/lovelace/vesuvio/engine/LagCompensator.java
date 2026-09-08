@@ -40,19 +40,33 @@ public final class LagCompensator {
 
     /**
      * Evaluates whether the player recently experienced a sharp network latency spike.
+     *
+     * Compares against an exponential moving average rather than the single immediately-previous
+     * sample. A raw previous-sample comparison meant a connection with rhythmic jitter (or a
+     * deliberately ping-toggling client) could trigger "spike" on nearly every packet, handing
+     * out the loosened detection thresholds below almost permanently. The EMA settles within a
+     * few samples of sustained oscillation, so only a genuine, fresh latency jump still counts.
      */
     public boolean isNetworkSpike(Player player) {
         int currentPing = player.getPing();
-        PingRecord last = pingHistory.put(player.getUniqueId(), new PingRecord(currentPing, System.currentTimeMillis()));
+        java.util.concurrent.atomic.AtomicBoolean spike = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        if (last != null) {
-            int deltaPing = Math.abs(currentPing - last.ping());
-            // High ping (> 350ms) or rapid spike (> 120ms within 3 seconds)
-            if (currentPing > 350 || deltaPing > config.getMaxPingSpikeMs()) {
-                return true;
+        // Single atomic read-modify-write per player key, so concurrent calls (click/attack/reach
+        // checks can all run this on different virtual threads for the same player) can't race
+        // on the EMA baseline.
+        pingHistory.compute(player.getUniqueId(), (uuid, last) -> {
+            double ema = currentPing;
+            if (last != null) {
+                double deviation = Math.abs(currentPing - last.emaPing());
+                if (currentPing > 350 || deviation > config.getMaxPingSpikeMs()) {
+                    spike.set(true);
+                }
+                ema = last.emaPing() + 0.25 * (currentPing - last.emaPing());
             }
-        }
-        return false;
+            return new PingRecord(currentPing, System.currentTimeMillis(), ema);
+        });
+
+        return spike.get();
     }
 
     /**

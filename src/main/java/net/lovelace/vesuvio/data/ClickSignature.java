@@ -71,4 +71,23 @@ public final class ClickSignature {
         }
         return sb.toString();
     }
+
+    /**
+     * Parses a 128-hex-char string (produced by {@link #toHexString}) back into an 8-long
+     * signature vector. Used to round-trip stored ban fingerprints from the database.
+     *
+     * @return the parsed signature, or null if the input isn't a well-formed 128-char hex string
+     */
+    public static long[] fromHexString(String hex) {
+        if (hex == null || hex.length() != 128) return null;
+        long[] sig = new long[8];
+        try {
+            for (int i = 0; i < 8; i++) {
+                sig[i] = Long.parseUnsignedLong(hex.substring(i * 16, i * 16 + 16), 16);
+            }
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        return sig;
+    }
 }

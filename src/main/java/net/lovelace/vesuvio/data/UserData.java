@@ -22,9 +22,11 @@ public final class UserData {
     private double vl = 0.0;
     private final AtomicLong lastViolationTime = new AtomicLong(System.currentTimeMillis());
 
-    // Trust (0 - 100) & Risk (0 - 100)
-    private volatile double trustScore = 50.0;
-    private volatile double riskIndex = 10.0;
+    // Trust (0 - 100) & Risk (0 - 100). Not volatile: all reads/writes go through synchronized
+    // accessors below so concurrent adjustTrust/adjustRisk calls (many can fire per tick across
+    // click/aim/movement checks running on different virtual threads) never lose an update.
+    private double trustScore = 50.0;
+    private double riskIndex = 10.0;
 
     // Client Brand (e.g. vanilla, fabric, lunar, or cheat signature)
     private volatile String clientBrand = "unknown";
@@ -93,28 +95,28 @@ public final class UserData {
         return lastViolationTime.get();
     }
 
-    public double getTrustScore() {
+    public synchronized double getTrustScore() {
         return trustScore;
     }
 
-    public void setTrustScore(double trustScore) {
+    public synchronized void setTrustScore(double trustScore) {
         this.trustScore = Math.max(0.0, Math.min(100.0, trustScore));
     }
 
-    public void adjustTrust(double delta) {
-        setTrustScore(this.trustScore + delta);
+    public synchronized void adjustTrust(double delta) {
+        this.trustScore = Math.max(0.0, Math.min(100.0, this.trustScore + delta));
     }
 
-    public double getRiskIndex() {
+    public synchronized double getRiskIndex() {
         return riskIndex;
     }
 
-    public void setRiskIndex(double riskIndex) {
+    public synchronized void setRiskIndex(double riskIndex) {
         this.riskIndex = Math.max(0.0, Math.min(100.0, riskIndex));
     }
 
-    public void adjustRisk(double delta) {
-        setRiskIndex(this.riskIndex + delta);
+    public synchronized void adjustRisk(double delta) {
+        this.riskIndex = Math.max(0.0, Math.min(100.0, this.riskIndex + delta));
     }
 
     // Manual Suspect flag (persists across reboots and reconnects)
@@ -129,18 +131,30 @@ public final class UserData {
     }
 
     public boolean isSuspect(double highRiskThreshold) {
-        return manualSuspect || riskIndex >= highRiskThreshold || vl >= 15.0;
+        return manualSuspect || getRiskIndex() >= highRiskThreshold || getVl() >= 15.0;
     }
 
     /**
      * Dynamic sensitivity multiplier.
-     * Low trust / high risk = higher multiplier (> 1.0) -> harsher thresholds.
-     * High trust / low risk = lower multiplier (< 1.0) -> more lenient.
+     * Baseline (fresh account: trust=50, risk=10) resolves to ~1.18 - moderately harsh, never the
+     * lenient end of the range - so that out-of-the-box detection works from a player's very
+     * first session instead of giving brand-new (and therefore unproven) accounts the benefit
+     * of the doubt.
+     * Low trust / high risk push the multiplier above 1.0 (harsher thresholds).
+     * High trust / low risk (earned over time) push it below 1.0 (more lenient, fewer false positives).
+     *
+     * Callers must apply this consistently: for "flag if metric < threshold" checks, multiply the
+     * threshold by this value (higher sensitivity -> larger allowed threshold -> easier to flag).
+     * For "flag if metric > threshold" checks, divide the threshold by this value (higher sensitivity
+     * -> smaller required threshold -> easier to flag).
      */
     public double getSensitivityMultiplier() {
-        double trustFactor = (100.0 - trustScore) / 50.0; // 0.0 (trust=100) to 2.0 (trust=0)
-        double riskFactor = (riskIndex / 50.0);           // 0.0 (risk=0) to 2.0 (risk=100)
-        return Math.max(0.7, Math.min(2.2, 0.5 * (trustFactor + riskFactor)));
+        double trust = getTrustScore();
+        double risk = getRiskIndex();
+        double trustFactor = (60.0 - trust) / 60.0; // trust=50 -> +0.17 (slightly harsh), trust=100 -> -0.67 (lenient), trust=0 -> +1.0
+        double riskFactor = risk / 100.0;            // risk=10 -> +0.10, risk=100 -> +1.0, risk=0 -> 0.0
+        double sensitivity = 1.0 + (trustFactor * 0.6) + (riskFactor * 0.8);
+        return Math.max(0.6, Math.min(2.5, sensitivity));
     }
 
     public String getClientBrand() {
@@ -226,6 +240,20 @@ public final class UserData {
         this.lastMLProbability = lastMLProbability;
     }
 
+    private volatile double lastSelfLearnProbability = 0.0;
+    public double getLastSelfLearnProbability() { return lastSelfLearnProbability; }
+    public void setLastSelfLearnProbability(double v) { this.lastSelfLearnProbability = v; }
+
+    private volatile double lastAimSelfLearnProbability = 0.0;
+    public double getLastAimSelfLearnProbability() { return lastAimSelfLearnProbability; }
+    public void setLastAimSelfLearnProbability(double v) { this.lastAimSelfLearnProbability = v; }
+
+    // Ban-evasion: whether the one-time playstyle-signature-vs-banlist check has run this
+    // session yet (see BanEvasionManager / CheckPipeline#processClick).
+    private volatile boolean altCheckDone = false;
+    public boolean isAltCheckDone() { return altCheckDone; }
+    public void setAltCheckDone(boolean v) { this.altCheckDone = v; }
+
     public String getLastTriggeredCheck() {
         return lastTriggeredCheck;
     }
@@ -234,10 +262,28 @@ public final class UserData {
         this.lastTriggeredCheck = lastTriggeredCheck;
     }
 
+    // Live debug metrics (/vesuvio debug) - populated by StatisticalClickCheck on every evaluation
+    private volatile double lastStdDevMs = 0.0;
+    private volatile double lastDupRatio = 0.0;
+    private volatile double lastEntropy = 0.0;
+
+    public double getLastStdDevMs() { return lastStdDevMs; }
+    public void setLastStdDevMs(double v) { this.lastStdDevMs = v; }
+    public double getLastDupRatio() { return lastDupRatio; }
+    public void setLastDupRatio(double v) { this.lastDupRatio = v; }
+    public double getLastEntropy() { return lastEntropy; }
+    public void setLastEntropy(double v) { this.lastEntropy = v; }
+
     // Swing and Rotation Tracking for BadPackets & GCD
     private volatile long lastSwingNanos = 0L;
     private volatile float lastYaw = 0f;
     private volatile float lastPitch = 0f;
+    // Vanilla clients can send the very first attack's Interact packet before its Animation
+    // (swing) packet within the same client tick, so lastSwingNanos==0 on a player's first-ever
+    // attack this session isn't evidence of a NoSwing cheat - just no baseline yet. Exempts
+    // exactly that one attack from BadPacketsCheck.checkNoSwing(); every attack after it is
+    // judged normally, so a client that genuinely never swings is still caught starting there.
+    private volatile boolean firstAttackSeen = false;
 
     public long getLastSwingNanos() {
         return lastSwingNanos;
@@ -245,6 +291,14 @@ public final class UserData {
 
     public void setLastSwingNanos(long lastSwingNanos) {
         this.lastSwingNanos = lastSwingNanos;
+    }
+
+    public boolean isFirstAttackSeen() {
+        return firstAttackSeen;
+    }
+
+    public void setFirstAttackSeen(boolean firstAttackSeen) {
+        this.firstAttackSeen = firstAttackSeen;
     }
 
     public float getLastYaw() {
@@ -380,4 +434,16 @@ public final class UserData {
     public long getLastVelocityMillis() { return lastVelocityMillis; }
     public void recordVelocity() { this.lastVelocityMillis = System.currentTimeMillis(); }
     public boolean hasRecentVelocity() { return (System.currentTimeMillis() - lastVelocityMillis) < 1200L; }
+
+    // Vertical velocity of the previous air tick, used by FlyCheck to detect gravity that
+    // fails to accelerate the player downward (sustained-flight / hover engines).
+    private volatile double prevAirDeltaY = 0.0;
+    public double getPrevAirDeltaY() { return prevAirDeltaY; }
+    public void setPrevAirDeltaY(double value) { this.prevAirDeltaY = value; }
+
+    // Consecutive near-perfect (sub-degree) aim-lock hits during combat, tracked by KillauraAngleCheck.
+    private volatile int perfectAimStreak = 0;
+    public int getPerfectAimStreak() { return perfectAimStreak; }
+    public void incrementPerfectAimStreak() { this.perfectAimStreak++; }
+    public void resetPerfectAimStreak() { this.perfectAimStreak = 0; }
 }

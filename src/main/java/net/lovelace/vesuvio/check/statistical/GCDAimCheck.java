@@ -27,11 +27,17 @@ import java.util.Map;
  */
 public final class GCDAimCheck {
 
-    private static final float MIN_ROTATION = 1.5f;  // Minimum rotation on both axes to analyze cross-axis GCD
-    private static final float MAX_ROTATION = 30.0f; // Exclude flick/teleport/180 turns
-    private static final int STREAK_THRESHOLD = 5;   // Must fail 5 consecutive times during combat
+    // Default only - CheckPipeline passes the live config value (mechanics.gcd-aim.min-rotation)
+    // into check() below, so this is just the fallback if that's somehow skipped.
+    private static final float DEFAULT_MIN_ROTATION = 0.3f;
+    private static final float MAX_ROTATION = 55.0f; // Exclude flick/teleport/180 turns
+    private static final int STREAK_THRESHOLD = 3;   // Must fail 3 consecutive times during combat
 
     public CheckResult check(UserData data, float deltaYaw, float deltaPitch) {
+        return check(data, deltaYaw, deltaPitch, DEFAULT_MIN_ROTATION);
+    }
+
+    public CheckResult check(UserData data, float deltaYaw, float deltaPitch, float minRotation) {
         // 1. Only analyze aimbot rotations during combat interactions (not while walking/jumping around)
         if (!data.isInCombat()) {
             data.decrementGcdStreak();
@@ -39,7 +45,7 @@ public final class GCDAimCheck {
         }
 
         // 2. Both yaw and pitch must have moved significantly but within normal tracking speeds
-        if (deltaYaw < MIN_ROTATION || deltaPitch < MIN_ROTATION
+        if (deltaYaw < minRotation || deltaPitch < minRotation
                 || deltaYaw > MAX_ROTATION || deltaPitch > MAX_ROTATION) {
             return CheckResult.pass("GCDAim");
         }

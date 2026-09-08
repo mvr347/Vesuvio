@@ -46,8 +46,8 @@ public final class AutoCriticalsCheck {
 
             return CheckResult.flag(
                     "AutoCriticals",
-                    14.0,
                     0.94,
+                    14.0,
                     String.format(Locale.US, "Packet micro-hop crit exploit (ΔY: %.4fb, airTicks: %d)", deltaY, airTicks),
                     details
             );

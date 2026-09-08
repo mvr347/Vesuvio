@@ -20,10 +20,13 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import static net.lovelace.vesuvio.config.ConfigManager.DEFAULT_WEB_BEARER_TOKEN;
 
 /**
  * High-performance REST API and Web Dashboard server powered by Java 21 Virtual Threads.
@@ -80,6 +83,18 @@ public final class ApiServer implements AutoCloseable {
             return;
         }
 
+        boolean usingDefaultToken = DEFAULT_WEB_BEARER_TOKEN.equals(config.getWebBearerToken());
+        boolean publiclyBound = !"127.0.0.1".equals(config.getWebHost()) && !"localhost".equals(config.getWebHost());
+        if (usingDefaultToken && publiclyBound) {
+            LOGGER.severe("=============================================================================");
+            LOGGER.severe("[Vesuvio] SECURITY WARNING: web.bearer-token is still the default value and");
+            LOGGER.severe("[Vesuvio] web.host is bound publicly (" + config.getWebHost() + "). Anyone who can reach this");
+            LOGGER.severe("[Vesuvio] port can reset VL/Risk and hot-reload models. Change web.bearer-token");
+            LOGGER.severe("[Vesuvio] in config.yml immediately, or set web.host to 127.0.0.1 if the panel is");
+            LOGGER.severe("[Vesuvio] only accessed locally / via a reverse proxy that adds its own auth.");
+            LOGGER.severe("=============================================================================");
+        }
+
         try {
             int port = config.getWebPort();
             String host = config.getWebHost();
@@ -115,8 +130,36 @@ public final class ApiServer implements AutoCloseable {
 
     private boolean checkAuth(HttpExchange exchange) {
         String authHeader = exchange.getRequestHeaders().getFirst("Authorization");
+        if (authHeader == null) return false;
         String expected = "Bearer " + config.getWebBearerToken();
-        return authHeader != null && authHeader.trim().equals(expected);
+
+        byte[] a = authHeader.trim().getBytes(StandardCharsets.UTF_8);
+        byte[] b = expected.getBytes(StandardCharsets.UTF_8);
+        // Constant-time comparison to avoid a timing side-channel on the bearer token.
+        return MessageDigest.isEqual(a, b);
+    }
+
+    /**
+     * Reads the request body up to a hard cap to prevent an unauthenticated-adjacent handler
+     * from being used for memory-exhaustion DoS against the embedded HTTP server.
+     */
+    private static final int MAX_REQUEST_BODY_BYTES = 16 * 1024;
+
+    private String readBoundedBody(HttpExchange exchange) throws IOException {
+        try (InputStream in = exchange.getRequestBody()) {
+            byte[] buffer = new byte[8192];
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            int read;
+            int total = 0;
+            while ((read = in.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_REQUEST_BODY_BYTES) {
+                    throw new IOException("Request body exceeds " + MAX_REQUEST_BODY_BYTES + " bytes");
+                }
+                out.write(buffer, 0, read);
+            }
+            return out.toString(StandardCharsets.UTF_8);
+        }
     }
 
     private void sendCors(HttpExchange exchange) {
@@ -317,7 +360,13 @@ public final class ApiServer implements AutoCloseable {
         }
 
         String sampleId = parts[4];
-        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String body;
+        try {
+            body = readBoundedBody(exchange);
+        } catch (IOException e) {
+            sendJson(exchange, 413, "{\"error\": \"Request body too large\"}");
+            return;
+        }
         String verdict = body.contains("cheat") ? "cheat" : "legit";
 
         ActiveLearning.ReviewSample sample = selfLearning.getActiveLearning().getSample(sampleId);

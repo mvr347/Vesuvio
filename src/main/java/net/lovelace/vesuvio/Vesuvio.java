@@ -42,8 +42,10 @@ public final class Vesuvio extends JavaPlugin {
     private UserDataManager userDataManager;
     private MLManager mlManager;
     private SelfLearningManager selfLearningManager;
+    private net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
     private SmartAlertService alertService;
     private SpectateManager spectateManager;
+    private net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
     private net.lovelace.vesuvio.config.PresetManager presetManager;
     private CheckPipeline checkPipeline;
     private ApiServer apiServer;
@@ -95,15 +97,28 @@ public final class Vesuvio extends JavaPlugin {
         initModels();
 
         // 5. Self-Learning Layer
-        this.selfLearningManager = new SelfLearningManager(getDataFolder().toPath());
+        this.selfLearningManager = new SelfLearningManager(getDataFolder().toPath(), configManager);
+
+        // 5b. Fully-automatic ONNX retraining from the live dataset (see ModelAutoTrainer).
+        // Extracted/started after models are registered below so it can hot-reload into an
+        // MLManager that already knows about click_model/aim_model.
+        this.modelAutoTrainer = new net.lovelace.vesuvio.check.onnx.ModelAutoTrainer(
+                configManager,
+                selfLearningManager.getDatasetManager(),
+                mlManager,
+                getDataFolder().toPath(),
+                this::getResource
+        );
 
         // 6. Staff Services, Live Overlay & Spartan Enhancements
         this.alertService = new SmartAlertService(configManager);
         this.spectateManager = new SpectateManager(userDataManager);
+        this.debugOverlayManager = new net.lovelace.vesuvio.staff.DebugOverlayManager(userDataManager);
         var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager);
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
+        var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
 
         // 7. Check Pipeline
         this.checkPipeline = new CheckPipeline(
@@ -116,7 +131,8 @@ public final class Vesuvio extends JavaPlugin {
                 lagCompensator,
                 waveManager,
                 discordService,
-                hitboxTracker
+                hitboxTracker,
+                banEvasionManager
         );
 
         // 8. Register Packet Listeners
@@ -133,14 +149,12 @@ public final class Vesuvio extends JavaPlugin {
         PacketEvents.getAPI().getEventManager().registerListener(brandListener);
 
         // 9. Register Bukkit Events
+        var worldInteractionListener = new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager);
         Bukkit.getPluginManager().registerEvents(
-                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker),
+                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager),
                 this
         );
-        Bukkit.getPluginManager().registerEvents(
-                new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager),
-                this
-        );
+        Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
 
         // 10. Register Commands
         VesuvioCommand cmdExecutor = new VesuvioCommand(
@@ -153,7 +167,9 @@ public final class Vesuvio extends JavaPlugin {
                 alertService,
                 spectateManager,
                 waveManager,
-                presetManager
+                presetManager,
+                debugOverlayManager,
+                modelAutoTrainer
         );
         var cmd = getCommand("vesuvio");
         if (cmd != null) {
@@ -165,7 +181,8 @@ public final class Vesuvio extends JavaPlugin {
         this.loveHuntHook = new net.lovelace.vesuvio.integration.hunt.LoveHuntHook(this);
         waveManager.setLoveHuntHook(loveHuntHook);
 
-        VesuvioAPIImpl apiImpl = new VesuvioAPIImpl(userDataManager, waveManager, configManager.getHighRiskThreshold());
+        VesuvioAPIImpl apiImpl = new VesuvioAPIImpl(userDataManager, waveManager, configManager.getHighRiskThreshold(),
+                databaseManager, mlManager, selfLearningManager, configManager);
         VesuvioProvider.register(apiImpl);
         try {
             getServer().getServicesManager().register(VesuvioAPI.class, apiImpl, this, org.bukkit.plugin.ServicePriority.Normal);
@@ -194,6 +211,9 @@ public final class Vesuvio extends JavaPlugin {
         // Schedulers: Live Spectate Overlay (every 2 ticks = 100ms)
         Bukkit.getScheduler().runTaskTimer(this, spectateManager::tickOverlay, 2L, 2L);
 
+        // Schedulers: /vesuvio debug live telemetry overlay (every 2 ticks = 100ms)
+        Bukkit.getScheduler().runTaskTimer(this, debugOverlayManager::tick, 2L, 2L);
+
         // Schedulers: Lava Wave Execution
         if (configManager.isWavePunishmentEnabled()) {
             long waveTicks = configManager.getWaveIntervalMinutes() * 60L * 20L;
@@ -205,6 +225,17 @@ public final class Vesuvio extends JavaPlugin {
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
             userDataManager.performDecay(configManager.getVlDecayAmount());
         }, decayTicks, decayTicks);
+
+        // Schedulers: Automatic self-learning dataset collection (legit samples from trusted
+        // players) - runs every minute, AutoDatasetCollector internally rate-limits per player
+        // against the configured interval. Cheat samples are collected inline on ban instead.
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
+            selfLearningManager.getAutoDatasetCollector().sweepLegitSamples(userDataManager);
+        }, 20L * 60L, 20L * 60L);
+
+        // Schedulers: fully-automatic ONNX retraining (extracts the bundled Python script and,
+        // if enabled, schedules the periodic retrain cycle - see ModelAutoTrainer).
+        modelAutoTrainer.start();
 
         long elapsed = System.currentTimeMillis() - startMs;
         getLogger().info(String.format("Vesuvio 26.2 (Author: Lovelace) initialized in %dms. Hybrid 3-Layer Engine Active.", elapsed));
@@ -242,11 +273,13 @@ public final class Vesuvio extends JavaPlugin {
             }
         }
 
-        // Reach Model Scaffold
-        mlManager.registerModel(new ModelConfig("reach_model", false, "models/reach_model.onnx", 0.88, 1.2, "float_input"));
-
-        // Scaffold Model Scaffold
-        mlManager.registerModel(new ModelConfig("scaffold_model", false, "models/scaffold_model.onnx", 0.85, 1.3, "float_input"));
+        // Note: there is deliberately no "reach_model"/"scaffold_model" ONNX registration here.
+        // Nobody has trained those models yet, and evaluateAsync() is only ever called with
+        // "click_model"/"aim_model" by name - a registered-but-never-loaded entry would just be
+        // a config option that silently does nothing. Reach and Scaffold are covered today by
+        // StatisticalReachCheck and the Scaffold heuristic in WorldInteractionListener instead.
+        // Drop real .onnx files into models/ and register them here (see click/aim above) once
+        // trained models exist.
     }
 
     private void extractModelResource(String modelName, Path modelsDir) {
@@ -283,6 +316,20 @@ public final class Vesuvio extends JavaPlugin {
         // Clean up spectating staff
         if (spectateManager != null) {
             spectateManager.cleanup();
+        }
+        if (debugOverlayManager != null) {
+            debugOverlayManager.cleanup();
+        }
+
+        // Stop the automatic retrain scheduler (does not interrupt an in-flight training run's
+        // subprocess timeout handling, just stops scheduling new ones)
+        if (modelAutoTrainer != null) {
+            modelAutoTrainer.stop();
+        }
+
+        // Flush and close the persistent dataset writer
+        if (selfLearningManager != null) {
+            selfLearningManager.close();
         }
 
         // Flush and close Database connection pool

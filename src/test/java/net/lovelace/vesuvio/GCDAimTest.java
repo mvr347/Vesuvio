@@ -34,13 +34,19 @@ public class GCDAimTest {
         float deltaYaw = 7.849201f;
         float deltaPitch = 2.0000001f; // GCD collapses below 0.0008
 
-        CheckResult result = CheckResult.pass("GCDAim");
-        for (int i = 0; i < 5; i++) {
-            result = check.check(user, deltaYaw, deltaPitch);
+        // The streak threshold is intentionally short (3) so the check reacts fast; it also
+        // resets after flagging to avoid spamming, so scan the whole window for a flag rather
+        // than only inspecting the final iteration.
+        CheckResult flagged = null;
+        for (int i = 0; i < 10 && flagged == null; i++) {
+            CheckResult result = check.check(user, deltaYaw, deltaPitch);
+            if (result.isFlag()) {
+                flagged = result;
+            }
         }
 
-        assertTrue(result.isFlag(), "Aimbot with consecutive infinitesimal unquantized GCD must be flagged");
-        assertTrue(result.confidence() >= 0.90);
+        assertTrue(flagged != null, "Aimbot with consecutive infinitesimal unquantized GCD must be flagged");
+        assertTrue(flagged.confidence() >= 0.90);
     }
 
     @Test
