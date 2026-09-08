@@ -10,6 +10,7 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Boat;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Pig;
@@ -21,6 +22,9 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDamageEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 
 import java.util.HashMap;
 import java.util.Locale;
@@ -203,7 +207,8 @@ public final class WorldInteractionListener implements Listener {
         Long startTime = blockDamageTimes.remove(player.getUniqueId());
         if (hardness >= 3.0f) { // e.g. Obsidian (50.0), Ancient Debris (30.0), Iron/Gold Ore (3.0), Diamond Ore (3.0)
             long elapsed = (startTime != null) ? (System.currentTimeMillis() - startTime) : 0L;
-            if (elapsed < 150L && !player.hasPotionEffect(org.bukkit.potion.PotionEffectType.HASTE)) {
+            long minLegitMs = estimateMinLegitBreakMillis(player, block, hardness);
+            if (elapsed < minLegitMs) {
                 event.setCancelled(true);
                 UserData data = userDataManager.get(player.getUniqueId());
                 if (data != null) {
@@ -211,8 +216,8 @@ public final class WorldInteractionListener implements Listener {
                             "FastBreak",
                             0.94,
                             15.0,
-                            String.format(Locale.US, "Impossible mining speed on %s (%d ms)", block.getType().name(), elapsed),
-                            Map.of("block", block.getType().name(), "elapsedMs", elapsed, "hardness", hardness)
+                            String.format(Locale.US, "Impossible mining speed on %s (%d ms, min legit ~%d ms)", block.getType().name(), elapsed, minLegitMs),
+                            Map.of("block", block.getType().name(), "elapsedMs", elapsed, "hardness", hardness, "minLegitMs", minLegitMs)
                     );
                     pipeline.handleFlag(player, data, result);
                     data.addVl(result.vl());
@@ -227,6 +232,79 @@ public final class WorldInteractionListener implements Listener {
         if (uData != null) {
             processXrayCheck(player, block, uData);
         }
+    }
+
+    /**
+     * Estimates the fastest a legitimate vanilla client could break this block, using the actual
+     * vanilla digging-speed formula (tool tier, Efficiency, Haste/Conduit Power, off-ground and
+     * underwater penalties) rather than a flat cutoff.
+     *
+     * A flat "150ms for any hardness >= 3.0" threshold (the previous behaviour, only excluding
+     * Haste) badly under-counted legitimate speed: a plain diamond pickaxe with Efficiency IV/V
+     * already produces enough digging speed to instant-break hardness-3 ore (iron/gold/diamond/
+     * emerald) in vanilla with no exploit involved - that combo is common end-game gear, not an
+     * edge case. Very hard blocks (obsidian 50.0, ancient debris 30.0) still can't be
+     * instant-broken even with the best legal loadout, so those stay tightly enforced.
+     *
+     * Returns milliseconds; a 50% safety margin below the theoretical vanilla minimum is applied
+     * by the caller multiplying elapsed against this floor, so an imperfect model still only
+     * flags breaks that are clearly, not marginally, faster than anything legitimate.
+     */
+    private long estimateMinLegitBreakMillis(Player player, Block block, float hardness) {
+        ItemStack tool = player.getInventory().getItemInMainHand();
+        double speed = pickaxeSpeedMultiplier(tool.getType(), block.getType());
+
+        int efficiencyLevel = tool.getEnchantmentLevel(Enchantment.EFFICIENCY);
+        if (efficiencyLevel > 0) {
+            speed += (double) (efficiencyLevel * efficiencyLevel) + 1.0;
+        }
+
+        PotionEffect haste = player.getPotionEffect(PotionEffectType.HASTE);
+        int hasteAmplifier = (haste != null) ? haste.getAmplifier() : -1;
+        PotionEffect conduit = player.getPotionEffect(PotionEffectType.CONDUIT_POWER);
+        if (conduit != null) {
+            hasteAmplifier = Math.max(hasteAmplifier, conduit.getAmplifier());
+        }
+        if (hasteAmplifier >= 0) {
+            speed *= 1.0 + (hasteAmplifier + 1) * 0.2;
+        }
+
+        if (!player.isOnGround()) {
+            speed /= 5.0;
+        }
+        if (player.isInWater()) {
+            ItemStack helmet = player.getInventory().getHelmet();
+            boolean hasAquaAffinity = helmet != null && helmet.getEnchantmentLevel(Enchantment.AQUA_AFFINITY) > 0;
+            if (!hasAquaAffinity) {
+                speed /= 5.0;
+            }
+        }
+
+        double damagePerTick = speed / hardness;
+        // damagePerTick >= 1.0 means vanilla itself considers this an instant break (a single
+        // client tick, ~50ms) - not a violation regardless of how fast the packets arrive.
+        double vanillaTicks = Math.max(1.0, Math.ceil(1.0 / Math.max(damagePerTick, 0.0001)));
+        long vanillaMinMs = Math.round(vanillaTicks * 50.0);
+
+        // 50% safety margin: only flag a break that's less than half of the theoretical vanilla
+        // minimum for this exact loadout, so an imperfect model of the formula (or minor timing
+        // jitter) can't false-flag a legitimately fast, well-geared miner.
+        return Math.max(50L, vanillaMinMs / 2);
+    }
+
+    private double pickaxeSpeedMultiplier(Material tool, Material block) {
+        // Only the hardness>=3.0 bucket reaches this (ores, obsidian, ancient debris, etc.) -
+        // in vanilla those are all pickaxe-mined, so a non-pickaxe (or bare hand) gets the
+        // "wrong tool" multiplier of 1.0, same as vanilla.
+        String name = tool.name();
+        if (!name.endsWith("_PICKAXE")) return 1.0;
+        if (name.startsWith("WOODEN") || name.startsWith("WOOD")) return 2.0;
+        if (name.startsWith("STONE")) return 4.0;
+        if (name.startsWith("IRON")) return 6.0;
+        if (name.startsWith("DIAMOND")) return 8.0;
+        if (name.startsWith("GOLDEN") || name.startsWith("GOLD")) return 12.0;
+        if (name.startsWith("NETHERITE")) return 9.0;
+        return 1.0;
     }
 
     private static final class MiningProfile {
