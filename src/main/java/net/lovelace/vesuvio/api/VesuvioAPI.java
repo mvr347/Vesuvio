@@ -1,5 +1,6 @@
 package net.lovelace.vesuvio.api;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -58,4 +59,51 @@ public interface VesuvioAPI {
      * Retrieves the detected client brand of the player.
      */
     String getClientBrand(UUID uuid);
+
+    // -------------------------------------------------------------
+    // Web panel integration (e.g. LoveWebAdmin "Vesuvio" tab).
+    // These are read-only DTOs, decoupled from the internal engine representation - see
+    // WebPanelModels. Consumers should treat an empty Optional-like null / empty-list result
+    // as "no data yet", not as an error.
+    // -------------------------------------------------------------
+
+    /**
+     * Basic-tier: currently online suspects (manual flag, high risk, or non-zero high VL),
+     * sorted by Risk Index descending.
+     */
+    List<WebPanelModels.SuspectInfo> getSuspects();
+
+    /**
+     * Basic-tier: most recent punishments issued (kicks/bans/notify-staff), newest first.
+     */
+    List<WebPanelModels.PunishmentInfo> getRecentPunishments(int limit);
+
+    /**
+     * Advanced-tier: raw violation (flag) log across all checks, newest first.
+     */
+    List<WebPanelModels.ViolationInfo> getRecentViolations(int limit);
+
+    /**
+     * Advanced-tier: full biometric/detection snapshot for one player, or null if the player
+     * is not currently tracked (offline, or never generated a packet event).
+     */
+    WebPanelModels.PlayerDetail getPlayerDetail(UUID uuid);
+
+    /**
+     * Advanced-tier: engine-wide status (layer toggles, model load state, dataset/classifier
+     * size, web server state).
+     */
+    WebPanelModels.EngineStatus getEngineStatus();
+
+    /**
+     * Resets a player's Violation Level to 0. Management action - callers should gate this
+     * behind their own "manage" permission tier.
+     */
+    void resetViolationLevel(UUID uuid);
+
+    /**
+     * Sets or clears the manual suspect flag for a player (persists to Vesuvio's database).
+     * Management action - callers should gate this behind their own "manage" permission tier.
+     */
+    void setManualSuspect(UUID uuid, boolean suspect);
 }

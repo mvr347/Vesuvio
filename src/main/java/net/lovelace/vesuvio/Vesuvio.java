@@ -166,7 +166,8 @@ public final class Vesuvio extends JavaPlugin {
         this.loveHuntHook = new net.lovelace.vesuvio.integration.hunt.LoveHuntHook(this);
         waveManager.setLoveHuntHook(loveHuntHook);
 
-        VesuvioAPIImpl apiImpl = new VesuvioAPIImpl(userDataManager, waveManager, configManager.getHighRiskThreshold());
+        VesuvioAPIImpl apiImpl = new VesuvioAPIImpl(userDataManager, waveManager, configManager.getHighRiskThreshold(),
+                databaseManager, mlManager, selfLearningManager, configManager);
         VesuvioProvider.register(apiImpl);
         try {
             getServer().getServicesManager().register(VesuvioAPI.class, apiImpl, this, org.bukkit.plugin.ServicePriority.Normal);

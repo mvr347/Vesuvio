@@ -254,6 +254,63 @@ public final class DatabaseManager implements AutoCloseable {
         return 0;
     }
 
+    /**
+     * Most recent punishments, newest first. Safe to call from any thread (including the
+     * embedded web server's own thread pool) - never touches Bukkit API.
+     */
+    public java.util.List<PunishmentRecord> getRecentPunishments(int limit) {
+        java.util.List<PunishmentRecord> result = new java.util.ArrayList<>();
+        String sql = "SELECT uuid, username, action, reason, created_at FROM vesuvio_punishments ORDER BY created_at DESC LIMIT ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(new PunishmentRecord(
+                            UUID.fromString(rs.getString("uuid")),
+                            rs.getString("username"),
+                            rs.getString("action"),
+                            rs.getString("reason"),
+                            rs.getLong("created_at")
+                    ));
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to load recent punishments", e);
+        }
+        return result;
+    }
+
+    /**
+     * Most recent violations (flags), newest first.
+     */
+    public java.util.List<ViolationRecord> getRecentViolations(int limit) {
+        java.util.List<ViolationRecord> result = new java.util.ArrayList<>();
+        String sql = "SELECT uuid, username, check_name, vl, confidence, explanation, details, created_at " +
+                "FROM vesuvio_violations ORDER BY created_at DESC LIMIT ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(new ViolationRecord(
+                            UUID.fromString(rs.getString("uuid")),
+                            rs.getString("username"),
+                            rs.getString("check_name"),
+                            rs.getDouble("vl"),
+                            rs.getDouble("confidence"),
+                            rs.getString("explanation"),
+                            rs.getString("details"),
+                            rs.getLong("created_at")
+                    ));
+                }
+            }
+        } catch (SQLException e) {
+            LOGGER.log(Level.WARNING, "Failed to load recent violations", e);
+        }
+        return result;
+    }
+
     @Override
     public void close() {
         batchExecutor.shutdown();
