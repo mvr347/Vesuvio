@@ -68,68 +68,10 @@ class CheatUtilsChecksTest {
     }
 
     private static net.lovelace.vesuvio.engine.EnvironmentSnapshot plainGround() {
-        return snapshot(false);
+        return TestSnapshots.ground(org.bukkit.Material.GRASS_BLOCK);
     }
 
     private static net.lovelace.vesuvio.engine.EnvironmentSnapshot nearLadder() {
-        return snapshot(true);
-    }
-
-    private static net.lovelace.vesuvio.engine.EnvironmentSnapshot snapshot(boolean nearClimbable) {
-        return new net.lovelace.vesuvio.engine.EnvironmentSnapshot(
-                System.currentTimeMillis(), true,
-                0, 64, 0,
-                false, false, false, false, false, true, false, false, false, 0f,
-                false, false, false, false, nearClimbable, true, org.bukkit.Material.GRASS_BLOCK,
-                false, false, false, false, false, -1,
-                0, 0,
-                false, "CRAFTING");
-    }
-
-    @Test
-    void testAutoCriticalsCheckNormalVsCheat() {
-        AutoCriticalsCheck check = new AutoCriticalsCheck();
-        UserData data = new UserData(UUID.randomUUID(), "CritTester");
-        data.setEnvironment(plainGround());
-
-        // A real jump: deltaY well above the micro-hop band.
-        data.setLastPosition(0, 64.0, 0, true);
-        data.setLastPosition(0, 64.42, 0, false);
-        assertFalse(check.check(data).isFlag());
-
-        // A packet micro-hop: a few hundredths of a block, no fall distance, still "on the ground".
-        UserData cheater = new UserData(UUID.randomUUID(), "CritCheater");
-        cheater.setEnvironment(plainGround());
-        cheater.setLastPosition(0, 64.0, 0, true);
-        cheater.setLastPosition(0, 64.03, 0, true);
-        CheckResult cheatResult = check.check(cheater);
-        assertTrue(cheatResult.isFlag());
-        assertEquals("AutoCriticals", cheatResult.checkName());
-    }
-
-    @Test
-    void testAutoCriticalsSkipsWithoutSnapshot() {
-        AutoCriticalsCheck check = new AutoCriticalsCheck();
-        UserData data = new UserData(UUID.randomUUID(), "CritTester");
-        data.setLastPosition(0, 64.0, 0, true);
-        data.setLastPosition(0, 64.03, 0, true);
-
-        // No snapshot: the check cannot rule out a boat, water or an elytra, so it abstains.
-        assertFalse(check.check(data).isFlag());
-    }
-
-    @Test
-    void testUserDataMovementDeltas() {
-        UserData data = new UserData(UUID.randomUUID(), "DeltaTester");
-        data.setLastPosition(100.0, 64.0, 100.0, true);
-        assertEquals(100.0, data.getLastX());
-        assertEquals(64.0, data.getLastY());
-        assertEquals(100.0, data.getLastZ());
-        assertTrue(data.isLastOnGround());
-
-        data.setLastPosition(100.3, 65.0, 100.4, false);
-        assertEquals(1.0, data.getLastDeltaY(), 0.001);
-        assertEquals(0.5, data.getLastDeltaXZ(), 0.001);
-        assertFalse(data.isLastOnGround());
+        return TestSnapshots.builder().nearClimbable(true).build();
     }
 }

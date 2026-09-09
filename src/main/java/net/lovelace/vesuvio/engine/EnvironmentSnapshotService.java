@@ -127,6 +127,7 @@ public final class EnvironmentSnapshotService {
                 blocks.inCobweb,
                 blocks.nearClimbable,
                 blocks.solidBelow,
+                blocks.insideSolidBlock,
                 blocks.blockBelow,
                 player.hasPotionEffect(PotionEffectType.LEVITATION),
                 player.hasPotionEffect(PotionEffectType.SLOW_FALLING),
@@ -193,9 +194,19 @@ public final class EnvironmentSnapshotService {
 
         cache.blockBelow = world.getBlockAt(bx, by - 1, bz).getType();
 
-        Material feet = world.getBlockAt(bx, by, bz).getType();
-        Material head = world.getBlockAt(bx, by + 1, bz).getType();
+        org.bukkit.block.Block feetBlock = world.getBlockAt(bx, by, bz);
+        org.bukkit.block.Block headBlock = world.getBlockAt(bx, by + 1, bz);
+        Material feet = feetBlock.getType();
+        Material head = headBlock.getType();
         cache.inCobweb = feet == Material.COBWEB || head == Material.COBWEB;
+
+        // Occupying a full occluding cube is the Phase/Clip signal. Deliberately narrow:
+        // isOccluding() excludes slabs, stairs, doors, trapdoors, fences, carpets and every other
+        // partial or passable shape a player can legitimately stand inside, so only genuinely
+        // impossible positions qualify. isPassable() is checked too because a few occluding-looking
+        // blocks are walkable, and a player standing in one is not clipping.
+        cache.insideSolidBlock = (feet.isOccluding() && !feetBlock.isPassable())
+                || (head.isOccluding() && !headBlock.isPassable());
 
         // 3x3 column around the feet: is there anything that legitimately breaks a fall, and is
         // there anything the player could legitimately be climbing or bouncing on?
@@ -244,6 +255,7 @@ public final class EnvironmentSnapshotService {
         boolean solidBelow = true;
         boolean nearClimbable;
         boolean inCobweb;
+        boolean insideSolidBlock;
         Material blockBelow = Material.AIR;
     }
 }

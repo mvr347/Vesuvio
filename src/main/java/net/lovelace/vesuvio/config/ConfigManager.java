@@ -282,6 +282,14 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.invmove.enabled", true);
     }
 
+    public boolean isPhaseEnabled() {
+        return config.getBoolean("mechanics.movement.phase.enabled", true);
+    }
+
+    public boolean isBlinkEnabled() {
+        return config.getBoolean("mechanics.movement.blink.enabled", true);
+    }
+
     public boolean isVelocityEnabled() {
         return config.getBoolean("mechanics.movement.velocity.enabled", true);
     }

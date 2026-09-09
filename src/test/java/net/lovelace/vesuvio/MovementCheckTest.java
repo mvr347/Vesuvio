@@ -364,15 +364,7 @@ class MovementCheckTest {
         assertEquals(0, data.getAirTicks());
     }
 
-    /** A plain survival player standing on the given block, with nothing exempting them. */
     private static EnvironmentSnapshot ground(Material below) {
-        return new EnvironmentSnapshot(
-                System.currentTimeMillis(), true,
-                0, 64, 0,
-                false, false, false, false, false, true, false, false, false, 0f,
-                false, false, false, false, false, true, below,
-                false, false, false, false, false, -1,
-                0, 0,
-                false, "CRAFTING");
+        return TestSnapshots.ground(below);
     }
 }

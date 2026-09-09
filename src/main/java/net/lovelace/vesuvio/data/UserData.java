@@ -571,6 +571,48 @@ public final class UserData {
     public long getLastPositionNanos() { return lastPositionNanos; }
     public void setLastPositionNanos(long v) { this.lastPositionNanos = v; }
 
+    // -------------------------------------------------------------
+    // Phase / Clip (see check.movement.PhaseCheck)
+    // -------------------------------------------------------------
+    private volatile int phaseTicks = 0;
+    public int getPhaseTicks() { return phaseTicks; }
+    public void incrementPhaseTicks() { this.phaseTicks++; }
+    public void decrementPhaseTicks() { this.phaseTicks = Math.max(0, this.phaseTicks - 1); }
+    public void resetPhaseTicks() { this.phaseTicks = 0; }
+
+    // -------------------------------------------------------------
+    // Blink / lag-switch (see check.movement.BlinkCheck)
+    //
+    // Tracks EVERY movement packet, position-carrying or not: a standing vanilla client sends the
+    // position-less flying packet each tick and a full position packet only about once a second,
+    // so measuring silence on positions alone would make every idle player look like a blink.
+    // -------------------------------------------------------------
+    private volatile long lastAnyMovementNanos = 0L;
+    private volatile int blinkStreak = 0;
+
+    public long getLastAnyMovementNanos() { return lastAnyMovementNanos; }
+    public void setLastAnyMovementNanos(long v) { this.lastAnyMovementNanos = v; }
+    private volatile long lastBlinkNanos = 0L;
+
+    public int getBlinkStreak() { return blinkStreak; }
+
+    /**
+     * Records a suspicious silence and returns the number counted inside the rolling window.
+     *
+     * <p>A window, not a per-packet streak: blinks are separated by ordinary play, so decaying the
+     * count on every normal packet - as the first cut of this did - would reset it between every
+     * pair of blinks and the threshold could never be reached at all. Occurrences that fall
+     * outside the window start the count over instead.
+     */
+    public synchronized int recordBlinkOccurrence(long nowNanos, long windowNanos) {
+        if (lastBlinkNanos != 0L && (nowNanos - lastBlinkNanos) > windowNanos) {
+            this.blinkStreak = 0;
+        }
+        this.lastBlinkNanos = nowNanos;
+        return ++this.blinkStreak;
+    }
+
+
     public double getPrevHorizontalSpeed() { return prevHorizontalSpeed; }
     public void setPrevHorizontalSpeed(double v) { this.prevHorizontalSpeed = v; }
     /**

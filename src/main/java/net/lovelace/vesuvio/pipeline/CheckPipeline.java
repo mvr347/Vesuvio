@@ -65,6 +65,8 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.NoFallCheck noFallCheck = new net.lovelace.vesuvio.check.movement.NoFallCheck();
     private final net.lovelace.vesuvio.check.movement.TimerCheck timerCheck = new net.lovelace.vesuvio.check.movement.TimerCheck();
     private final net.lovelace.vesuvio.check.movement.VelocityCheck velocityCheck = new net.lovelace.vesuvio.check.movement.VelocityCheck();
+    private final net.lovelace.vesuvio.check.movement.PhaseCheck phaseCheck = new net.lovelace.vesuvio.check.movement.PhaseCheck();
+    private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck = new net.lovelace.vesuvio.check.movement.BlinkCheck();
     private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck();
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
@@ -481,6 +483,19 @@ public final class CheckPipeline {
             }
         }
 
+        // 1a. Blink runs on every movement packet, position-carrying or not - an idle vanilla
+        // client sends position-less flying packets each tick, and it is the silence of that whole
+        // stream (not of positions alone) that distinguishes a lag switch from standing still.
+        if (config.isBlinkEnabled() && transactionManager != null) {
+            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager, System.nanoTime());
+            if (blinkResult.isFlag()) {
+                data.addVl(blinkResult.vl());
+                data.adjustRisk(blinkResult.confidence() * 12.0);
+                data.setLastTriggeredCheck(blinkResult.checkName());
+                handleFlag(player, data, blinkResult);
+            }
+        }
+
         if (!hasPos) {
             return;
         }
@@ -513,6 +528,7 @@ public final class CheckPipeline {
             data.setPrevHorizontalSpeed(0.0);
             data.setSpeedPredictionDebt(0.0);
             data.clearPendingVelocity();
+            data.resetPhaseTicks();
             return;
         }
 
@@ -525,6 +541,17 @@ public final class CheckPipeline {
                 data.adjustRisk(velocityResult.confidence() * 11.0);
                 data.setLastTriggeredCheck(velocityResult.checkName());
                 handleFlag(player, data, velocityResult);
+            }
+        }
+
+        // 1c. Phase / Clip
+        if (config.isPhaseEnabled()) {
+            CheckResult phaseResult = phaseCheck.check(data, deltaX, deltaZ);
+            if (phaseResult.isFlag()) {
+                data.addVl(phaseResult.vl());
+                data.adjustRisk(phaseResult.confidence() * 12.0);
+                data.setLastTriggeredCheck(phaseResult.checkName());
+                handleFlag(player, data, phaseResult);
             }
         }
 

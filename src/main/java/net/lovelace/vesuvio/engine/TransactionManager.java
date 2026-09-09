@@ -43,7 +43,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * Author: Lovelace
  */
-public final class TransactionManager {
+// Not final: the latency accessors are overridden in tests to stand in for a live packet stream,
+// which is what lets the Blink check's "stall versus lag switch" discrimination be tested at all.
+public class TransactionManager {
 
     /**
      * Ping ids are negative so they cannot collide with the ids other plugins (or the server's own

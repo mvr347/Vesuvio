@@ -51,6 +51,7 @@ public record EnvironmentSnapshot(
         boolean inCobweb,
         boolean nearClimbable,   // ladder/vine/scaffolding/slime/honey/cobweb within reach
         boolean solidBelow,      // solid or otherwise fall-breaking block under the feet
+        boolean insideSolidBlock,// feet or head occupy a full occluding cube (Phase/Clip signal)
         Material blockBelow,     // block directly beneath the feet (ice, soul sand, slime, ...)
 
         // --- Potion effects ---
@@ -75,7 +76,7 @@ public record EnvironmentSnapshot(
             0L, false,
             0, 0, 0,
             false, false, false, false, false, false, false, false, false, 0f,
-            false, false, false, false, false, false, Material.AIR,
+            false, false, false, false, false, false, false, Material.AIR,
             false, false, false, false, false, -1,
             0, 0,
             false, "NONE");
