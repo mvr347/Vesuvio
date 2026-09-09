@@ -235,6 +235,7 @@ mechanics:
     silentaim: false        # KillauraAngleCheck's crosshair-miss sub-flag (separate from killauraangle)
     wallhit: false           # KillauraAngleCheck's attack-through-wall sub-flag
     perfectaimlock: false    # KillauraAngleCheck's sub-degree aim-lock streak sub-flag
+    staticaimtracking: false # KillauraAngleCheck's hit-rotation consistency sub-flag
     temporalconsistency: false
     banevasion: false        # Recommend keeping this visible - staff should see evasion attempts immediately
     brand-detection: true   # Анализ бренда клиента бесшумен (только снижает Trust)

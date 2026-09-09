@@ -137,6 +137,79 @@ public final class KillauraAngleCheck {
             data.resetPerfectAimStreak();
         }
 
+        // -------------------------------------------------------------
+        // 5. Hit-Rotation Consistency ("StaticAimTracking"): a real-world gap discovered while
+        // testing a killaura that never had to turn at all, because both players stood still -
+        // none of the rotation-delta checks above (or GCDAim/StatisticalAim) can see anything
+        // wrong there, since a genuinely stationary target legitimately needs zero rotation.
+        // This check instead asks: across two consecutive attacks, did the aim direction the
+        // target ACTUALLY required change meaningfully (i.e. the target moved relative to the
+        // attacker), while the attacker's OWN look yaw/pitch stayed essentially frozen, and they
+        // still landed a clean hit? A human tracking a moving target with a truly unmoving
+        // camera can't keep hitting it - that combination is the signature of aim/target
+        // assistance that recalculates the correct angle without generating the mouse input a
+        // real player tracking movement would produce. Mirrors the "hit-rotation check" technique
+        // used by GrimAC/Vulcan-class anticheats.
+        // -------------------------------------------------------------
+        float currentYaw = attacker.getLocation().getYaw();
+        float currentPitch = attacker.getLocation().getPitch();
+        float requiredYaw = requiredYaw(toTarget.getX(), toTarget.getZ());
+        float requiredPitch = requiredPitch(toTarget.getX(), toTarget.getY(), toTarget.getZ());
+
+        if (data.hasLastAttackSnapshot()) {
+            double targetAngularDelta = angularDiff(data.getLastAttackRequiredYaw(), requiredYaw)
+                    + angularDiff(data.getLastAttackRequiredPitch(), requiredPitch);
+            double playerAngularDelta = angularDiff(data.getLastAttackYaw(), currentYaw)
+                    + angularDiff(data.getLastAttackPitch(), currentPitch);
+
+            if (targetAngularDelta > 4.0 && playerAngularDelta < 0.5 && angleDegrees < 10.0) {
+                data.incrementStaticTrackingStreak();
+                if (data.getStaticTrackingStreak() >= 3) {
+                    Map<String, Object> details = new HashMap<>();
+                    details.put("targetAngularDelta", targetAngularDelta);
+                    details.put("playerAngularDelta", playerAngularDelta);
+                    details.put("angle", angleDegrees);
+                    details.put("streak", data.getStaticTrackingStreak());
+
+                    String explanation = String.format(Locale.US,
+                            "Tracked a moving target (Δ%.1f°) with a frozen camera (Δ%.2f°) while still hitting (Angle: %.1f°)",
+                            targetAngularDelta, playerAngularDelta, angleDegrees);
+
+                    data.resetStaticTrackingStreak();
+                    data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
+                    return CheckResult.flag("StaticAimTracking", 0.90, 2.3, explanation, details);
+                }
+            } else {
+                data.resetStaticTrackingStreak();
+            }
+        }
+        data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
+
         return CheckResult.pass("KillauraAngle");
+    }
+
+    /** Shortest angular distance between two degree values, wrapped to [0, 180]. */
+    public static double angularDiff(float a, float b) {
+        double raw = Math.abs(a - b) % 360.0;
+        return raw > 180.0 ? 360.0 - raw : raw;
+    }
+
+    /**
+     * Yaw (degrees) that would face a direction vector (dx, dy, dz) dead-on, matching the exact
+     * convention CraftBukkit's own Location#setDirection uses (verified against its source):
+     * yaw = atan2(-dx, dz).
+     */
+    public static float requiredYaw(double dx, double dz) {
+        if (dx == 0 && dz == 0) return 0f;
+        return (float) Math.toDegrees(Math.atan2(-dx, dz));
+    }
+
+    /** Pitch (degrees) that would face a direction vector dead-on: pitch = atan2(-dy, hypot(dx,dz)). */
+    public static float requiredPitch(double dx, double dy, double dz) {
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
+        if (dx == 0 && dz == 0) {
+            return dy > 0 ? -90f : 90f;
+        }
+        return (float) Math.toDegrees(Math.atan2(-dy, horizontal));
     }
 }

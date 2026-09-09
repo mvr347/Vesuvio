@@ -639,4 +639,35 @@ public final class UserData {
     public double getSpeedPredictionDebt() { return speedPredictionDebt; }
     public void setSpeedPredictionDebt(double v) { this.speedPredictionDebt = v; }
     public void addSpeedPredictionDebt(double v) { this.speedPredictionDebt = Math.max(0.0, this.speedPredictionDebt + v); }
+    // Hit-rotation consistency tracking (KillauraAngleCheck): snapshot of the attacker's own
+    // look yaw/pitch and the yaw/pitch that would be REQUIRED to face the target dead-on, taken
+    // at the moment of each attack. Catches a killaura variant that never needs to visibly move
+    // the camera at all (target stationary relative to attacker), which none of the aim-delta
+    // based checks (GCD/StatisticalAim) can see, since they only run when real rotation packets
+    // arrive. Comparing consecutive attacks catches the case a target-tracking cheat auto-faces
+    // a MOVING target without generating the mouse input a human tracking it would.
+    private volatile boolean hasLastAttackSnapshot = false;
+    private volatile float lastAttackYaw = 0f;
+    private volatile float lastAttackPitch = 0f;
+    private volatile float lastAttackRequiredYaw = 0f;
+    private volatile float lastAttackRequiredPitch = 0f;
+    private volatile int staticTrackingStreak = 0;
+
+    public boolean hasLastAttackSnapshot() { return hasLastAttackSnapshot; }
+    public float getLastAttackYaw() { return lastAttackYaw; }
+    public float getLastAttackPitch() { return lastAttackPitch; }
+    public float getLastAttackRequiredYaw() { return lastAttackRequiredYaw; }
+    public float getLastAttackRequiredPitch() { return lastAttackRequiredPitch; }
+
+    public void setLastAttackSnapshot(float yaw, float pitch, float requiredYaw, float requiredPitch) {
+        this.lastAttackYaw = yaw;
+        this.lastAttackPitch = pitch;
+        this.lastAttackRequiredYaw = requiredYaw;
+        this.lastAttackRequiredPitch = requiredPitch;
+        this.hasLastAttackSnapshot = true;
+    }
+
+    public int getStaticTrackingStreak() { return staticTrackingStreak; }
+    public void incrementStaticTrackingStreak() { this.staticTrackingStreak++; }
+    public void resetStaticTrackingStreak() { this.staticTrackingStreak = 0; }
 }

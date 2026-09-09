@@ -374,6 +374,16 @@ public final class CheckPipeline {
      * Evaluates attack interactions: NoSwing, InventoryAttack, and Latency-Compensated Reach.
      */
     public void processAttack(Player player, int targetEntityId, UserData data) {
+        // A downed/invulnerable attacker or target means a third-party plugin (revive/downed-
+        // state mechanics, admin god-mode, spawn protection, etc.) is actively controlling that
+        // entity's position/hitbox/state outside of normal survival rules - our combat math
+        // (reach, angle, crit timing) isn't meaningful there and shouldn't punish it. Concretely
+        // reported case: finishing off a player mid-revive (temporarily invulnerable, position
+        // still settling) false-flagged the finisher for Reach/Angle.
+        if (player.isInvulnerable()) {
+            return;
+        }
+
         // 1. BadPackets: NoSwing check
         if (config.isBadPacketsEnabled() && config.isBadPacketsNoSwing()) {
             if (!data.isFirstAttackSeen()) {
@@ -441,7 +451,12 @@ public final class CheckPipeline {
             }
         }
 
-        if (target == null || target.equals(player)) return;
+        // A downed/invulnerable target means a third-party plugin (revive mechanics, admin
+        // god-mode, spawn protection) is actively controlling its position/hitbox outside normal
+        // survival rules - reach and angle math isn't meaningful against state we don't own.
+        // Concretely reported case: finishing off a player mid-revive (temporarily invulnerable,
+        // position still settling) false-flagged the finisher for Reach/Angle.
+        if (target == null || target.equals(player) || target.isInvulnerable()) return;
 
         if (config.isReachEnabled()) {
             CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator);
@@ -468,6 +483,35 @@ public final class CheckPipeline {
      * Processes player movement packets (Fly, Speed, NoFall, Timer).
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos) {
+        // A third-party plugin controlling this player's state (revive/downed mechanics,
+        // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside normal
+        // survival physics - e.g. a "downed" player briefly falling before their temporary
+        // post-revive invulnerability kicks in. Don't run movement heuristics against state we
+        // don't own.
+        //
+        // Every per-check momentum/streak state that carries meaning across ticks is cleared here,
+        // the same way the teleport-exclusion branch below clears it - invulnerability is exactly
+        // the same "this delta cannot be trusted, nothing should carry forward from it" situation.
+        // lastAnyMovementNanos is refreshed rather than left stale so BlinkCheck does not read the
+        // whole invulnerability window as withheld-movement-on-a-healthy-connection the instant it
+        // ends: transactions keep flowing throughout regardless (TransactionManager ticks every
+        // online player unconditionally), so a stale timestamp here really would look exactly like
+        // a textbook blink.
+        if (player.isInvulnerable()) {
+            data.resetAirTicks();
+            data.resetFlyStreak();
+            data.resetSpeedStreak();
+            data.setPrevHorizontalSpeed(0.0);
+            data.setSpeedPredictionDebt(0.0);
+            data.clearPendingVelocity();
+            data.resetPhaseTicks();
+            data.setLastAnyMovementNanos(System.nanoTime());
+            if (hasPos) {
+                data.setLastPosition(x, y, z, onGround);
+            }
+            return;
+        }
+
         // Lag tolerance is computed once per movement packet and shared by every check below, so a
         // single spike cannot be counted differently by each of them.
         double lagTolerance = (lagCompensator != null) ? lagCompensator.getLagToleranceMultiplier(player) : 1.0;

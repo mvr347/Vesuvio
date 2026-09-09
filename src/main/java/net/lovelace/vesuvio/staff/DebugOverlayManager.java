@@ -62,6 +62,13 @@ public final class DebugOverlayManager {
 
             Player target = Bukkit.getPlayer(entry.getValue());
             if (target == null || !target.isOnline()) {
+                // Unlike SpectateManager's session, this isn't cleaned up by any quit-event
+                // handler (a debug watch isn't tied to teleporting/gamemode state that needs
+                // reverting), so without this the entry would sit here forever - watching a
+                // UUID that will never come back online - until the staff member manually
+                // toggles it off or disconnects themselves.
+                watchers.remove(entry.getKey());
+                staff.sendActionBar(mm.deserialize("<gray>[Vesuvio Debug] Цель отключилась от сервера.</gray>"));
                 continue;
             }
 
