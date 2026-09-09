@@ -35,6 +35,8 @@ public final class PlayerLifecycleListener implements Listener {
     private final BrandPacketListener brandListener;
     private final net.lovelace.vesuvio.engine.LagCompensator lagCompensator;
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
+    private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
+    private final net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService;
     private final WorldInteractionListener worldInteractionListener;
     private final SelfLearningManager selfLearningManager;
     private final BanEvasionManager banEvasionManager;
@@ -47,6 +49,8 @@ public final class PlayerLifecycleListener implements Listener {
                                    BrandPacketListener brandListener,
                                    net.lovelace.vesuvio.engine.LagCompensator lagCompensator,
                                    net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
+                                   net.lovelace.vesuvio.engine.TransactionManager transactionManager,
+                                   net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService,
                                    WorldInteractionListener worldInteractionListener,
                                    SelfLearningManager selfLearningManager,
                                    BanEvasionManager banEvasionManager,
@@ -58,6 +62,8 @@ public final class PlayerLifecycleListener implements Listener {
         this.brandListener = brandListener;
         this.lagCompensator = lagCompensator;
         this.hitboxTracker = hitboxTracker;
+        this.transactionManager = transactionManager;
+        this.environmentSnapshotService = environmentSnapshotService;
         this.worldInteractionListener = worldInteractionListener;
         this.selfLearningManager = selfLearningManager;
         this.banEvasionManager = banEvasionManager;
@@ -149,6 +155,12 @@ public final class PlayerLifecycleListener implements Listener {
         userDataManager.remove(player.getUniqueId());
         if (lagCompensator != null) {
             lagCompensator.remove(player.getUniqueId());
+        }
+        if (transactionManager != null) {
+            transactionManager.remove(player.getUniqueId());
+        }
+        if (environmentSnapshotService != null) {
+            environmentSnapshotService.remove(player.getUniqueId());
         }
         if (hitboxTracker != null) {
             hitboxTracker.remove(player.getUniqueId());

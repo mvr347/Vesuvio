@@ -447,6 +447,198 @@ public final class UserData {
     public void incrementPerfectAimStreak() { this.perfectAimStreak++; }
     public void resetPerfectAimStreak() { this.perfectAimStreak = 0; }
 
+    // -------------------------------------------------------------
+    // Main-thread environment snapshot (see engine.EnvironmentSnapshotService)
+    //
+    // Movement checks run on virtual threads and must never touch the Bukkit world themselves.
+    // The snapshot service publishes an immutable view here once per tick; the checks read it.
+    // -------------------------------------------------------------
+    private volatile net.lovelace.vesuvio.engine.EnvironmentSnapshot environment =
+            net.lovelace.vesuvio.engine.EnvironmentSnapshot.EMPTY;
+
+    public net.lovelace.vesuvio.engine.EnvironmentSnapshot getEnvironment() { return environment; }
+
+    public void setEnvironment(net.lovelace.vesuvio.engine.EnvironmentSnapshot environment) {
+        this.environment = environment;
+    }
+
+    // -------------------------------------------------------------
+    // Timer balance (see check.movement.TimerCheck)
+    //
+    // Credit accumulated by movement packets against real elapsed time. Positive means the client
+    // is sending its tick loop faster than wall-clock allows.
+    // -------------------------------------------------------------
+    private volatile double timerBalanceMs = 0.0;
+    private volatile long timerLastPacketNanos = 0L;
+    private volatile int timerViolationStreak = 0;
+
+    public double getTimerBalanceMs() { return timerBalanceMs; }
+    public void setTimerBalanceMs(double v) { this.timerBalanceMs = v; }
+    public long getTimerLastPacketNanos() { return timerLastPacketNanos; }
+    public void setTimerLastPacketNanos(long v) { this.timerLastPacketNanos = v; }
+    /** Smoothed real interval between movement packets, in ms. ~50 for a vanilla client. */
+    private volatile double timerIntervalEmaMs = -1.0;
+    public double getTimerIntervalEmaMs() { return timerIntervalEmaMs; }
+    public void setTimerIntervalEmaMs(double v) { this.timerIntervalEmaMs = v; }
+
+    public int getTimerViolationStreak() { return timerViolationStreak; }
+    public void incrementTimerViolationStreak() { this.timerViolationStreak++; }
+    public void decrementTimerViolationStreak() { this.timerViolationStreak = Math.max(0, this.timerViolationStreak - 1); }
+    public void resetTimerBalance() {
+        this.timerBalanceMs = 0.0;
+        this.timerLastPacketNanos = 0L;
+        this.timerViolationStreak = 0;
+        this.timerIntervalEmaMs = -1.0;
+    }
+
+    // -------------------------------------------------------------
+    // Knockback / velocity tracking (see check.movement.VelocityCheck)
+    //
+    // The exact vector the server pushed onto the player, captured from the outgoing
+    // EntityVelocity packet, plus the transaction sequence that proves the client received it.
+    // Movement is only compared against the knockback once that sequence is acknowledged, so a
+    // high-latency player is never judged on a push they had not yet been told about.
+    // -------------------------------------------------------------
+    private volatile double pendingVelX = 0.0;
+    private volatile double pendingVelY = 0.0;
+    private volatile double pendingVelZ = 0.0;
+    private volatile long pendingVelSequence = -1L;
+    private volatile boolean velocityPending = false;
+    private volatile int velocityTicksTracked = 0;
+    private volatile double velocityObservedHorizontal = 0.0;
+    private volatile int velocityViolationStreak = 0;
+    /**
+     * Whether the client has acknowledged the pending knockback yet. The tick counter is reset at
+     * that moment so the measurement window is always the same length regardless of latency -
+     * otherwise a high-ping player's window would be eaten by the time spent waiting for the ack,
+     * and they would be scored on one or two ticks of movement instead of four.
+     */
+    private volatile boolean velocityAckSeen = false;
+
+    public boolean isVelocityAckSeen() { return velocityAckSeen; }
+
+    public void markVelocityAcknowledged() {
+        this.velocityAckSeen = true;
+        this.velocityTicksTracked = 0;
+        this.velocityObservedHorizontal = 0.0;
+    }
+
+    public synchronized void recordPendingVelocity(double x, double y, double z, long sequence) {
+        this.pendingVelX = x;
+        this.pendingVelY = y;
+        this.pendingVelZ = z;
+        this.pendingVelSequence = sequence;
+        this.velocityPending = true;
+        this.velocityAckSeen = false;
+        this.velocityTicksTracked = 0;
+        this.velocityObservedHorizontal = 0.0;
+        this.lastVelocityMillis = System.currentTimeMillis();
+    }
+
+    public double getPendingVelX() { return pendingVelX; }
+    public double getPendingVelY() { return pendingVelY; }
+    public double getPendingVelZ() { return pendingVelZ; }
+    public long getPendingVelSequence() { return pendingVelSequence; }
+    public boolean isVelocityPending() { return velocityPending; }
+    public void clearPendingVelocity() {
+        this.velocityPending = false;
+        this.velocityAckSeen = false;
+        this.velocityTicksTracked = 0;
+        this.velocityObservedHorizontal = 0.0;
+    }
+
+    public int getVelocityTicksTracked() { return velocityTicksTracked; }
+    public void incrementVelocityTicksTracked() { this.velocityTicksTracked++; }
+    public double getVelocityObservedHorizontal() { return velocityObservedHorizontal; }
+    public void addVelocityObservedHorizontal(double d) { this.velocityObservedHorizontal += d; }
+    public int getVelocityViolationStreak() { return velocityViolationStreak; }
+    public void incrementVelocityViolationStreak() { this.velocityViolationStreak++; }
+    public void decrementVelocityViolationStreak() { this.velocityViolationStreak = Math.max(0, this.velocityViolationStreak - 1); }
+
+    // -------------------------------------------------------------
+    // Horizontal momentum, used by the prediction-based SpeedCheck to model friction instead of
+    // comparing against a single flat speed cap.
+    // -------------------------------------------------------------
+    private volatile double prevHorizontalSpeed = 0.0;
+    private volatile double speedPredictionDebt = 0.0;
+
+    /**
+     * Nanotime of the previous position packet, so the movement checks can tell a normal 50ms tick
+     * from a multi-tick gap (idle player resuming, post-lag flush) whose delta must not be treated
+     * as one tick of movement.
+     */
+    private volatile long lastPositionNanos = 0L;
+    public long getLastPositionNanos() { return lastPositionNanos; }
+    public void setLastPositionNanos(long v) { this.lastPositionNanos = v; }
+
+    // -------------------------------------------------------------
+    // Phase / Clip (see check.movement.PhaseCheck)
+    // -------------------------------------------------------------
+    private volatile int phaseTicks = 0;
+    public int getPhaseTicks() { return phaseTicks; }
+    public void incrementPhaseTicks() { this.phaseTicks++; }
+    public void decrementPhaseTicks() { this.phaseTicks = Math.max(0, this.phaseTicks - 1); }
+    public void resetPhaseTicks() { this.phaseTicks = 0; }
+
+    // -------------------------------------------------------------
+    // Blink / lag-switch (see check.movement.BlinkCheck)
+    //
+    // Tracks EVERY movement packet, position-carrying or not: a standing vanilla client sends the
+    // position-less flying packet each tick and a full position packet only about once a second,
+    // so measuring silence on positions alone would make every idle player look like a blink.
+    // -------------------------------------------------------------
+    private volatile long lastAnyMovementNanos = 0L;
+    private volatile int blinkStreak = 0;
+
+    public long getLastAnyMovementNanos() { return lastAnyMovementNanos; }
+    public void setLastAnyMovementNanos(long v) { this.lastAnyMovementNanos = v; }
+    private volatile long lastBlinkNanos = 0L;
+
+    public int getBlinkStreak() { return blinkStreak; }
+
+    /**
+     * Records a suspicious silence and returns the number counted inside the rolling window.
+     *
+     * <p>A window, not a per-packet streak: blinks are separated by ordinary play, so decaying the
+     * count on every normal packet - as the first cut of this did - would reset it between every
+     * pair of blinks and the threshold could never be reached at all. Occurrences that fall
+     * outside the window start the count over instead.
+     */
+    public synchronized int recordBlinkOccurrence(long nowNanos, long windowNanos) {
+        if (lastBlinkNanos != 0L && (nowNanos - lastBlinkNanos) > windowNanos) {
+            this.blinkStreak = 0;
+        }
+        this.lastBlinkNanos = nowNanos;
+        return ++this.blinkStreak;
+    }
+
+
+    public double getPrevHorizontalSpeed() { return prevHorizontalSpeed; }
+    public void setPrevHorizontalSpeed(double v) { this.prevHorizontalSpeed = v; }
+    /**
+     * Ticks since the player left the ground, as seen by the speed check specifically. The
+     * sprint-jump impulse is a one-off at the jump, not a per-air-tick bonus, so the model needs
+     * to know which airborne tick this is - granting the impulse every tick would raise the
+     * airborne prediction ceiling to several blocks per tick and make the check blind in the air.
+     */
+    private volatile int speedAirborneTicks = 0;
+    private volatile boolean speedPrevOnGround = true;
+
+    public int getSpeedAirborneTicks() { return speedAirborneTicks; }
+    public boolean isSpeedPrevOnGround() { return speedPrevOnGround; }
+
+    public void updateSpeedGroundState(boolean onGround) {
+        if (onGround) {
+            this.speedAirborneTicks = 0;
+        } else {
+            this.speedAirborneTicks++;
+        }
+        this.speedPrevOnGround = onGround;
+    }
+
+    public double getSpeedPredictionDebt() { return speedPredictionDebt; }
+    public void setSpeedPredictionDebt(double v) { this.speedPredictionDebt = v; }
+    public void addSpeedPredictionDebt(double v) { this.speedPredictionDebt = Math.max(0.0, this.speedPredictionDebt + v); }
     // Hit-rotation consistency tracking (KillauraAngleCheck): snapshot of the attacker's own
     // look yaw/pitch and the yaw/pitch that would be REQUIRED to face the target dead-on, taken
     // at the moment of each attack. Catches a killaura variant that never needs to visibly move

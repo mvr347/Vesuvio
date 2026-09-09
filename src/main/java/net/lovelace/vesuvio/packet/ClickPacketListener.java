@@ -17,6 +17,25 @@ import java.util.concurrent.Executor;
  * Ingests click intervals into GC-free ring buffers with zero allocations,
  * and asynchronously offloads checks to virtual threads.
  *
+ * <h2>Animation packets are not all combat clicks</h2>
+ * The client sends the same arm-swing Animation packet for a left-click attack, a left-click on a
+ * block (mining), and a bare left-click on air - there is nothing in the packet itself that says
+ * which one just happened. The click ring buffer exists specifically to fingerprint <em>combat</em>
+ * click rhythm (autoclicker/macro/drag-click detection), so feeding it from mining swings pollutes
+ * it with a completely different signal: holding left-click to break a block produces its own very
+ * regular, often very fast interval pattern that has nothing to do with how a player clicks in a
+ * fight, and {@link net.lovelace.vesuvio.check.statistical.StatisticalClickCheck} cannot tell the
+ * two apart once they are mixed into the same buffer.
+ *
+ * <p>Animation-driven clicks are therefore only recorded while {@link UserData#isInCombat()} is
+ * true (a rolling window kept alive by real attacks - see {@link UserData#recordCombatAction()}).
+ * That keeps genuine near-misses during a fight (swinging at a target that is briefly out of
+ * range, or an autoclicker that does not care whether it connects) in the buffer, while a player
+ * who is simply mining - not in combat at all - never feeds it. {@code setLastSwingNanos} is
+ * updated unconditionally regardless of combat state: {@link
+ * net.lovelace.vesuvio.check.protocol.BadPacketsCheck#checkNoSwing} only needs to know that some
+ * swing happened recently before an attack, mining included.
+ *
  * Author: Lovelace
  */
 public final class ClickPacketListener extends PacketListenerAbstract {
@@ -45,11 +64,16 @@ public final class ClickPacketListener extends PacketListenerAbstract {
 
             data.setLastSwingNanos(now);
 
-            // Zero-allocation buffer update on Netty thread
-            data.getClickBuffer().addClick(now, false);
+            // Only a swing that happens around real combat belongs in the click-rhythm buffer -
+            // see the class doc. A swing while mining, eating, or idly clicking air must not
+            // touch it.
+            if (data.isInCombat()) {
+                // Zero-allocation buffer update on Netty thread
+                data.getClickBuffer().addClick(now, false);
 
-            // Offload full detection pipeline to virtual thread
-            virtualExecutor.execute(() -> checkPipeline.processClick(player, data));
+                // Offload full detection pipeline to virtual thread
+                virtualExecutor.execute(() -> checkPipeline.processClick(player, data));
+            }
 
         } else if (type == PacketType.Play.Client.INTERACT_ENTITY) {
             Player player = (Player) event.getPlayer();

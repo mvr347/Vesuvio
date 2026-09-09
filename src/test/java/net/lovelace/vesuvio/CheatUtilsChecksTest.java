@@ -1,7 +1,6 @@
 package net.lovelace.vesuvio;
 
 import net.lovelace.vesuvio.check.CheckResult;
-import net.lovelace.vesuvio.check.combat.AutoCriticalsCheck;
 import net.lovelace.vesuvio.check.movement.InvMoveCheck;
 import net.lovelace.vesuvio.check.movement.StepUpCheck;
 import net.lovelace.vesuvio.data.UserData;
@@ -32,38 +31,46 @@ class CheatUtilsChecksTest {
     void testStepUpCheckNormalVsCheat() {
         StepUpCheck check = new StepUpCheck();
         UserData data = new UserData(UUID.randomUUID(), "StepTester");
+        data.setEnvironment(plainGround());
 
         // Normal slab or stair step: deltaY = 0.5b
-        CheckResult passResult = check.check(null, data, 0.50, true);
-        assertFalse(passResult.isFlag());
+        assertFalse(check.check(data, 0.50, true).isFlag());
 
         // Normal jump has onGround = false
-        CheckResult jumpResult = check.check(null, data, 1.0, false);
-        assertFalse(jumpResult.isFlag());
+        assertFalse(check.check(data, 1.0, false).isFlag());
+
+        // A full block ascended in one packet while still claiming to be on the ground is past
+        // vanilla's 0.6 step height and cannot be a jump.
+        CheckResult cheatResult = check.check(data, 1.0, true);
+        assertTrue(cheatResult.isFlag());
+        assertEquals("StepUp", cheatResult.checkName());
     }
 
     @Test
-    void testAutoCriticalsCheckNormalVsCheat() {
-        AutoCriticalsCheck check = new AutoCriticalsCheck();
-        UserData data = new UserData(UUID.randomUUID(), "CritTester");
+    void testStepUpCheckSkipsWithoutSnapshot() {
+        StepUpCheck check = new StepUpCheck();
+        UserData data = new UserData(UUID.randomUUID(), "StepTester");
 
-        // Null checks
-        CheckResult passResult = check.check(null, data);
-        assertFalse(passResult.isFlag());
+        // No main-thread snapshot: the check cannot see whether the player is on a ladder or in a
+        // boat, so it must abstain rather than flag.
+        assertFalse(check.check(data, 1.0, true).isFlag());
     }
 
     @Test
-    void testUserDataMovementDeltas() {
-        UserData data = new UserData(UUID.randomUUID(), "DeltaTester");
-        data.setLastPosition(100.0, 64.0, 100.0, true);
-        assertEquals(100.0, data.getLastX());
-        assertEquals(64.0, data.getLastY());
-        assertEquals(100.0, data.getLastZ());
-        assertTrue(data.isLastOnGround());
+    void testStepUpCheckExemptsClimbables() {
+        StepUpCheck check = new StepUpCheck();
+        UserData data = new UserData(UUID.randomUUID(), "StepTester");
+        data.setEnvironment(nearLadder());
 
-        data.setLastPosition(100.3, 65.0, 100.4, false);
-        assertEquals(1.0, data.getLastDeltaY(), 0.001);
-        assertEquals(0.5, data.getLastDeltaXZ(), 0.001);
-        assertFalse(data.isLastOnGround());
+        assertFalse(check.check(data, 1.0, true).isFlag(),
+                "a scaffolding/ladder column legitimately lifts a player past the step height");
+    }
+
+    private static net.lovelace.vesuvio.engine.EnvironmentSnapshot plainGround() {
+        return TestSnapshots.ground(org.bukkit.Material.GRASS_BLOCK);
+    }
+
+    private static net.lovelace.vesuvio.engine.EnvironmentSnapshot nearLadder() {
+        return TestSnapshots.builder().nearClimbable(true).build();
     }
 }
