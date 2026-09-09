@@ -368,6 +368,16 @@ public final class CheckPipeline {
      * Evaluates attack interactions: NoSwing, InventoryAttack, and Latency-Compensated Reach.
      */
     public void processAttack(Player player, int targetEntityId, UserData data) {
+        // A downed/invulnerable attacker or target means a third-party plugin (revive/downed-
+        // state mechanics, admin god-mode, spawn protection, etc.) is actively controlling that
+        // entity's position/hitbox/state outside of normal survival rules - our combat math
+        // (reach, angle, crit timing) isn't meaningful there and shouldn't punish it. Concretely
+        // reported case: finishing off a player mid-revive (temporarily invulnerable, position
+        // still settling) false-flagged the finisher for Reach/Angle.
+        if (player.isInvulnerable()) {
+            return;
+        }
+
         // 1. BadPackets: NoSwing check
         if (config.isBadPacketsEnabled() && config.isBadPacketsNoSwing()) {
             if (!data.isFirstAttackSeen()) {
@@ -417,7 +427,7 @@ public final class CheckPipeline {
             }
         }
 
-        if (target != null && !target.equals(player)) {
+        if (target != null && !target.equals(player) && !target.isInvulnerable()) {
             if (config.isReachEnabled()) {
                 CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator);
                 if (reachResult.isFlag()) {
@@ -444,6 +454,21 @@ public final class CheckPipeline {
      * Processes player movement packets (Fly, Speed, NoFall, Timer).
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos) {
+        // A third-party plugin controlling this player's state (revive/downed mechanics,
+        // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside
+        // normal survival physics - e.g. a "downed" player briefly falling before their
+        // temporary post-revive invulnerability kicks in. Don't run movement heuristics against
+        // state we don't own.
+        if (player.isInvulnerable()) {
+            data.resetAirTicks();
+            data.resetFlyStreak();
+            data.resetSpeedStreak();
+            if (hasPos) {
+                data.setLastPosition(x, y, z, onGround);
+            }
+            return;
+        }
+
         // 1. Timer check runs on every movement packet
         if (config.isTimerEnabled()) {
             CheckResult timerResult = timerCheck.check(player, data);
