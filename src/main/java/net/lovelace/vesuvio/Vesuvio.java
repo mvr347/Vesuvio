@@ -40,6 +40,8 @@ public final class Vesuvio extends JavaPlugin {
     private ConfigManager configManager;
     private DatabaseManager databaseManager;
     private UserDataManager userDataManager;
+    private net.lovelace.vesuvio.engine.TransactionManager transactionManager;
+    private net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService;
     private MLManager mlManager;
     private SelfLearningManager selfLearningManager;
     private net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
@@ -114,7 +116,13 @@ public final class Vesuvio extends JavaPlugin {
         this.alertService = new SmartAlertService(configManager);
         this.spectateManager = new SpectateManager(userDataManager);
         this.debugOverlayManager = new net.lovelace.vesuvio.staff.DebugOverlayManager(userDataManager);
-        var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager);
+        // Transaction-based latency: the unspoofable ping source every check's lag tolerance is
+        // scaled by, and the acknowledgement clock the Velocity check waits on.
+        this.transactionManager = new net.lovelace.vesuvio.engine.TransactionManager();
+        // Main-thread world/player snapshots, so the movement checks running on virtual threads
+        // never touch the Bukkit API themselves.
+        this.environmentSnapshotService = new net.lovelace.vesuvio.engine.EnvironmentSnapshotService(userDataManager);
+        var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager, transactionManager);
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
@@ -132,7 +140,8 @@ public final class Vesuvio extends JavaPlugin {
                 waveManager,
                 discordService,
                 hitboxTracker,
-                banEvasionManager
+                banEvasionManager,
+                transactionManager
         );
 
         // 8. Register Packet Listeners
@@ -146,12 +155,15 @@ public final class Vesuvio extends JavaPlugin {
         PacketEvents.getAPI().getEventManager().registerListener(
                 new net.lovelace.vesuvio.packet.MovementPacketListener(userDataManager, checkPipeline, virtualExecutor)
         );
+        PacketEvents.getAPI().getEventManager().registerListener(
+                new net.lovelace.vesuvio.packet.TransactionPacketListener(userDataManager, transactionManager)
+        );
         PacketEvents.getAPI().getEventManager().registerListener(brandListener);
 
         // 9. Register Bukkit Events
         var worldInteractionListener = new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager);
         Bukkit.getPluginManager().registerEvents(
-                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager),
+                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, transactionManager, environmentSnapshotService, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager),
                 this
         );
         Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
@@ -207,6 +219,17 @@ public final class Vesuvio extends JavaPlugin {
 
         // 13. Schedulers: Hitbox History Bounding Box Capture (1 tick = 50ms)
         Bukkit.getScheduler().runTaskTimer(this, hitboxTracker::recordTick, 1L, 1L);
+
+        // Schedulers: main-thread environment snapshot + transaction ping (1 tick = 50ms).
+        // These two must run on the main thread: the snapshot is the only place allowed to read
+        // the world on behalf of the async movement checks, and the transaction is the clock they
+        // measure latency against.
+        Bukkit.getScheduler().runTaskTimer(this, () -> {
+            environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers());
+            for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
+                transactionManager.tick(online);
+            }
+        }, 1L, 1L);
 
         // Schedulers: Live Spectate Overlay (every 2 ticks = 100ms)
         Bukkit.getScheduler().runTaskTimer(this, spectateManager::tickOverlay, 2L, 2L);
@@ -340,6 +363,14 @@ public final class Vesuvio extends JavaPlugin {
         // Close ONNX runtime sessions
         if (mlManager != null) {
             mlManager.close();
+        }
+
+        // Drop per-player latency and snapshot state
+        if (transactionManager != null) {
+            transactionManager.clear();
+        }
+        if (environmentSnapshotService != null) {
+            environmentSnapshotService.clear();
         }
 
         // Terminate PacketEvents

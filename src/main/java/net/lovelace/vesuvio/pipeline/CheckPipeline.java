@@ -51,6 +51,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.staff.DiscordWebhookService discordService;
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
     private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
+    private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
@@ -63,6 +64,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.SpeedCheck speedCheck = new net.lovelace.vesuvio.check.movement.SpeedCheck();
     private final net.lovelace.vesuvio.check.movement.NoFallCheck noFallCheck = new net.lovelace.vesuvio.check.movement.NoFallCheck();
     private final net.lovelace.vesuvio.check.movement.TimerCheck timerCheck = new net.lovelace.vesuvio.check.movement.TimerCheck();
+    private final net.lovelace.vesuvio.check.movement.VelocityCheck velocityCheck = new net.lovelace.vesuvio.check.movement.VelocityCheck();
     private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck();
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
@@ -78,7 +80,8 @@ public final class CheckPipeline {
                          net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
                          net.lovelace.vesuvio.staff.DiscordWebhookService discordService,
                          net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
-                         net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager) {
+                         net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager,
+                         net.lovelace.vesuvio.engine.TransactionManager transactionManager) {
         this.plugin = plugin;
         this.config = config;
         this.mlManager = mlManager;
@@ -90,6 +93,7 @@ public final class CheckPipeline {
         this.discordService = discordService;
         this.hitboxTracker = hitboxTracker;
         this.banEvasionManager = banEvasionManager;
+        this.transactionManager = transactionManager;
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
     }
 
@@ -388,7 +392,7 @@ public final class CheckPipeline {
 
         // 2. BadPackets: InventoryAttack check
         if (config.isBadPacketsEnabled() && config.isBadPacketsInventoryAttack()) {
-            CheckResult invResult = badPacketsCheck.checkInventoryAttack(player);
+            CheckResult invResult = badPacketsCheck.checkInventoryAttack(data);
             if (invResult.isFlag()) {
                 data.addVl(invResult.vl());
                 data.adjustRisk(15.0);
@@ -399,7 +403,7 @@ public final class CheckPipeline {
 
         // 2.5 Auto Criticals micro-hop check
         if (config.isAutoCriticalsEnabled()) {
-            CheckResult critResult = autoCriticalsCheck.check(player, data);
+            CheckResult critResult = autoCriticalsCheck.check(data);
             if (critResult.isFlag()) {
                 data.addVl(critResult.vl());
                 data.adjustRisk(critResult.confidence() * 10.0);
@@ -408,7 +412,25 @@ public final class CheckPipeline {
             }
         }
 
-        // 3. Statistical Latency-Compensated Reach & Combat Angle check
+        // 3. Statistical Latency-Compensated Reach & Combat Angle check.
+        //
+        // These two are the only checks that need live world and entity data: resolving the target
+        // entity id walks the surrounding chunks' entity lists, and the killaura line-of-sight test
+        // raytraces blocks. Neither is safe from the virtual thread the rest of this method runs
+        // on - both read structures the main thread mutates every tick, so off-thread they can
+        // observe a half-updated entity list or force a chunk access from the wrong thread. The
+        // work itself is small and attacks are rare compared to movement packets, so it is hopped
+        // onto the main thread rather than being approximated.
+        if (!config.isReachEnabled() && !config.isKillauraAngleEnabled()) {
+            return;
+        }
+        Bukkit.getScheduler().runTask(plugin, () -> runAttackWorldChecks(player, targetEntityId, data));
+    }
+
+    /** Main-thread half of {@link #processAttack}: everything that needs live world state. */
+    private void runAttackWorldChecks(Player player, int targetEntityId, UserData data) {
+        if (!player.isOnline()) return;
+
         org.bukkit.entity.Entity target = null;
         for (org.bukkit.entity.Entity e : player.getNearbyEntities(7.0, 7.0, 7.0)) {
             if (e.getEntityId() == targetEntityId) {
@@ -417,25 +439,25 @@ public final class CheckPipeline {
             }
         }
 
-        if (target != null && !target.equals(player)) {
-            if (config.isReachEnabled()) {
-                CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator);
-                if (reachResult.isFlag()) {
-                    data.addVl(reachResult.vl() * config.getStatisticalWeight());
-                    data.adjustRisk(reachResult.confidence() * 8.0);
-                    data.setLastTriggeredCheck(reachResult.checkName());
-                    handleFlag(player, data, reachResult);
-                }
-            }
+        if (target == null || target.equals(player)) return;
 
-            if (config.isKillauraAngleEnabled()) {
-                CheckResult angleResult = angleCheck.check(player, target, data);
-                if (angleResult.isFlag()) {
-                    data.addVl(angleResult.vl());
-                    data.adjustRisk(angleResult.confidence() * 9.0);
-                    data.setLastTriggeredCheck(angleResult.checkName());
-                    handleFlag(player, data, angleResult);
-                }
+        if (config.isReachEnabled()) {
+            CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator);
+            if (reachResult.isFlag()) {
+                data.addVl(reachResult.vl() * config.getStatisticalWeight());
+                data.adjustRisk(reachResult.confidence() * 8.0);
+                data.setLastTriggeredCheck(reachResult.checkName());
+                handleFlag(player, data, reachResult);
+            }
+        }
+
+        if (config.isKillauraAngleEnabled()) {
+            CheckResult angleResult = angleCheck.check(player, target, data);
+            if (angleResult.isFlag()) {
+                data.addVl(angleResult.vl());
+                data.adjustRisk(angleResult.confidence() * 9.0);
+                data.setLastTriggeredCheck(angleResult.checkName());
+                handleFlag(player, data, angleResult);
             }
         }
     }
@@ -444,9 +466,13 @@ public final class CheckPipeline {
      * Processes player movement packets (Fly, Speed, NoFall, Timer).
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos) {
+        // Lag tolerance is computed once per movement packet and shared by every check below, so a
+        // single spike cannot be counted differently by each of them.
+        double lagTolerance = (lagCompensator != null) ? lagCompensator.getLagToleranceMultiplier(player) : 1.0;
+
         // 1. Timer check runs on every movement packet
         if (config.isTimerEnabled()) {
-            CheckResult timerResult = timerCheck.check(player, data);
+            CheckResult timerResult = timerCheck.check(data, lagTolerance);
             if (timerResult.isFlag()) {
                 data.addVl(timerResult.vl());
                 data.adjustRisk(timerResult.confidence() * 10.0);
@@ -459,6 +485,10 @@ public final class CheckPipeline {
             return;
         }
 
+        long nowNanos = System.nanoTime();
+        long prevNanos = data.getLastPositionNanos();
+        data.setLastPositionNanos(nowNanos);
+
         if (!data.hasLastPosition()) {
             data.setLastPosition(x, y, z, onGround);
             return;
@@ -470,17 +500,37 @@ public final class CheckPipeline {
 
         data.setLastPosition(x, y, z, onGround);
 
+        // Real time this delta covers. The movement models are per-tick, so a delta spanning more
+        // than a tick (idle player resuming, post-lag burst) has to be handled differently rather
+        // than being read as one very fast tick.
+        double elapsedMs = prevNanos == 0L ? 50.0 : (nowNanos - prevNanos) / 1_000_000.0;
+
         // Exclude teleports / huge jumps
         if (Math.abs(deltaX) > 10.0 || Math.abs(deltaY) > 15.0 || Math.abs(deltaZ) > 10.0) {
             data.resetAirTicks();
             data.resetFlyStreak();
             data.resetSpeedStreak();
+            data.setPrevHorizontalSpeed(0.0);
+            data.setSpeedPredictionDebt(0.0);
+            data.clearPendingVelocity();
             return;
+        }
+
+        // 1b. Velocity / anti-knockback. Runs before the exemption-heavy checks because it is the
+        // check that validates the "recent velocity" exemption the others rely on.
+        if (config.isVelocityEnabled() && transactionManager != null) {
+            CheckResult velocityResult = velocityCheck.check(player.getUniqueId(), data, transactionManager, deltaX, deltaZ);
+            if (velocityResult.isFlag()) {
+                data.addVl(velocityResult.vl());
+                data.adjustRisk(velocityResult.confidence() * 11.0);
+                data.setLastTriggeredCheck(velocityResult.checkName());
+                handleFlag(player, data, velocityResult);
+            }
         }
 
         // 2. Fly & AirJump check
         if (config.isFlyEnabled()) {
-            CheckResult flyResult = flyCheck.check(player, data, deltaX, deltaY, deltaZ, onGround);
+            CheckResult flyResult = flyCheck.check(data, deltaX, deltaY, deltaZ, onGround);
             if (flyResult.isFlag()) {
                 data.addVl(flyResult.vl());
                 data.adjustRisk(flyResult.confidence() * 12.0);
@@ -497,7 +547,7 @@ public final class CheckPipeline {
 
         // 3. Horizontal Speed check
         if (config.isSpeedEnabled()) {
-            CheckResult speedResult = speedCheck.check(player, data, deltaX, deltaZ);
+            CheckResult speedResult = speedCheck.check(data, deltaX, deltaZ, elapsedMs, lagTolerance);
             if (speedResult.isFlag()) {
                 data.addVl(speedResult.vl());
                 data.adjustRisk(speedResult.confidence() * 8.0);
@@ -508,7 +558,7 @@ public final class CheckPipeline {
 
         // 4. NoFall check
         if (config.isNoFallEnabled()) {
-            CheckResult noFallResult = noFallCheck.check(player, data, deltaY, onGround);
+            CheckResult noFallResult = noFallCheck.check(data, deltaY, onGround);
             if (noFallResult.isFlag()) {
                 data.addVl(noFallResult.vl());
                 data.adjustRisk(noFallResult.confidence() * 10.0);
@@ -519,7 +569,7 @@ public final class CheckPipeline {
 
         // 5. StepUp check
         if (config.isStepEnabled()) {
-            CheckResult stepResult = stepUpCheck.check(player, data, deltaY, onGround);
+            CheckResult stepResult = stepUpCheck.check(data, deltaY, onGround);
             if (stepResult.isFlag()) {
                 data.addVl(stepResult.vl());
                 data.adjustRisk(stepResult.confidence() * 10.0);
@@ -530,7 +580,7 @@ public final class CheckPipeline {
 
         // 6. InvMove check
         if (config.isInvMoveEnabled()) {
-            CheckResult invMoveResult = invMoveCheck.check(player, data, deltaX, deltaZ, deltaY);
+            CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY);
             if (invMoveResult.isFlag()) {
                 data.addVl(invMoveResult.vl());
                 data.adjustRisk(invMoveResult.confidence() * 8.0);

@@ -2,9 +2,7 @@ package net.lovelace.vesuvio.check.combat;
 
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.data.UserData;
-import org.bukkit.GameMode;
-import org.bukkit.entity.Player;
-import org.bukkit.potion.PotionEffectType;
+import net.lovelace.vesuvio.engine.EnvironmentSnapshot;
 
 import java.util.HashMap;
 import java.util.Locale;
@@ -15,26 +13,32 @@ import java.util.Map;
  * Cheat clients send micro-hops (ΔY: 0.01 - 0.08) right before attack packets
  * to trick Minecraft's critical hit calculation without actually jumping.
  *
+ * <p>Player state comes from the main-thread {@link EnvironmentSnapshot}; this check runs on a
+ * virtual thread and must not query Bukkit itself.
+ *
  * Author: Lovelace
  */
 public final class AutoCriticalsCheck {
 
-    public CheckResult check(Player player, UserData data) {
-        if (player == null || data == null) return CheckResult.pass("AutoCriticals");
+    public CheckResult check(UserData data) {
+        if (data == null) return CheckResult.pass("AutoCriticals");
 
-        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) {
+        EnvironmentSnapshot env = data.getEnvironment();
+        if (!env.isFresh(System.currentTimeMillis(), 500L)) return CheckResult.pass("AutoCriticals");
+
+        if (env.isMovementExempt()) {
             return CheckResult.pass("AutoCriticals");
         }
-        if (player.isInsideVehicle() || player.isGliding() || player.isInWater() || player.isInLava()) {
+        if (env.inWater() || env.inLava() || env.swimming()) {
             return CheckResult.pass("AutoCriticals");
         }
-        if (data.hasRecentVelocity() || player.hasPotionEffect(PotionEffectType.BLINDNESS)) {
+        if (data.hasRecentVelocity() || env.blindness()) {
             return CheckResult.pass("AutoCriticals");
         }
 
         double deltaY = data.getLastDeltaY();
         int airTicks = data.getAirTicks();
-        float fallDist = player.getFallDistance();
+        float fallDist = env.fallDistance();
 
         // Normal jump has initial velocity ~0.42 b/t.
         // Auto-crits send micro-hops: 0.01 <= deltaY <= 0.0825 with 0 fall distance or <= 1 air tick

@@ -2,11 +2,7 @@ package net.lovelace.vesuvio.check.movement;
 
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.data.UserData;
-import org.bukkit.GameMode;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.entity.Player;
-import org.bukkit.potion.PotionEffectType;
+import net.lovelace.vesuvio.engine.EnvironmentSnapshot;
 
 import java.util.HashMap;
 import java.util.Locale;
@@ -20,6 +16,10 @@ import java.util.Map;
  * values the longer they stay off the ground. Fly clients that hold altitude or cancel/override
  * gravity break this invariant: deltaY stops decreasing even though airTicks keeps climbing.
  *
+ * <p>All world and player state comes from the main-thread {@link EnvironmentSnapshot} rather than
+ * live Bukkit calls, because this check runs on a virtual thread (see
+ * {@code engine.EnvironmentSnapshotService} for why that distinction matters).
+ *
  * Author: Lovelace
  */
 public final class FlyCheck {
@@ -30,17 +30,25 @@ public final class FlyCheck {
     private static final int HOVER_AIR_TICKS = 8;
     private static final double GRAVITY_TOLERANCE = 0.02; // allowed slack in gravity comparison
 
-    public CheckResult check(Player player, UserData data, double deltaX, double deltaY, double deltaZ, boolean onGround) {
-        if (player == null || data == null) return CheckResult.pass("Fly");
+    public CheckResult check(UserData data, double deltaX, double deltaY, double deltaZ, boolean onGround) {
+        if (data == null) return CheckResult.pass("Fly");
+
+        EnvironmentSnapshot env = data.getEnvironment();
+        // Without a fresh snapshot we cannot tell air from water, a ladder from a wall, or a
+        // creative flight from a hack. Skip rather than guess.
+        if (!env.isFresh(System.currentTimeMillis(), 500L)) {
+            data.setPrevAirDeltaY(deltaY);
+            return CheckResult.pass("Fly");
+        }
 
         // Bypasses
-        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) {
+        if (env.exemptGameMode()) {
             data.resetAirTicks();
             data.resetFlyStreak();
             data.setPrevAirDeltaY(0.0);
             return CheckResult.pass("Fly");
         }
-        if (player.getAllowFlight() || player.isFlying() || player.isGliding() || player.isInsideVehicle()) {
+        if (env.isMovementExempt()) {
             data.resetAirTicks();
             data.resetFlyStreak();
             data.setPrevAirDeltaY(0.0);
@@ -51,28 +59,26 @@ public final class FlyCheck {
             data.setPrevAirDeltaY(deltaY);
             return CheckResult.pass("Fly");
         }
-        if (player.hasPotionEffect(PotionEffectType.LEVITATION) || player.hasPotionEffect(PotionEffectType.SLOW_FALLING)) {
+        if (env.levitation() || env.slowFalling()) {
             data.resetFlyStreak();
             data.setPrevAirDeltaY(deltaY);
             return CheckResult.pass("Fly");
         }
 
-        Location loc = player.getLocation();
-
-        // Check if player is in liquid
-        if (player.isInWater() || player.isInLava()) {
+        // Liquids float the player and break the gravity invariant legitimately.
+        if (env.inWater() || env.inLava() || env.swimming()) {
             data.resetAirTicks();
             data.resetFlyStreak();
             data.setPrevAirDeltaY(0.0);
             return CheckResult.pass("Fly");
         }
 
-        // Check climbing state (ladder/vine/scaffolding) and cobweb - these legitimately break
-        // the gravity invariant. Deliberately NOT a "any solid block nearby" scan: that used to
-        // exempt the whole check within 1 block of any wall/floor/ceiling, which is most of a
-        // built server (bases, cities, mob farms) - a real Fly hack flown next to any structure
-        // went completely undetected. Water/lava are already excluded above.
-        if (player.isClimbing() || isInCobweb(loc) || onGround) {
+        // Climbing state (ladder/vine/scaffolding) and cobweb also legitimately break the gravity
+        // invariant. Deliberately NOT a "any solid block nearby" scan: that used to exempt the
+        // whole check within 1 block of any wall/floor/ceiling, which is most of a built server
+        // (bases, cities, mob farms) - a real Fly hack flown next to any structure went completely
+        // undetected.
+        if (env.climbing() || env.inCobweb() || onGround) {
             data.resetAirTicks();
             data.decrementFlyStreak();
             data.setPrevAirDeltaY(0.0);
@@ -83,7 +89,7 @@ public final class FlyCheck {
         data.incrementAirTicks();
         int airTicks = data.getAirTicks();
 
-        boolean hasJumpBoost = player.hasPotionEffect(PotionEffectType.JUMP_BOOST);
+        boolean hasJumpBoost = env.jumpBoost();
 
         // -----------------------------------------------------------------
         // Pattern 1: Sustained Flight - gravity never wins over 12+ air ticks
@@ -153,12 +159,5 @@ public final class FlyCheck {
 
         data.setPrevAirDeltaY(deltaY);
         return CheckResult.pass("Fly");
-    }
-
-    private boolean isInCobweb(Location loc) {
-        if (loc.getWorld() == null) return false;
-        Material feet = loc.getBlock().getType();
-        Material head = loc.clone().add(0, 1, 0).getBlock().getType();
-        return feet == Material.COBWEB || head == Material.COBWEB;
     }
 }

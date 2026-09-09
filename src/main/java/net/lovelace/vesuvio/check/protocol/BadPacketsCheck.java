@@ -1,8 +1,6 @@
 package net.lovelace.vesuvio.check.protocol;
 
 import net.lovelace.vesuvio.check.CheckResult;
-import org.bukkit.entity.Player;
-import org.bukkit.event.inventory.InventoryType;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -40,17 +38,22 @@ public final class BadPacketsCheck {
         return CheckResult.pass("BadPackets");
     }
 
-    public CheckResult checkInventoryAttack(Player player) {
-        if (player == null) return CheckResult.pass("BadPackets");
+    /**
+     * Reads the open container from the main-thread environment snapshot rather than calling
+     * {@code Player#getOpenInventory()} here: this runs on a virtual thread, where that call can
+     * observe a view mid-swap or race the main thread's own inventory handling.
+     */
+    public CheckResult checkInventoryAttack(net.lovelace.vesuvio.data.UserData data) {
+        if (data == null) return CheckResult.pass("BadPackets");
 
-        try {
-            var openInv = player.getOpenInventory();
-            if (openInv != null && openInv.getType() != InventoryType.CRAFTING) {
-                Map<String, Object> details = Collections.singletonMap("containerType", openInv.getType().name());
-                return CheckResult.flag("BadPackets", 0.95, 2.5,
-                        "Attacked entity while container/inventory was open", details);
-            }
-        } catch (Throwable ignored) {}
+        net.lovelace.vesuvio.engine.EnvironmentSnapshot env = data.getEnvironment();
+        if (!env.isFresh(System.currentTimeMillis(), 500L)) return CheckResult.pass("BadPackets");
+
+        if (env.containerOpen()) {
+            Map<String, Object> details = Collections.singletonMap("containerType", env.openInventoryType());
+            return CheckResult.flag("BadPackets", 0.95, 2.5,
+                    "Attacked entity while container/inventory was open", details);
+        }
 
         return CheckResult.pass("BadPackets");
     }

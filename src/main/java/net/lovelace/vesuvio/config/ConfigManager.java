@@ -282,6 +282,24 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.invmove.enabled", true);
     }
 
+    public boolean isVelocityEnabled() {
+        return config.getBoolean("mechanics.movement.velocity.enabled", true);
+    }
+
+    /**
+     * Whether the latency compensator should prefer transaction round-trip times over Bukkit's
+     * KeepAlive-derived ping. Configurable only so an operator can fall back if a proxy or
+     * protocol-rewriting plugin interferes with the transaction packets.
+     */
+    public boolean isTransactionLatencyEnabled() {
+        return config.getBoolean("mechanics.latency.transactions.enabled", true);
+    }
+
+    /** Unanswered-transaction age (ms) past which a client is treated as withholding acks. */
+    public double getTransactionStallMs() {
+        return config.getDouble("mechanics.latency.transactions.stall-ms", 1200.0);
+    }
+
     public boolean isBanEvasionEnabled() {
         return config.getBoolean("mechanics.ban-evasion.enabled", true);
     }
