@@ -19,6 +19,17 @@ public final class UserDataManager {
     }
 
     public UserData getOrCreate(Player player) {
+        // Packet listeners run off the main thread (Netty/virtual threads) and can process a
+        // packet that was already queued before the player disconnected, slightly after
+        // PlayerLifecycleListener#onQuit already called remove(uuid) for them. Since onQuit
+        // won't fire again for this UUID, blindly computeIfAbsent-ing here would resurrect an
+        // entry that then leaks for the rest of the server's uptime. If they're already gone,
+        // hand back a throwaway UserData (correct enough for that one dead packet's processing)
+        // instead of storing anything.
+        if (!player.isOnline()) {
+            UserData existing = users.get(player.getUniqueId());
+            return existing != null ? existing : new UserData(player.getUniqueId(), player.getName());
+        }
         return getOrCreate(player.getUniqueId(), player.getName());
     }
 

@@ -6,6 +6,8 @@ import net.lovelace.vesuvio.config.ConfigManager;
 
 import java.nio.file.Path;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -167,12 +169,26 @@ public final class DatabaseManager implements AutoCloseable {
         }
     }
 
+    // Safety valve, not a normal-operation limit: flushBatch() re-queues a failed batch on
+    // error (see below) so a transient DB error doesn't lose data, but that means a *sustained*
+    // outage would otherwise let these queues grow without bound (retried failures piling up on
+    // top of newly incoming flags) for as long as the DB stays down. Capping and dropping the
+    // oldest is the standard tradeoff once backlog gets this large - by that point the DB has
+    // been unreachable long enough that something else needs attention anyway.
+    private static final int MAX_QUEUE_SIZE = 20_000;
+
     public void logViolationAsync(ViolationRecord record) {
         violationQueue.add(record);
+        while (violationQueue.size() > MAX_QUEUE_SIZE) {
+            violationQueue.poll();
+        }
     }
 
     public void logPunishmentAsync(PunishmentRecord record) {
         punishmentQueue.add(record);
+        while (punishmentQueue.size() > MAX_QUEUE_SIZE) {
+            punishmentQueue.poll();
+        }
     }
 
     public void savePlayerSync(UUID uuid, String username, double trust, double risk, String brand, boolean isSuspect) {
@@ -212,45 +228,53 @@ public final class DatabaseManager implements AutoCloseable {
     public void flushBatch() {
         if (violationQueue.isEmpty() && punishmentQueue.isEmpty()) return;
 
+        // Drain into local batches first rather than polling destructively inside the same try
+        // block as the DB write - if the connection/commit throws (DB momentarily locked, disk
+        // full, network blip on Postgres), records already poll()'d before the failure were
+        // gone for good, with no retry. Re-queue whatever didn't make it in so the next
+        // scheduled flush (5s later) picks it back up instead of silently losing it.
+        List<ViolationRecord> violationBatch = new ArrayList<>();
+        ViolationRecord r;
+        while ((r = violationQueue.poll()) != null && violationBatch.size() < 200) {
+            violationBatch.add(r);
+        }
+        List<PunishmentRecord> punishmentBatch = new ArrayList<>();
+        PunishmentRecord pr;
+        while ((pr = punishmentQueue.poll()) != null && punishmentBatch.size() < 200) {
+            punishmentBatch.add(pr);
+        }
+
         try (Connection conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
 
-            // Flush violations
-            if (!violationQueue.isEmpty()) {
+            if (!violationBatch.isEmpty()) {
                 String vSql = "INSERT INTO vesuvio_violations (uuid, username, check_name, vl, confidence, explanation, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
                 try (PreparedStatement ps = conn.prepareStatement(vSql)) {
-                    ViolationRecord r;
-                    int count = 0;
-                    while ((r = violationQueue.poll()) != null && count < 200) {
-                        ps.setString(1, r.uuid().toString());
-                        ps.setString(2, r.username());
-                        ps.setString(3, r.checkName());
-                        ps.setDouble(4, r.vl());
-                        ps.setDouble(5, r.confidence());
-                        ps.setString(6, r.explanation());
-                        ps.setString(7, r.detailsJson());
-                        ps.setLong(8, r.timestamp());
+                    for (ViolationRecord rec : violationBatch) {
+                        ps.setString(1, rec.uuid().toString());
+                        ps.setString(2, rec.username());
+                        ps.setString(3, rec.checkName());
+                        ps.setDouble(4, rec.vl());
+                        ps.setDouble(5, rec.confidence());
+                        ps.setString(6, rec.explanation());
+                        ps.setString(7, rec.detailsJson());
+                        ps.setLong(8, rec.timestamp());
                         ps.addBatch();
-                        count++;
                     }
                     ps.executeBatch();
                 }
             }
 
-            // Flush punishments
-            if (!punishmentQueue.isEmpty()) {
+            if (!punishmentBatch.isEmpty()) {
                 String pSql = "INSERT INTO vesuvio_punishments (uuid, username, action, reason, created_at) VALUES (?, ?, ?, ?, ?)";
                 try (PreparedStatement ps = conn.prepareStatement(pSql)) {
-                    PunishmentRecord pr;
-                    int count = 0;
-                    while ((pr = punishmentQueue.poll()) != null && count < 200) {
-                        ps.setString(1, pr.uuid().toString());
-                        ps.setString(2, pr.username());
-                        ps.setString(3, pr.action());
-                        ps.setString(4, pr.reason());
-                        ps.setLong(5, pr.timestamp());
+                    for (PunishmentRecord rec : punishmentBatch) {
+                        ps.setString(1, rec.uuid().toString());
+                        ps.setString(2, rec.username());
+                        ps.setString(3, rec.action());
+                        ps.setString(4, rec.reason());
+                        ps.setLong(5, rec.timestamp());
                         ps.addBatch();
-                        count++;
                     }
                     ps.executeBatch();
                 }
@@ -258,7 +282,10 @@ public final class DatabaseManager implements AutoCloseable {
 
             conn.commit();
         } catch (SQLException e) {
-            LOGGER.log(Level.SEVERE, "Error committing batch logs to database", e);
+            LOGGER.log(Level.SEVERE, "Error committing batch logs to database - re-queuing "
+                    + violationBatch.size() + " violation(s) and " + punishmentBatch.size() + " punishment(s) for retry", e);
+            violationQueue.addAll(violationBatch);
+            punishmentQueue.addAll(punishmentBatch);
         }
     }
 
@@ -415,7 +442,14 @@ public final class DatabaseManager implements AutoCloseable {
             if (!batchExecutor.awaitTermination(3, TimeUnit.SECONDS)) {
                 batchExecutor.shutdownNow();
             }
-        } catch (InterruptedException ignored) {}
+        } catch (InterruptedException e) {
+            // Swallowing this without restoring the flag would silently erase the fact that
+            // this thread was asked to stop - anything checking Thread.interrupted() further up
+            // the shutdown path (onDisable) would wrongly see a clean state. Cancel the batcher
+            // outright since we can no longer wait for it to finish on its own.
+            batchExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
 
         flushBatch();
 
