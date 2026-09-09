@@ -86,7 +86,14 @@ public final class SpectateManager {
             Player target = Bukkit.getPlayer(entry.getValue());
 
             if (staff == null || !staff.isOnline()) {
+                // Staff disconnected while spectating without a clean stopSpectating() call
+                // (normally PlayerQuitEvent handles that, but this is a fallback for whatever
+                // edge case let a stale entry survive to this tick). Must clear all three maps,
+                // not just activeSpectators - activeBossBars/originalGameModes would otherwise
+                // leak one entry per such disconnect for the rest of the server's uptime.
                 activeSpectators.remove(entry.getKey());
+                activeBossBars.remove(entry.getKey());
+                originalGameModes.remove(entry.getKey());
                 continue;
             }
 

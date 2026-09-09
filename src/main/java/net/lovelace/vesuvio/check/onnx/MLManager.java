@@ -49,9 +49,11 @@ public final class MLManager implements AutoCloseable {
             return;
         }
 
-        OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-        opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-        OrtSession session = env.createSession(path.toString(), opts);
+        OrtSession session;
+        try (OrtSession.SessionOptions opts = new OrtSession.SessionOptions()) {
+            opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+            session = env.createSession(path.toString(), opts);
+        }
 
         OrtSession old = sessions.put(name, session);
         if (old != null) {
