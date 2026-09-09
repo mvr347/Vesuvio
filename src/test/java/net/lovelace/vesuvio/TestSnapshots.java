@@ -32,12 +32,16 @@ final class TestSnapshots {
         private boolean nearClimbable = false;
         private boolean insideSolidBlock = false;
         private boolean sprinting = true;
+        private boolean jumpBoost = false;
+        private double jumpStrength = 0.42; // vanilla Attribute.JUMP_STRENGTH default
 
         Builder blockBelow(Material m) { this.blockBelow = m; return this; }
         Builder solidBelow(boolean v) { this.solidBelow = v; return this; }
         Builder nearClimbable(boolean v) { this.nearClimbable = v; return this; }
         Builder insideSolidBlock(boolean v) { this.insideSolidBlock = v; return this; }
         Builder sprinting(boolean v) { this.sprinting = v; return this; }
+        Builder jumpBoost(boolean v) { this.jumpBoost = v; return this; }
+        Builder jumpStrength(double v) { this.jumpStrength = v; return this; }
 
         EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
@@ -52,9 +56,11 @@ final class TestSnapshots {
                     false, false, false, false,
                     nearClimbable, solidBelow, insideSolidBlock, blockBelow,
                     // levitation, slowFalling, jumpBoost, blindness, dolphinsGrace, speedAmplifier
-                    false, false, false, false, false, -1,
+                    false, false, jumpBoost, false, false, -1,
                     // depthStrider, soulSpeed
                     0, 0,
+                    // jumpStrength
+                    jumpStrength,
                     // containerOpen, openInventoryType
                     false, "CRAFTING");
         }

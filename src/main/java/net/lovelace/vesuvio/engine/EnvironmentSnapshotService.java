@@ -6,6 +6,8 @@ import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryType;
@@ -42,6 +44,9 @@ public final class EnvironmentSnapshotService {
 
     /** Force a block re-scan at least this often, even for a player who has not moved. */
     private static final int BLOCK_REFRESH_TICKS = 10;
+
+    /** Fallback used only if the JUMP_STRENGTH attribute is somehow unavailable. */
+    private static final double VANILLA_JUMP_STRENGTH = 0.42;
 
     private final UserDataManager userDataManager;
 
@@ -98,6 +103,25 @@ public final class EnvironmentSnapshotService {
             soulSpeed = boots.getEnchantmentLevel(Enchantment.SOUL_SPEED);
         }
 
+        // Live jump-strength attribute. This is the SAME value the vanilla server itself uses to
+        // decide how hard a jump pushes the player up, and it already has any item's
+        // AttributeModifier folded in - a custom sword/boots/armor piece granting extra jump
+        // height via the vanilla `minecraft:attribute_modifiers` item component (or one applied by
+        // another plugin) shows up here automatically, the same way a weapon's damage modifier
+        // shows up in Attribute.ATTACK_DAMAGE. Reading the live value (not the base value) is what
+        // lets the movement checks stop assuming everyone jumps at exactly the vanilla 0.42 and
+        // instead judge each player against what their own gear actually entitles them to.
+        double jumpStrength = VANILLA_JUMP_STRENGTH;
+        try {
+            AttributeInstance jumpAttr = player.getAttribute(Attribute.JUMP_STRENGTH);
+            if (jumpAttr != null) {
+                jumpStrength = jumpAttr.getValue();
+            }
+        } catch (Throwable ignored) {
+            // Attribute unregistered or the API rejects the call for this entity type - fall back
+            // to the vanilla constant rather than let a jump check see a bogus 0.
+        }
+
         InventoryType openType = InventoryType.CRAFTING;
         try {
             openType = player.getOpenInventory().getType();
@@ -137,6 +161,7 @@ public final class EnvironmentSnapshotService {
                 speedAmplifier,
                 depthStrider,
                 soulSpeed,
+                jumpStrength,
                 containerOpen,
                 openType.name());
     }

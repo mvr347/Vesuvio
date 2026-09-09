@@ -66,6 +66,10 @@ public record EnvironmentSnapshot(
         int depthStrider,
         int soulSpeed,
 
+        // --- Live attributes (base value + any equipped item's AttributeModifier, resolved by
+        // the server exactly like it resolves attack damage or movement speed from gear) ---
+        double jumpStrength, // Attribute.JUMP_STRENGTH; vanilla default ~0.42
+
         // --- Inventory ---
         boolean containerOpen,   // a real container GUI, not the always-open 2x2 crafting view
         String openInventoryType
@@ -79,6 +83,7 @@ public record EnvironmentSnapshot(
             false, false, false, false, false, false, false, Material.AIR,
             false, false, false, false, false, -1,
             0, 0,
+            0.42,
             false, "NONE");
 
     /**

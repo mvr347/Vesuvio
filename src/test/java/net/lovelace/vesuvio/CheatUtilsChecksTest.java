@@ -1,7 +1,6 @@
 package net.lovelace.vesuvio;
 
 import net.lovelace.vesuvio.check.CheckResult;
-import net.lovelace.vesuvio.check.combat.AutoCriticalsCheck;
 import net.lovelace.vesuvio.check.movement.InvMoveCheck;
 import net.lovelace.vesuvio.check.movement.StepUpCheck;
 import net.lovelace.vesuvio.data.UserData;
