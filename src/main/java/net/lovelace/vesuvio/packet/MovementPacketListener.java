@@ -7,6 +7,7 @@ import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerPosition;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerPositionAndRotation;
+import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerRotation;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
 import net.lovelace.vesuvio.pipeline.CheckPipeline;
@@ -61,6 +62,16 @@ public final class MovementPacketListener extends PacketListenerAbstract {
             hasPos = true;
         } else if (type == PacketType.Play.Client.PLAYER_FLYING) {
             WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
+            onGround = wrapper.isOnGround();
+            hasPos = false;
+        } else if (type == PacketType.Play.Client.PLAYER_ROTATION) {
+            // Rotation-only packet: sent every tick a player turns their camera without moving
+            // their feet - which is most of the time a player is "standing still". Without this
+            // branch these ticks fell into the else-return below and never refreshed
+            // lastAnyMovementNanos, so BlinkCheck saw the movement stream as withheld (a "silence")
+            // purely from looking around while stationary, and false-flagged Blink on a clean
+            // client that never actually stopped sending packets.
+            WrapperPlayClientPlayerRotation wrapper = new WrapperPlayClientPlayerRotation(event);
             onGround = wrapper.isOnGround();
             hasPos = false;
         } else {
