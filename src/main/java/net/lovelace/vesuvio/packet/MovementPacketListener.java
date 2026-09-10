@@ -88,7 +88,8 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         final double finalZ = z;
         final boolean finalOnGround = onGround;
         final boolean finalHasPos = hasPos;
+        final long packetReceiptNanos = System.nanoTime();
 
-        virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos));
+        virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos));
     }
 }

@@ -482,7 +482,7 @@ public final class CheckPipeline {
     /**
      * Processes player movement packets (Fly, Speed, NoFall, Timer).
      */
-    public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos) {
+    public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos) {
         // A third-party plugin controlling this player's state (revive/downed mechanics,
         // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside normal
         // survival physics - e.g. a "downed" player briefly falling before their temporary
@@ -531,7 +531,7 @@ public final class CheckPipeline {
         // client sends position-less flying packets each tick, and it is the silence of that whole
         // stream (not of positions alone) that distinguishes a lag switch from standing still.
         if (config.isBlinkEnabled() && transactionManager != null) {
-            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager, System.nanoTime());
+            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager, packetReceiptNanos);
             if (blinkResult.isFlag()) {
                 data.addVl(blinkResult.vl());
                 data.adjustRisk(blinkResult.confidence() * 12.0);
