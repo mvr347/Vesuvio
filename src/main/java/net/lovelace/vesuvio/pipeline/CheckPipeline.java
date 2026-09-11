@@ -505,7 +505,7 @@ public final class CheckPipeline {
             data.setSpeedPredictionDebt(0.0);
             data.clearPendingVelocity();
             data.resetPhaseTicks();
-            data.setLastAnyMovementNanos(System.nanoTime());
+            data.setLastAnyMovementNanos(packetReceiptNanos);
             if (hasPos) {
                 data.setLastPosition(x, y, z, onGround);
             }
