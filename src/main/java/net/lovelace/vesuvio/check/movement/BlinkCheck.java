@@ -32,21 +32,28 @@ import java.util.UUID;
  * under the client's control.
  *
  * <h2>Measuring the right stream</h2>
- * Deliberately driven by <em>all</em> movement packets, not just those carrying a position. A
- * vanilla client that is standing still sends the position-less "flying" packet every tick and a
- * full position packet only about once a second, so keying off position packets alone would make
- * every idle player look like a blink. A blink suppresses the whole flying stream, which is what
- * this measures.
+ * Deliberately driven by <em>all</em> movement packets, not just those carrying a position.
+ * Vanilla's own {@code LocalPlayer.sendPosition()} only emits a packet when position/rotation
+ * moved past a tiny epsilon <em>or</em> a 20-tick ("positionReminder") counter rolls over - a
+ * player who is perfectly stationary (no position delta, no camera movement, no on-ground change)
+ * sends <strong>nothing at all</strong> for up to 20 ticks (~1000ms at 20 TPS), then a single
+ * reminder packet. That is normal, healthy-connection silence, not a withheld stream - the
+ * silence threshold below has to sit comfortably above it or every AFK-but-present player reads
+ * as a blink. A blink suppresses packets far longer than one vanilla reminder interval, which is
+ * what distinguishes the two.
  *
  * Author: Lovelace
  */
 public final class BlinkCheck {
 
     /**
-     * Silence longer than this is not ordinary scheduling jitter. Six ticks is comfortably past
-     * any single skipped tick while still being far shorter than a blink worth using.
+     * Vanilla's positionReminder rolls over every 20 ticks (~1000ms at 20 TPS) when a player is
+     * completely stationary, producing a real packet gap of up to that long with a perfectly
+     * healthy connection. The threshold sits well above that ceiling - with margin for server tick
+     * jitter and network delivery delay - so normal idle play never reads as a blink, while still
+     * being far shorter than a blink worth using.
      */
-    private static final double MIN_SILENCE_MS = 300.0;
+    private static final double MIN_SILENCE_MS = 1500.0;
 
     /**
      * The connection counts as healthy through the silence only if the measured round-trip is well
