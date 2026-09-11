@@ -43,38 +43,45 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         double z = 0;
         boolean onGround = false;
         boolean hasPos = false;
+        String packetName = "UNKNOWN";
 
-        if (type == PacketType.Play.Client.PLAYER_POSITION) {
-            WrapperPlayClientPlayerPosition wrapper = new WrapperPlayClientPlayerPosition(event);
-            var pos = wrapper.getPosition();
-            x = pos.getX();
-            y = pos.getY();
-            z = pos.getZ();
-            onGround = wrapper.isOnGround();
-            hasPos = true;
-        } else if (type == PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) {
-            WrapperPlayClientPlayerPositionAndRotation wrapper = new WrapperPlayClientPlayerPositionAndRotation(event);
-            var pos = wrapper.getPosition();
-            x = pos.getX();
-            y = pos.getY();
-            z = pos.getZ();
-            onGround = wrapper.isOnGround();
-            hasPos = true;
-        } else if (type == PacketType.Play.Client.PLAYER_FLYING) {
-            WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
-            onGround = wrapper.isOnGround();
-            hasPos = false;
-        } else if (type == PacketType.Play.Client.PLAYER_ROTATION) {
-            // Rotation-only packet: sent every tick a player turns their camera without moving
-            // their feet - which is most of the time a player is "standing still". Without this
-            // branch these ticks fell into the else-return below and never refreshed
-            // lastAnyMovementNanos, so BlinkCheck saw the movement stream as withheld (a "silence")
-            // purely from looking around while stationary, and false-flagged Blink on a clean
-            // client that never actually stopped sending packets.
-            WrapperPlayClientPlayerRotation wrapper = new WrapperPlayClientPlayerRotation(event);
-            onGround = wrapper.isOnGround();
-            hasPos = false;
-        } else {
+        try {
+            if (type == PacketType.Play.Client.PLAYER_POSITION) {
+                packetName = "PLAYER_POSITION";
+                WrapperPlayClientPlayerPosition wrapper = new WrapperPlayClientPlayerPosition(event);
+                var pos = wrapper.getPosition();
+                x = pos.getX();
+                y = pos.getY();
+                z = pos.getZ();
+                onGround = wrapper.isOnGround();
+                hasPos = true;
+            } else if (type == PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) {
+                packetName = "PLAYER_POSITION_AND_ROTATION";
+                WrapperPlayClientPlayerPositionAndRotation wrapper = new WrapperPlayClientPlayerPositionAndRotation(event);
+                var pos = wrapper.getPosition();
+                x = pos.getX();
+                y = pos.getY();
+                z = pos.getZ();
+                onGround = wrapper.isOnGround();
+                hasPos = true;
+            } else if (type == PacketType.Play.Client.PLAYER_FLYING) {
+                packetName = "PLAYER_FLYING";
+                WrapperPlayClientPlayerFlying wrapper = new WrapperPlayClientPlayerFlying(event);
+                onGround = wrapper.isOnGround();
+                hasPos = false;
+            } else if (type == PacketType.Play.Client.PLAYER_ROTATION) {
+                packetName = "PLAYER_ROTATION";
+                WrapperPlayClientPlayerRotation wrapper = new WrapperPlayClientPlayerRotation(event);
+                onGround = wrapper.isOnGround();
+                hasPos = false;
+            } else {
+                return;
+            }
+        } catch (Exception e) {
+            Player player = (Player) event.getPlayer();
+            String playerName = (player != null) ? player.getName() : "unknown";
+            System.err.println("[Vesuvio] Failed to parse " + packetName + " from " + playerName + ": " + e.getMessage());
+            e.printStackTrace();
             return;
         }
 
@@ -89,7 +96,13 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         final boolean finalOnGround = onGround;
         final boolean finalHasPos = hasPos;
         final long packetReceiptNanos = System.nanoTime();
+        final String finalPacketName = packetName;
 
-        virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos));
+        try {
+            virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos));
+        } catch (Exception e) {
+            System.err.println("[Vesuvio] Failed to queue movement check for " + player.getName() + " (" + finalPacketName + "): " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 }
