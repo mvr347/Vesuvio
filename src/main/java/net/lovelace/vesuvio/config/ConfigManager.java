@@ -294,6 +294,18 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.velocity.enabled", true);
     }
 
+    public boolean isRiptideExemptionEnabled() {
+        return config.getBoolean("mechanics.movement.riptide-exemption.enabled", true);
+    }
+
+    public boolean isPistonExemptionEnabled() {
+        return config.getBoolean("mechanics.movement.piston-exemption.enabled", true);
+    }
+
+    public double getPistonExemptionRadius() {
+        return config.getDouble("mechanics.movement.piston-exemption.radius", 1.5);
+    }
+
     /**
      * Whether the latency compensator should prefer transaction round-trip times over Bukkit's
      * KeepAlive-derived ping. Configurable only so an operator can fall back if a proxy or
