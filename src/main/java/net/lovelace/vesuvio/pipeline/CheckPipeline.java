@@ -72,6 +72,8 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
     private final net.lovelace.vesuvio.check.combat.AutoCriticalsCheck autoCriticalsCheck = new net.lovelace.vesuvio.check.combat.AutoCriticalsCheck();
+    private final net.lovelace.vesuvio.check.combat.BackTrackCheck backTrackCheck = new net.lovelace.vesuvio.check.combat.BackTrackCheck();
+    private final net.lovelace.vesuvio.check.combat.MoveDirectionCheck moveDirectionCheck = new net.lovelace.vesuvio.check.combat.MoveDirectionCheck();
 
     public CheckPipeline(Plugin plugin,
                          ConfigManager config,
@@ -478,6 +480,26 @@ public final class CheckPipeline {
                 handleFlag(player, data, angleResult);
             }
         }
+
+        if (config.isBackTrackEnabled() && hitboxTracker != null && transactionManager != null) {
+            CheckResult backTrackResult = backTrackCheck.check(player, target, data, hitboxTracker, transactionManager, config.getMaxReach());
+            if (backTrackResult.isFlag()) {
+                data.addVl(backTrackResult.vl());
+                data.adjustRisk(backTrackResult.confidence() * 10.0);
+                data.setLastTriggeredCheck(backTrackResult.checkName());
+                handleFlag(player, data, backTrackResult);
+            }
+        }
+
+        if (config.isMoveDirectionEnabled()) {
+            CheckResult moveDirResult = moveDirectionCheck.check(player, target, data);
+            if (moveDirResult.isFlag()) {
+                data.addVl(moveDirResult.vl());
+                data.adjustRisk(moveDirResult.confidence() * 8.0);
+                data.setLastTriggeredCheck(moveDirResult.checkName());
+                handleFlag(player, data, moveDirResult);
+            }
+        }
     }
 
     /**
@@ -559,6 +581,7 @@ public final class CheckPipeline {
         double deltaZ = z - data.getLastZ();
 
         data.setLastPosition(x, y, z, onGround);
+        data.setLastMoveDelta(deltaX, deltaZ);
 
         // Real time this delta covers. The movement models are per-tick, so a delta spanning more
         // than a tick (idle player resuming, post-lag burst) has to be handled differently rather

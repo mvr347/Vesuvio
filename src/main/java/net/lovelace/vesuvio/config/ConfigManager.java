@@ -373,6 +373,14 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.combat.autocriticals.enabled", true);
     }
 
+    public boolean isBackTrackEnabled() {
+        return config.getBoolean("mechanics.combat.backtrack.enabled", true);
+    }
+
+    public boolean isMoveDirectionEnabled() {
+        return config.getBoolean("mechanics.combat.movedirection.enabled", true);
+    }
+
     public boolean isAirPlaceEnabled() {
         return config.getBoolean("mechanics.world.airplace.enabled", true);
     }
