@@ -77,6 +77,17 @@ public final class BlinkCheck {
     private static final long WINDOW_NANOS = 120_000_000_000L; // 2 minutes
 
     /**
+     * Prints the active thresholds this build was compiled with - a definitive way to confirm
+     * whether a deployed jar actually contains a given fix, independent of anything a false
+     * memory of "the same message" might suggest.
+     */
+    public static String describeThresholds() {
+        return String.format(Locale.US,
+                "MIN_SILENCE_MS=%.1f MAX_JUDGED_SILENCE_MS=%.1f HEALTHY_RTT_FRACTION=%.2f REQUIRED_STREAK=%d",
+                MIN_SILENCE_MS, MAX_JUDGED_SILENCE_MS, HEALTHY_RTT_FRACTION, REQUIRED_STREAK);
+    }
+
+    /**
      * @param nowNanos arrival time of the movement packet that broke the silence
      */
     public CheckResult check(UUID uuid, UserData data, TransactionManager transactions, long nowNanos) {
