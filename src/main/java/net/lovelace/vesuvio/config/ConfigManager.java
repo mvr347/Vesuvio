@@ -381,6 +381,18 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.combat.movedirection.enabled", true);
     }
 
+    public boolean isNpcTrapEnabled() {
+        return config.getBoolean("mechanics.combat.npctrap.enabled", true);
+    }
+
+    public long getNpcTrapCooldownSeconds() {
+        return config.getLong("mechanics.combat.npctrap.cooldown-seconds", 30L);
+    }
+
+    public long getNpcTrapLifetimeSeconds() {
+        return config.getLong("mechanics.combat.npctrap.lifetime-seconds", 8L);
+    }
+
     public boolean isAirPlaceEnabled() {
         return config.getBoolean("mechanics.world.airplace.enabled", true);
     }

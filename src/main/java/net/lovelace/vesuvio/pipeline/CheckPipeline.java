@@ -52,6 +52,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
     private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
     private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
+    private final net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
@@ -86,7 +87,8 @@ public final class CheckPipeline {
                          net.lovelace.vesuvio.staff.DiscordWebhookService discordService,
                          net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
                          net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager,
-                         net.lovelace.vesuvio.engine.TransactionManager transactionManager) {
+                         net.lovelace.vesuvio.engine.TransactionManager transactionManager,
+                         net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager) {
         this.plugin = plugin;
         this.config = config;
         this.mlManager = mlManager;
@@ -99,11 +101,16 @@ public final class CheckPipeline {
         this.hitboxTracker = hitboxTracker;
         this.banEvasionManager = banEvasionManager;
         this.transactionManager = transactionManager;
+        this.npcTrapManager = npcTrapManager;
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
     }
 
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
         return banEvasionManager;
+    }
+
+    public net.lovelace.vesuvio.engine.NpcTrapManager getNpcTrapManager() {
+        return npcTrapManager;
     }
 
     /**
@@ -500,6 +507,34 @@ public final class CheckPipeline {
                 handleFlag(player, data, moveDirResult);
             }
         }
+
+        // Fake-NPC trap: converting accumulating combat suspicion into a conclusive answer, not
+        // surveilling every player - only offered once a player is already flagged high-risk by
+        // the checks above (or anything else feeding into risk/VL).
+        if (npcTrapManager != null && data.isSuspect(config.getHighRiskThreshold())) {
+            npcTrapManager.maybeSpawnTrap(player);
+        }
+    }
+
+    /**
+     * Definitive KillAura/MobAura proof: the attack packet named an entity ID that only exists as
+     * a per-player packet-level trap (see {@link net.lovelace.vesuvio.engine.NpcTrapManager}). No
+     * further validation is meaningful here - a legitimate client cannot see or aim at this entity
+     * at all, so a single hit is conclusive rather than needing the streak/confidence machinery
+     * every other combat check relies on.
+     */
+    public void handleNpcTrapHit(Player player, UserData data) {
+        if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
+
+        Map<String, Object> details = new HashMap<>();
+        details.put("target", "npc-trap");
+
+        CheckResult result = CheckResult.flag("NpcTrap", 1.0, 25.0,
+                "Attacked a per-player packet trap entity invisible to legitimate play", details);
+        data.addVl(result.vl());
+        data.adjustRisk(60.0);
+        data.setLastTriggeredCheck(result.checkName());
+        handleFlag(player, data, result);
     }
 
     /**

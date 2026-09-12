@@ -127,6 +127,7 @@ public final class Vesuvio extends JavaPlugin {
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
         var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
+        var npcTrapManager = new net.lovelace.vesuvio.engine.NpcTrapManager(this, configManager);
 
         // 7. Check Pipeline
         this.checkPipeline = new CheckPipeline(
@@ -141,7 +142,8 @@ public final class Vesuvio extends JavaPlugin {
                 discordService,
                 hitboxTracker,
                 banEvasionManager,
-                transactionManager
+                transactionManager,
+                npcTrapManager
         );
 
         // 8. Register Packet Listeners

@@ -165,6 +165,9 @@ public final class PlayerLifecycleListener implements Listener {
         if (hitboxTracker != null) {
             hitboxTracker.remove(player.getUniqueId());
         }
+        if (checkPipeline != null && checkPipeline.getNpcTrapManager() != null) {
+            checkPipeline.getNpcTrapManager().forgetPlayer(player.getUniqueId());
+        }
         if (worldInteractionListener != null) {
             worldInteractionListener.forgetPlayer(player.getUniqueId());
         }
