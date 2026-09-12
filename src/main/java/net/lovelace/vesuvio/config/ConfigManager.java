@@ -381,6 +381,10 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.combat.movedirection.enabled", true);
     }
 
+    public boolean isBaritoneEnabled() {
+        return config.getBoolean("mechanics.movement.baritone.enabled", true);
+    }
+
     public boolean isNpcTrapEnabled() {
         return config.getBoolean("mechanics.combat.npctrap.enabled", true);
     }

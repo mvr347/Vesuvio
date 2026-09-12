@@ -75,6 +75,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.combat.AutoCriticalsCheck autoCriticalsCheck = new net.lovelace.vesuvio.check.combat.AutoCriticalsCheck();
     private final net.lovelace.vesuvio.check.combat.BackTrackCheck backTrackCheck = new net.lovelace.vesuvio.check.combat.BackTrackCheck();
     private final net.lovelace.vesuvio.check.combat.MoveDirectionCheck moveDirectionCheck = new net.lovelace.vesuvio.check.combat.MoveDirectionCheck();
+    private final net.lovelace.vesuvio.check.statistical.BaritoneCheck baritoneCheck = new net.lovelace.vesuvio.check.statistical.BaritoneCheck();
 
     public CheckPipeline(Plugin plugin,
                          ConfigManager config,
@@ -646,6 +647,16 @@ public final class CheckPipeline {
                 data.adjustRisk(elytraResult.confidence() * 10.0);
                 data.setLastTriggeredCheck(elytraResult.checkName());
                 handleFlag(player, data, elytraResult);
+            }
+        }
+
+        if (config.isBaritoneEnabled()) {
+            CheckResult baritoneResult = baritoneCheck.check(player, data, deltaX, deltaZ);
+            if (baritoneResult.isFlag()) {
+                data.addVl(baritoneResult.vl());
+                data.adjustRisk(baritoneResult.confidence() * 7.0);
+                data.setLastTriggeredCheck(baritoneResult.checkName());
+                handleFlag(player, data, baritoneResult);
             }
         }
 

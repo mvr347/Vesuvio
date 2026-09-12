@@ -461,6 +461,13 @@ public final class UserData {
     public void incrementMoveDirectionStreak() { this.moveDirectionStreak++; }
     public void resetMoveDirectionStreak() { this.moveDirectionStreak = 0; }
 
+    // Consecutive movement ticks with sub-degree alignment between look yaw and travel direction,
+    // tracked by check.statistical.BaritoneCheck.
+    private volatile int baritoneStreak = 0;
+    public int getBaritoneStreak() { return baritoneStreak; }
+    public void incrementBaritoneStreak() { this.baritoneStreak++; }
+    public void resetBaritoneStreak() { this.baritoneStreak = 0; }
+
     // -------------------------------------------------------------
     // Main-thread environment snapshot (see engine.EnvironmentSnapshotService)
     //
