@@ -286,8 +286,21 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.phase.enabled", true);
     }
 
+    /**
+     * Disabled by default (2026-09-12): the "movement stream silent, transactions healthy"
+     * signature this check looks for is also produced by legitimate client-side stalls it cannot
+     * distinguish itself from - a GC pause, window focus loss throttling FPS (and, with it, the
+     * client's own tick/packet rate), or opening an inventory/chat/F3 screen - since movement
+     * packets are only produced by the client's main game loop while transactions are answered by
+     * the Netty thread almost independently of it. Vesuvio also has no setback/position-correction
+     * path (see the teleport-exemption branch in CheckPipeline#processMovement and TimerCheck's own
+     * gap reset), so a real blink's "silence then one big catch-up jump" is exempted rather than
+     * flagged by Speed/Phase/Timer either - this check was the only thing actually looking at the
+     * silence itself. Left configurable rather than removed so it can be re-enabled if the false
+     * positive causes above are ever more precisely excluded.
+     */
     public boolean isBlinkEnabled() {
-        return config.getBoolean("mechanics.movement.blink.enabled", true);
+        return config.getBoolean("mechanics.movement.blink.enabled", false);
     }
 
     public boolean isVelocityEnabled() {
