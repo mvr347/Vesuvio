@@ -581,6 +581,16 @@ public final class UserData {
     public void resetPhaseTicks() { this.phaseTicks = 0; }
 
     // -------------------------------------------------------------
+    // Vehicle Clip / BoatClip (see listener.WorldInteractionListener#onVehicleMove) - the
+    // vehicle-riding equivalent of Phase/Clip above.
+    // -------------------------------------------------------------
+    private volatile int vehicleClipTicks = 0;
+    public int getVehicleClipTicks() { return vehicleClipTicks; }
+    public void incrementVehicleClipTicks() { this.vehicleClipTicks++; }
+    public void decrementVehicleClipTicks() { this.vehicleClipTicks = Math.max(0, this.vehicleClipTicks - 1); }
+    public void resetVehicleClipTicks() { this.vehicleClipTicks = 0; }
+
+    // -------------------------------------------------------------
     // Elytra glide (see check.movement.ElytraCheck)
     //
     // A firework rocket's boost is not delivered as a server EntityVelocity packet the way

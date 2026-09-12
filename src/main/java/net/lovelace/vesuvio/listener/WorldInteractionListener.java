@@ -11,10 +11,15 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.AbstractHorse;
 import org.bukkit.entity.Boat;
+import org.bukkit.entity.Camel;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Llama;
+import org.bukkit.entity.Minecart;
 import org.bukkit.entity.Pig;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Strider;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -379,30 +384,44 @@ public final class WorldInteractionListener implements Listener {
     }
 
     // -------------------------------------------------------------
-    // 3. Vehicle Movement (Boat & Pig Fly Detection)
+    // 3. Vehicle Movement (Fly & Clip Detection)
     // -------------------------------------------------------------
+
+    /** Consecutive ticks a vehicle may sit inside a solid block before Clip is considered. */
+    private static final int VEHICLE_CLIP_REQUIRED_TICKS = 6;
+
+    /** Horizontal travel per tick required to call it "moving through" rather than being ejected. */
+    private static final double VEHICLE_CLIP_MIN_HORIZONTAL = 0.06;
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onVehicleMove(VehicleMoveEvent event) {
-        if (!config.isVehicleFlyEnabled()) return;
         Entity vehicle = event.getVehicle();
-        if (!(vehicle instanceof Boat) && !(vehicle instanceof Pig)) return;
+
+        // Ascending-without-support only applies to vehicles that walk/float like a living entity.
+        // Minecarts are rail-bound - climbing a ramp is normal, and isOnGround() does not mean the
+        // same thing for them, so they are deliberately excluded here and handled by Clip only.
+        boolean walksLikeLivingEntity = vehicle instanceof Boat || vehicle instanceof Pig
+                || vehicle instanceof AbstractHorse || vehicle instanceof Camel
+                || vehicle instanceof Llama || vehicle instanceof Strider;
+        boolean isMinecart = vehicle instanceof Minecart;
+        if (!walksLikeLivingEntity && !isMinecart) return;
 
         for (Entity passenger : vehicle.getPassengers()) {
-            if (passenger instanceof Player player) {
-                if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) continue;
+            if (!(passenger instanceof Player player)) continue;
+            if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) continue;
 
-                UserData data = userDataManager.get(player.getUniqueId());
-                if (data == null) continue;
+            UserData data = userDataManager.get(player.getUniqueId());
+            if (data == null) continue;
 
-                double deltaY = event.getTo().getY() - event.getFrom().getY();
-                Location toLoc = event.getTo();
+            Location from = event.getFrom();
+            Location to = event.getTo();
+            double deltaY = to.getY() - from.getY();
 
-                // If ascending in mid-air or flying without water/ground
-                boolean inWater = vehicle.isInWater();
-                boolean onGround = vehicle.isOnGround();
+            if (config.isVehicleFlyEnabled() && walksLikeLivingEntity) {
+                boolean supported = vehicle.isInWater() || vehicle.isInLava() || vehicle.isOnGround();
 
-                if (!inWater && !onGround && deltaY > 0.08) {
-                    Block below = toLoc.clone().subtract(0, 1.5, 0).getBlock();
+                if (!supported && deltaY > 0.08) {
+                    Block below = to.clone().subtract(0, 1.5, 0).getBlock();
                     if (below.getType().isAir()) {
                         Map<String, Object> details = new HashMap<>();
                         details.put("vehicle", vehicle.getType().name());
@@ -421,10 +440,61 @@ public final class WorldInteractionListener implements Listener {
 
                         // Eject player from hacked flying vehicle
                         vehicle.eject();
-                        break;
+                        data.resetVehicleClipTicks();
+                        continue;
                     }
                 }
             }
+
+            if (config.isVehicleClipEnabled()) {
+                checkVehicleClip(player, data, vehicle, from, to);
+            }
         }
+    }
+
+    /**
+     * BoatClip / vehicle phasing: a vehicle that stays inside a solid occluding block while still
+     * travelling horizontally is not a state vanilla can produce - it resolves collisions and
+     * ejects the vehicle+rider every tick, same as it does for a walking player (see
+     * {@code check.movement.PhaseCheck}). Requiring both persistence and continued horizontal
+     * movement excludes the ordinary "a block was placed on us, we're about to be pushed out"
+     * case, which drifts rather than travels.
+     */
+    private void checkVehicleClip(Player player, UserData data, Entity vehicle, Location from, Location to) {
+        double horizontal = Math.hypot(to.getX() - from.getX(), to.getZ() - from.getZ());
+
+        Block atBlock = to.getBlock();
+        Block aboveBlock = to.clone().add(0, 1, 0).getBlock();
+        boolean insideSolid = (atBlock.getType().isOccluding() && !atBlock.isPassable())
+                || (aboveBlock.getType().isOccluding() && !aboveBlock.isPassable());
+
+        if (!insideSolid || horizontal < VEHICLE_CLIP_MIN_HORIZONTAL) {
+            data.decrementVehicleClipTicks();
+            return;
+        }
+
+        data.incrementVehicleClipTicks();
+        if (data.getVehicleClipTicks() < VEHICLE_CLIP_REQUIRED_TICKS) {
+            return;
+        }
+
+        data.resetVehicleClipTicks();
+
+        Map<String, Object> details = new HashMap<>();
+        details.put("vehicle", vehicle.getType().name());
+        details.put("horizontalSpeed", horizontal);
+        details.put("ticksInside", VEHICLE_CLIP_REQUIRED_TICKS);
+
+        CheckResult result = CheckResult.flag(
+                "VehicleClip",
+                0.94,
+                14.0,
+                String.format(Locale.US, "Travelling through solid geometry on %s (%.2fb/t sustained for %d ticks)",
+                        vehicle.getType().name(), horizontal, VEHICLE_CLIP_REQUIRED_TICKS),
+                details
+        );
+        pipeline.handleFlag(player, data, result);
+        data.addVl(result.vl());
+        data.adjustRisk(22.0);
     }
 }
