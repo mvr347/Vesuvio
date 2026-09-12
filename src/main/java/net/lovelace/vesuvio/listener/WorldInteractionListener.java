@@ -215,6 +215,47 @@ public final class WorldInteractionListener implements Listener {
 
         // 1.5 BlockReach / GhostHand on the block being placed against.
         checkBlockReachAndGhostHand(player, data, against, "place");
+
+        // 1.6 Ghost-block resync: force the new block state out to nearby clients immediately,
+        // rather than relying on the normal chunk-update packet, which lag can delay long enough
+        // for a client's local view to briefly disagree with the server's - the classic cause of a
+        // player "hovering" over what their client still thinks is empty air and catching a false
+        // Fly/StepUp flag through no fault of their own.
+        if (config.isGhostBlockResyncEnabled() && !event.isCancelled()) {
+            resyncNearbyPlayers(placed);
+        }
+    }
+
+    /** Radius, in blocks, within which nearby players are proactively resent a changed block's state. */
+    private static final double GHOST_BLOCK_RESYNC_RADIUS = 10.0;
+
+    /**
+     * Sends the block's current state directly to every player within
+     * {@link #GHOST_BLOCK_RESYNC_RADIUS}, independent of and ahead of the normal chunk-update
+     * packet. Purely defensive - it changes nothing about what any check flags, it only shrinks
+     * the window in which a client's view of the world can legitimately disagree with the
+     * server's after a block changes near them.
+     */
+    private void resyncNearbyPlayers(Block block) {
+        resyncNearbyPlayers(block.getWorld(), block.getLocation(), block.getBlockData());
+    }
+
+    /**
+     * Air variant for breaking: {@code BlockBreakEvent} fires before the world actually updates,
+     * so {@code block.getBlockData()} would still report the pre-break material at this priority -
+     * the resulting state is always air regardless of what item the break drops.
+     */
+    private void resyncNearbyPlayersAir(Location location) {
+        resyncNearbyPlayers(location.getWorld(), location, org.bukkit.Bukkit.createBlockData(Material.AIR));
+    }
+
+    private void resyncNearbyPlayers(org.bukkit.World world, Location center, org.bukkit.block.data.BlockData data) {
+        double radiusSq = GHOST_BLOCK_RESYNC_RADIUS * GHOST_BLOCK_RESYNC_RADIUS;
+        for (Player nearby : world.getPlayers()) {
+            if (nearby.getLocation().distanceSquared(center) <= radiusSq) {
+                nearby.sendBlockChange(center, data);
+            }
+        }
     }
 
     /**
@@ -397,6 +438,13 @@ public final class WorldInteractionListener implements Listener {
         UserData uData = userDataManager.get(player.getUniqueId());
         if (uData != null) {
             processXrayCheck(player, block, uData);
+        }
+
+        // 2.6 Ghost-block resync: the break resolves to air regardless of what drops, so nearby
+        // clients are resent an explicit air state immediately rather than waiting on the normal
+        // chunk-update packet (see the placement-side resync above for why this matters).
+        if (config.isGhostBlockResyncEnabled() && !event.isCancelled()) {
+            resyncNearbyPlayersAir(block.getLocation());
         }
     }
 

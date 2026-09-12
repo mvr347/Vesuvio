@@ -429,6 +429,10 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.item.fastbow.enabled", true);
     }
 
+    public boolean isGhostBlockResyncEnabled() {
+        return config.getBoolean("mechanics.world.ghostblockresync.enabled", true);
+    }
+
     public boolean isWavePunishmentEnabled() {
         return config.getBoolean("punishments.wave.enabled", true);
     }
