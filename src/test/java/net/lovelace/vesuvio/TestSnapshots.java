@@ -34,6 +34,7 @@ final class TestSnapshots {
         private boolean sprinting = true;
         private boolean jumpBoost = false;
         private double jumpStrength = 0.42; // vanilla Attribute.JUMP_STRENGTH default
+        private boolean gliding = false;
 
         Builder blockBelow(Material m) { this.blockBelow = m; return this; }
         Builder solidBelow(boolean v) { this.solidBelow = v; return this; }
@@ -42,13 +43,14 @@ final class TestSnapshots {
         Builder sprinting(boolean v) { this.sprinting = v; return this; }
         Builder jumpBoost(boolean v) { this.jumpBoost = v; return this; }
         Builder jumpStrength(double v) { this.jumpStrength = v; return this; }
+        Builder gliding(boolean v) { this.gliding = v; return this; }
 
         EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
                     System.currentTimeMillis(), true,
                     0, 64, 0,
                     // exemptGameMode, allowFlight, flying, gliding, insideVehicle
-                    false, false, false, false, false,
+                    false, false, false, gliding, false,
                     sprinting,
                     // sneaking, swimming, dead, fallDistance
                     false, false, false, 0f,

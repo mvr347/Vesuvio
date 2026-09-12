@@ -67,6 +67,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.VelocityCheck velocityCheck = new net.lovelace.vesuvio.check.movement.VelocityCheck();
     private final net.lovelace.vesuvio.check.movement.PhaseCheck phaseCheck = new net.lovelace.vesuvio.check.movement.PhaseCheck();
     private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck = new net.lovelace.vesuvio.check.movement.BlinkCheck();
+    private final net.lovelace.vesuvio.check.movement.ElytraCheck elytraCheck = new net.lovelace.vesuvio.check.movement.ElytraCheck();
     private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck();
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
@@ -574,6 +575,20 @@ public final class CheckPipeline {
             data.clearPendingVelocity();
             data.resetPhaseTicks();
             return;
+        }
+
+        // 1a-2. Elytra: the one movement state every other check in this pipeline exempts
+        // outright (EnvironmentSnapshot#isMovementExempt()) because none of them model glide
+        // physics. Runs unconditionally here; the check itself gates on env.gliding() and is a
+        // no-op otherwise.
+        if (config.isElytraEnabled()) {
+            CheckResult elytraResult = elytraCheck.check(data, deltaX, deltaY, deltaZ);
+            if (elytraResult.isFlag()) {
+                data.addVl(elytraResult.vl());
+                data.adjustRisk(elytraResult.confidence() * 10.0);
+                data.setLastTriggeredCheck(elytraResult.checkName());
+                handleFlag(player, data, elytraResult);
+            }
         }
 
         // 1b. Velocity / anti-knockback. Runs before the exemption-heavy checks because it is the
