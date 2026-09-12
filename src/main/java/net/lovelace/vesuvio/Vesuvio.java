@@ -167,6 +167,10 @@ public final class Vesuvio extends JavaPlugin {
                 this
         );
         Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
+        Bukkit.getPluginManager().registerEvents(
+                new net.lovelace.vesuvio.listener.PhysicsExemptionListener(userDataManager, configManager),
+                this
+        );
 
         // 10. Register Commands
         VesuvioCommand cmdExecutor = new VesuvioCommand(
