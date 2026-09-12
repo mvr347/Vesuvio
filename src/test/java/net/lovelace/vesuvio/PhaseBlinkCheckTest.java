@@ -115,12 +115,13 @@ class PhaseBlinkCheckTest {
         UserData data = new UserData(uuid, "Idle");
         data.setEnvironment(snapshot(false));
 
-        // A standing player still sends a position-less flying packet every tick. Because this
-        // check watches the whole movement stream rather than position packets alone, that is
-        // indistinguishable from walking as far as silence is concerned.
+        // A player who is perfectly stationary (no position delta, no camera movement, no
+        // on-ground change) sends nothing at all under vanilla's positionReminder logic until the
+        // 20-tick (~1000ms) counter rolls over. That real, healthy-connection gap must not read as
+        // a blink.
         long now = 0L;
         for (int i = 0; i < 200; i++) {
-            now += 50 * MS;
+            now += 1000 * MS;
             assertFalse(check.check(uuid, data, transactions, now).isFlag(),
                     "an idle player is not blinking");
         }
@@ -165,7 +166,7 @@ class PhaseBlinkCheckTest {
 
         boolean flagged = false;
         for (int i = 0; i < 5 && !flagged; i++) {
-            now += 900 * MS; // movement silence
+            now += 1800 * MS; // movement silence, well past vanilla's ~1000ms idle reminder gap
             CheckResult result = check.check(uuid, data, transactions, now);
             if (result.isFlag()) {
                 flagged = true;
@@ -194,7 +195,7 @@ class PhaseBlinkCheckTest {
                 now += 50 * MS;
                 if (check.check(uuid, data, transactions, now).isFlag()) flagged = true;
             }
-            now += 900 * MS;
+            now += 1800 * MS;
             if (check.check(uuid, data, transactions, now).isFlag()) flagged = true;
         }
 
@@ -215,12 +216,12 @@ class PhaseBlinkCheckTest {
 
         // One odd gap, then the same again over three minutes later. Two isolated hiccups that far
         // apart are not a pattern, and must not add up.
-        now += 900 * MS;
+        now += 1800 * MS;
         assertFalse(check.check(uuid, data, transactions, now).isFlag());
 
         now += 200_000 * MS;
         check.check(uuid, data, transactions, now);
-        now += 900 * MS;
+        now += 1800 * MS;
         assertFalse(check.check(uuid, data, transactions, now).isFlag(),
                 "occurrences outside the window must not accumulate");
     }
@@ -241,7 +242,7 @@ class PhaseBlinkCheckTest {
             check.check(uuid, data, transactions, now);
         }
         for (int i = 0; i < 10; i++) {
-            now += 900 * MS;
+            now += 1800 * MS;
             assertFalse(check.check(uuid, data, transactions, now).isFlag());
         }
     }
