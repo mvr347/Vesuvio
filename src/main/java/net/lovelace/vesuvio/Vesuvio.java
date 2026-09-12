@@ -262,6 +262,7 @@ public final class Vesuvio extends JavaPlugin {
 
         long elapsed = System.currentTimeMillis() - startMs;
         getLogger().info(String.format("Vesuvio 26.2 (Author: Lovelace) initialized in %dms. Hybrid 3-Layer Engine Active.", elapsed));
+        getLogger().info("[Diagnostics] BlinkCheck thresholds: " + net.lovelace.vesuvio.check.movement.BlinkCheck.describeThresholds());
     }
 
     private void initModels() {
