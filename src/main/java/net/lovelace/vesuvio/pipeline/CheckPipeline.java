@@ -52,6 +52,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
     private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
     private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
+    private final net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
@@ -72,6 +73,9 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
     private final net.lovelace.vesuvio.check.combat.AutoCriticalsCheck autoCriticalsCheck = new net.lovelace.vesuvio.check.combat.AutoCriticalsCheck();
+    private final net.lovelace.vesuvio.check.combat.BackTrackCheck backTrackCheck = new net.lovelace.vesuvio.check.combat.BackTrackCheck();
+    private final net.lovelace.vesuvio.check.combat.MoveDirectionCheck moveDirectionCheck = new net.lovelace.vesuvio.check.combat.MoveDirectionCheck();
+    private final net.lovelace.vesuvio.check.statistical.BaritoneCheck baritoneCheck = new net.lovelace.vesuvio.check.statistical.BaritoneCheck();
 
     public CheckPipeline(Plugin plugin,
                          ConfigManager config,
@@ -84,7 +88,8 @@ public final class CheckPipeline {
                          net.lovelace.vesuvio.staff.DiscordWebhookService discordService,
                          net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
                          net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager,
-                         net.lovelace.vesuvio.engine.TransactionManager transactionManager) {
+                         net.lovelace.vesuvio.engine.TransactionManager transactionManager,
+                         net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager) {
         this.plugin = plugin;
         this.config = config;
         this.mlManager = mlManager;
@@ -97,11 +102,16 @@ public final class CheckPipeline {
         this.hitboxTracker = hitboxTracker;
         this.banEvasionManager = banEvasionManager;
         this.transactionManager = transactionManager;
+        this.npcTrapManager = npcTrapManager;
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
     }
 
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
         return banEvasionManager;
+    }
+
+    public net.lovelace.vesuvio.engine.NpcTrapManager getNpcTrapManager() {
+        return npcTrapManager;
     }
 
     /**
@@ -478,6 +488,54 @@ public final class CheckPipeline {
                 handleFlag(player, data, angleResult);
             }
         }
+
+        if (config.isBackTrackEnabled() && hitboxTracker != null && transactionManager != null) {
+            CheckResult backTrackResult = backTrackCheck.check(player, target, data, hitboxTracker, transactionManager, config.getMaxReach());
+            if (backTrackResult.isFlag()) {
+                data.addVl(backTrackResult.vl());
+                data.adjustRisk(backTrackResult.confidence() * 10.0);
+                data.setLastTriggeredCheck(backTrackResult.checkName());
+                handleFlag(player, data, backTrackResult);
+            }
+        }
+
+        if (config.isMoveDirectionEnabled()) {
+            CheckResult moveDirResult = moveDirectionCheck.check(player, target, data);
+            if (moveDirResult.isFlag()) {
+                data.addVl(moveDirResult.vl());
+                data.adjustRisk(moveDirResult.confidence() * 8.0);
+                data.setLastTriggeredCheck(moveDirResult.checkName());
+                handleFlag(player, data, moveDirResult);
+            }
+        }
+
+        // Fake-NPC trap: converting accumulating combat suspicion into a conclusive answer, not
+        // surveilling every player - only offered once a player is already flagged high-risk by
+        // the checks above (or anything else feeding into risk/VL).
+        if (npcTrapManager != null && data.isSuspect(config.getHighRiskThreshold())) {
+            npcTrapManager.maybeSpawnTrap(player);
+        }
+    }
+
+    /**
+     * Definitive KillAura/MobAura proof: the attack packet named an entity ID that only exists as
+     * a per-player packet-level trap (see {@link net.lovelace.vesuvio.engine.NpcTrapManager}). No
+     * further validation is meaningful here - a legitimate client cannot see or aim at this entity
+     * at all, so a single hit is conclusive rather than needing the streak/confidence machinery
+     * every other combat check relies on.
+     */
+    public void handleNpcTrapHit(Player player, UserData data) {
+        if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
+
+        Map<String, Object> details = new HashMap<>();
+        details.put("target", "npc-trap");
+
+        CheckResult result = CheckResult.flag("NpcTrap", 1.0, 25.0,
+                "Attacked a per-player packet trap entity invisible to legitimate play", details);
+        data.addVl(result.vl());
+        data.adjustRisk(60.0);
+        data.setLastTriggeredCheck(result.checkName());
+        handleFlag(player, data, result);
     }
 
     /**
@@ -559,6 +617,7 @@ public final class CheckPipeline {
         double deltaZ = z - data.getLastZ();
 
         data.setLastPosition(x, y, z, onGround);
+        data.setLastMoveDelta(deltaX, deltaZ);
 
         // Real time this delta covers. The movement models are per-tick, so a delta spanning more
         // than a tick (idle player resuming, post-lag burst) has to be handled differently rather
@@ -588,6 +647,16 @@ public final class CheckPipeline {
                 data.adjustRisk(elytraResult.confidence() * 10.0);
                 data.setLastTriggeredCheck(elytraResult.checkName());
                 handleFlag(player, data, elytraResult);
+            }
+        }
+
+        if (config.isBaritoneEnabled()) {
+            CheckResult baritoneResult = baritoneCheck.check(player, data, deltaX, deltaZ);
+            if (baritoneResult.isFlag()) {
+                data.addVl(baritoneResult.vl());
+                data.adjustRisk(baritoneResult.confidence() * 7.0);
+                data.setLastTriggeredCheck(baritoneResult.checkName());
+                handleFlag(player, data, baritoneResult);
             }
         }
 

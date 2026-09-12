@@ -373,6 +373,30 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.combat.autocriticals.enabled", true);
     }
 
+    public boolean isBackTrackEnabled() {
+        return config.getBoolean("mechanics.combat.backtrack.enabled", true);
+    }
+
+    public boolean isMoveDirectionEnabled() {
+        return config.getBoolean("mechanics.combat.movedirection.enabled", true);
+    }
+
+    public boolean isBaritoneEnabled() {
+        return config.getBoolean("mechanics.movement.baritone.enabled", true);
+    }
+
+    public boolean isNpcTrapEnabled() {
+        return config.getBoolean("mechanics.combat.npctrap.enabled", true);
+    }
+
+    public long getNpcTrapCooldownSeconds() {
+        return config.getLong("mechanics.combat.npctrap.cooldown-seconds", 30L);
+    }
+
+    public long getNpcTrapLifetimeSeconds() {
+        return config.getLong("mechanics.combat.npctrap.lifetime-seconds", 8L);
+    }
+
     public boolean isAirPlaceEnabled() {
         return config.getBoolean("mechanics.world.airplace.enabled", true);
     }
@@ -395,6 +419,34 @@ public final class ConfigManager {
 
     public boolean isXrayEnabled() {
         return config.getBoolean("mechanics.world.xray.enabled", true);
+    }
+
+    public boolean isTowerEnabled() {
+        return config.getBoolean("mechanics.world.tower.enabled", true);
+    }
+
+    public boolean isFastPlaceEnabled() {
+        return config.getBoolean("mechanics.world.fastplace.enabled", true);
+    }
+
+    public boolean isBlockReachEnabled() {
+        return config.getBoolean("mechanics.world.blockreach.enabled", true);
+    }
+
+    public boolean isGhostHandEnabled() {
+        return config.getBoolean("mechanics.world.ghosthand.enabled", true);
+    }
+
+    public boolean isFastEatEnabled() {
+        return config.getBoolean("mechanics.item.fasteat.enabled", true);
+    }
+
+    public boolean isFastBowEnabled() {
+        return config.getBoolean("mechanics.item.fastbow.enabled", true);
+    }
+
+    public boolean isGhostBlockResyncEnabled() {
+        return config.getBoolean("mechanics.world.ghostblockresync.enabled", true);
     }
 
     public boolean isWavePunishmentEnabled() {

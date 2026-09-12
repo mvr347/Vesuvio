@@ -447,6 +447,27 @@ public final class UserData {
     public void incrementPerfectAimStreak() { this.perfectAimStreak++; }
     public void resetPerfectAimStreak() { this.perfectAimStreak = 0; }
 
+    // Consecutive hits whose required hitbox rewind exceeded what the attacker's real transaction
+    // RTT could explain, tracked by check.combat.BackTrackCheck.
+    private volatile int backTrackStreak = 0;
+    public int getBackTrackStreak() { return backTrackStreak; }
+    public void incrementBackTrackStreak() { this.backTrackStreak++; }
+    public void resetBackTrackStreak() { this.backTrackStreak = 0; }
+
+    // Consecutive hits landing significantly off the attacker's own sprint/movement direction
+    // while sprint is maintained, tracked by check.combat.MoveDirectionCheck.
+    private volatile int moveDirectionStreak = 0;
+    public int getMoveDirectionStreak() { return moveDirectionStreak; }
+    public void incrementMoveDirectionStreak() { this.moveDirectionStreak++; }
+    public void resetMoveDirectionStreak() { this.moveDirectionStreak = 0; }
+
+    // Consecutive movement ticks with sub-degree alignment between look yaw and travel direction,
+    // tracked by check.statistical.BaritoneCheck.
+    private volatile int baritoneStreak = 0;
+    public int getBaritoneStreak() { return baritoneStreak; }
+    public void incrementBaritoneStreak() { this.baritoneStreak++; }
+    public void resetBaritoneStreak() { this.baritoneStreak = 0; }
+
     // -------------------------------------------------------------
     // Main-thread environment snapshot (see engine.EnvironmentSnapshotService)
     //
@@ -554,6 +575,17 @@ public final class UserData {
     public int getVelocityViolationStreak() { return velocityViolationStreak; }
     public void incrementVelocityViolationStreak() { this.velocityViolationStreak++; }
     public void decrementVelocityViolationStreak() { this.velocityViolationStreak = Math.max(0, this.velocityViolationStreak - 1); }
+
+    // -------------------------------------------------------------
+    // Most recent tick's horizontal movement vector, used by check.combat.MoveDirectionCheck to
+    // compare where the player is actually travelling against where an attack claims to be aimed -
+    // independent of, and a different signal from, KillauraAngleCheck's crosshair/FOV analysis.
+    // -------------------------------------------------------------
+    private volatile double lastMoveDeltaX = 0.0;
+    private volatile double lastMoveDeltaZ = 0.0;
+    public double getLastMoveDeltaX() { return lastMoveDeltaX; }
+    public double getLastMoveDeltaZ() { return lastMoveDeltaZ; }
+    public void setLastMoveDelta(double dx, double dz) { this.lastMoveDeltaX = dx; this.lastMoveDeltaZ = dz; }
 
     // -------------------------------------------------------------
     // Horizontal momentum, used by the prediction-based SpeedCheck to model friction instead of

@@ -5,9 +5,11 @@ import net.lovelace.vesuvio.config.ConfigManager;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
 import net.lovelace.vesuvio.pipeline.CheckPipeline;
+import org.bukkit.FluidCollisionMode;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.attribute.Attribute;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.enchantments.Enchantment;
@@ -26,22 +28,32 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDamageEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityShootBowEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
+import org.bukkit.util.RayTraceResult;
 
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Validates world and environment interactions:
  * - AirPlace (placing blocks against empty air)
  * - Scaffold (placing beneath feet with impossible look angle while sprinting)
+ * - Tower (pillaring up faster than jump/gravity physics allow)
+ * - FastPlace (placing blocks faster than the client's own click cycle allows)
  * - BedrockBreaker & FastBreak (breaking unbreakables or impossible mining speed)
+ * - BlockReach & GhostHand (interacting with blocks beyond reach or through walls)
+ * - FastEat & FastBow (consuming/drawing faster than vanilla's own animations allow)
  * - VehicleFly (flying / hovering mounted on Pig or Boat)
  *
  * Author: Lovelace
@@ -53,6 +65,12 @@ public final class WorldInteractionListener implements Listener {
     private final ConfigManager config;
 
     private final Map<UUID, Long> blockDamageTimes = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastBlockPlaceNanos = new ConcurrentHashMap<>();
+    private final Map<UUID, AtomicInteger> fastPlaceStreak = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastTowerPlaceNanos = new ConcurrentHashMap<>();
+    private final Map<UUID, AtomicInteger> towerStreak = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> eatStartMillis = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> bowDrawStartMillis = new ConcurrentHashMap<>();
 
     public WorldInteractionListener(UserDataManager userDataManager, CheckPipeline pipeline, ConfigManager config) {
         this.userDataManager = userDataManager;
@@ -126,15 +144,193 @@ public final class WorldInteractionListener implements Listener {
             }
         }
         }
+
+        long now = System.nanoTime();
+
+        // 1.3 FastPlace: vanilla imposes roughly a 4-tick (200ms) cooldown between block
+        // placements. Flagging at half that (100ms) leaves slack for a fast legitimate clicker
+        // and for the occasional double-packet edge case, while still catching a client that
+        // places every tick or faster.
+        if (config.isFastPlaceEnabled()) {
+            Long lastPlace = lastBlockPlaceNanos.get(player.getUniqueId());
+            if (lastPlace != null) {
+                double elapsedMs = (now - lastPlace) / 1_000_000.0;
+                AtomicInteger streak = fastPlaceStreak.computeIfAbsent(player.getUniqueId(), k -> new AtomicInteger());
+                if (elapsedMs < 100.0) {
+                    int count = streak.incrementAndGet();
+                    if (count >= 3) {
+                        streak.set(0);
+                        CheckResult result = CheckResult.flag(
+                                "FastPlace",
+                                0.93,
+                                10.0,
+                                String.format(Locale.US, "Block placement faster than vanilla's cycle allows (%.0fms, min ~200ms)", elapsedMs),
+                                Map.of("elapsedMs", elapsedMs, "streak", count)
+                        );
+                        pipeline.handleFlag(player, data, result);
+                        data.addVl(result.vl());
+                        data.adjustRisk(16.0);
+                    }
+                } else {
+                    streak.set(0);
+                }
+            }
+            lastBlockPlaceNanos.put(player.getUniqueId(), now);
+        }
+
+        // 1.4 Tower: pillaring up faster than a jump-and-place cycle can physically repeat. A
+        // vanilla jump takes several ticks to rise far enough to place another block underfoot
+        // (~250-300ms minimum in practice); a Tower/NoSlow-style cheat spams placements straight
+        // up with no jump delay at all. Narrower and stricter than FastPlace above because it
+        // additionally requires the specific "block appears directly beneath the player's new
+        // feet position" geometry, not just any two fast placements.
+        if (config.isTowerEnabled() && placed.getX() == player.getLocation().getBlockX()
+                && placed.getZ() == player.getLocation().getBlockZ()
+                && placed.getY() == player.getLocation().getBlockY() - 1) {
+            Long lastTower = lastTowerPlaceNanos.get(player.getUniqueId());
+            if (lastTower != null) {
+                double elapsedMs = (now - lastTower) / 1_000_000.0;
+                AtomicInteger streak = towerStreak.computeIfAbsent(player.getUniqueId(), k -> new AtomicInteger());
+                if (elapsedMs < 150.0) {
+                    int count = streak.incrementAndGet();
+                    if (count >= 3) {
+                        streak.set(0);
+                        CheckResult result = CheckResult.flag(
+                                "Tower",
+                                0.92,
+                                11.0,
+                                String.format(Locale.US, "Pillaring faster than jump physics allow (%.0fms between placements, min ~250ms)", elapsedMs),
+                                Map.of("elapsedMs", elapsedMs, "streak", count)
+                        );
+                        pipeline.handleFlag(player, data, result);
+                        data.addVl(result.vl());
+                        data.adjustRisk(17.0);
+                    }
+                } else {
+                    streak.set(0);
+                }
+            }
+            lastTowerPlaceNanos.put(player.getUniqueId(), now);
+        }
+
+        // 1.5 BlockReach / GhostHand on the block being placed against.
+        checkBlockReachAndGhostHand(player, data, against, "place");
+
+        // 1.6 Ghost-block resync: force the new block state out to nearby clients immediately,
+        // rather than relying on the normal chunk-update packet, which lag can delay long enough
+        // for a client's local view to briefly disagree with the server's - the classic cause of a
+        // player "hovering" over what their client still thinks is empty air and catching a false
+        // Fly/StepUp flag through no fault of their own.
+        if (config.isGhostBlockResyncEnabled() && !event.isCancelled()) {
+            resyncNearbyPlayers(placed);
+        }
+    }
+
+    /** Radius, in blocks, within which nearby players are proactively resent a changed block's state. */
+    private static final double GHOST_BLOCK_RESYNC_RADIUS = 10.0;
+
+    /**
+     * Sends the block's current state directly to every player within
+     * {@link #GHOST_BLOCK_RESYNC_RADIUS}, independent of and ahead of the normal chunk-update
+     * packet. Purely defensive - it changes nothing about what any check flags, it only shrinks
+     * the window in which a client's view of the world can legitimately disagree with the
+     * server's after a block changes near them.
+     */
+    private void resyncNearbyPlayers(Block block) {
+        resyncNearbyPlayers(block.getWorld(), block.getLocation(), block.getBlockData());
+    }
+
+    /**
+     * Air variant for breaking: {@code BlockBreakEvent} fires before the world actually updates,
+     * so {@code block.getBlockData()} would still report the pre-break material at this priority -
+     * the resulting state is always air regardless of what item the break drops.
+     */
+    private void resyncNearbyPlayersAir(Location location) {
+        resyncNearbyPlayers(location.getWorld(), location, org.bukkit.Bukkit.createBlockData(Material.AIR));
+    }
+
+    private void resyncNearbyPlayers(org.bukkit.World world, Location center, org.bukkit.block.data.BlockData data) {
+        double radiusSq = GHOST_BLOCK_RESYNC_RADIUS * GHOST_BLOCK_RESYNC_RADIUS;
+        for (Player nearby : world.getPlayers()) {
+            if (nearby.getLocation().distanceSquared(center) <= radiusSq) {
+                nearby.sendBlockChange(center, data);
+            }
+        }
+    }
+
+    /**
+     * BlockReach: vanilla 1.20.5+ exposes the real interaction range as an attribute
+     * ({@link Attribute#BLOCK_INTERACTION_RANGE}, default 4.5 survival / 6.0 creative) rather than
+     * a hardcoded constant, so any legitimate reach-modifying effect or gear is already accounted
+     * for by reading it live instead of assuming a fixed number.
+     *
+     * <p>GhostHand: a raytrace from the eye toward the block must not be blocked by a closer,
+     * different solid block - interacting with something behind a wall is not something a real
+     * client's targeting can produce.
+     */
+    private void checkBlockReachAndGhostHand(Player player, UserData data, Block block, String action) {
+        if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
+
+        Location eye = player.getEyeLocation();
+        Location blockCenter = block.getLocation().add(0.5, 0.5, 0.5);
+        double distance = eye.distance(blockCenter);
+
+        if (config.isBlockReachEnabled()) {
+            var attr = player.getAttribute(Attribute.BLOCK_INTERACTION_RANGE);
+            double maxReach = (attr != null) ? attr.getValue() : 4.5;
+            // Generous buffer: distance is measured to the block's center, not its nearest face/
+            // corner, which can legitimately be up to ~0.87 blocks closer at a diagonal.
+            double allowedReach = maxReach + 0.9;
+
+            if (distance > allowedReach) {
+                CheckResult result = CheckResult.flag(
+                        "BlockReach",
+                        0.93,
+                        9.0,
+                        String.format(Locale.US, "Block %s beyond reach (%.2fm, max %.2fm)", action, distance, allowedReach),
+                        Map.of("distance", distance, "maxAllowed", allowedReach, "action", action)
+                );
+                pipeline.handleFlag(player, data, result);
+                data.addVl(result.vl());
+                data.adjustRisk(15.0);
+                return;
+            }
+        }
+
+        if (config.isGhostHandEnabled() && distance > 0.8) {
+            var direction = blockCenter.toVector().subtract(eye.toVector()).normalize();
+            RayTraceResult hit = player.getWorld().rayTraceBlocks(eye, direction, distance - 0.2, FluidCollisionMode.NEVER, true);
+            if (hit != null && hit.getHitBlock() != null && !hit.getHitBlock().equals(block)) {
+                Block obstruction = hit.getHitBlock();
+                if (obstruction.getType().isOccluding() && !obstruction.isPassable()) {
+                    CheckResult result = CheckResult.flag(
+                            "GhostHand",
+                            0.96,
+                            13.0,
+                            String.format(Locale.US, "Block %s through solid obstruction %s", action, obstruction.getType().name()),
+                            Map.of("obstruction", obstruction.getType().name(), "action", action, "distance", distance)
+                    );
+                    pipeline.handleFlag(player, data, result);
+                    data.addVl(result.vl());
+                    data.adjustRisk(18.0);
+                }
+            }
+        }
     }
 
     /**
      * Evicts a departed player's tracking state. Call from PlayerQuitEvent to avoid an
-     * unbounded per-visitor memory leak in blockDamageTimes/miningProfiles over server uptime.
+     * unbounded per-visitor memory leak in the per-player maps above over server uptime.
      */
     public void forgetPlayer(UUID uuid) {
         blockDamageTimes.remove(uuid);
         miningProfiles.remove(uuid);
+        lastBlockPlaceNanos.remove(uuid);
+        fastPlaceStreak.remove(uuid);
+        lastTowerPlaceNanos.remove(uuid);
+        towerStreak.remove(uuid);
+        eatStartMillis.remove(uuid);
+        bowDrawStartMillis.remove(uuid);
     }
 
     private boolean hasAdjacentSolidBlock(Block b) {
@@ -153,15 +349,15 @@ public final class WorldInteractionListener implements Listener {
     // -------------------------------------------------------------
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onBlockDamage(BlockDamageEvent event) {
-        if (!config.isFastBreakEnabled()) return;
         Player player = event.getPlayer();
         if (player.getGameMode() == GameMode.CREATIVE) return;
 
         Block block = event.getBlock();
+        UserData data = userDataManager.get(player.getUniqueId());
+
         // BedrockBreaker exploit attempt
-        if (block.getType().getHardness() < 0) {
+        if (config.isFastBreakEnabled() && block.getType().getHardness() < 0) {
             event.setCancelled(true);
-            UserData data = userDataManager.get(player.getUniqueId());
             if (data != null) {
                 CheckResult result = CheckResult.flag(
                         "BedrockBreaker",
@@ -177,7 +373,13 @@ public final class WorldInteractionListener implements Listener {
             return;
         }
 
-        blockDamageTimes.put(player.getUniqueId(), System.currentTimeMillis());
+        if (data != null) {
+            checkBlockReachAndGhostHand(player, data, block, "break");
+        }
+
+        if (config.isFastBreakEnabled()) {
+            blockDamageTimes.put(player.getUniqueId(), System.currentTimeMillis());
+        }
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
@@ -236,6 +438,13 @@ public final class WorldInteractionListener implements Listener {
         UserData uData = userDataManager.get(player.getUniqueId());
         if (uData != null) {
             processXrayCheck(player, block, uData);
+        }
+
+        // 2.6 Ghost-block resync: the break resolves to air regardless of what drops, so nearby
+        // clients are resent an explicit air state immediately rather than waiting on the normal
+        // chunk-update packet (see the placement-side resync above for why this matters).
+        if (config.isGhostBlockResyncEnabled() && !event.isCancelled()) {
+            resyncNearbyPlayersAir(block.getLocation());
         }
     }
 
@@ -496,5 +705,100 @@ public final class WorldInteractionListener implements Listener {
         pipeline.handleFlag(player, data, result);
         data.addVl(result.vl());
         data.adjustRisk(22.0);
+    }
+
+    // -------------------------------------------------------------
+    // 4. FastEat & FastBow Detection
+    // -------------------------------------------------------------
+
+    /**
+     * Vanilla eating/drinking takes 32 ticks (1600ms) start to finish for both food and potions
+     * (both fire {@link PlayerItemConsumeEvent} on completion). A 50% safety margin - the same
+     * proportion FastBreak already uses - only flags a completion clearly, not marginally, faster
+     * than any legitimate client could produce.
+     */
+    private static final long MIN_EAT_MS = 800L;
+
+    /**
+     * Vanilla lets a bow be released at any charge for a weaker shot - there is no minimum draw
+     * time to fire at all - so this cannot be a flat "too fast" cutoff. What it can safely catch is
+     * a shot claiming near-maximum force (which vanilla only reaches after roughly a second of
+     * charging) with a draw time far too short to have earned it.
+     */
+    private static final double MIN_FULL_CHARGE_MS = 700.0;
+    private static final float NEAR_FULL_FORCE = 0.95f;
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInteract(PlayerInteractEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND) return; // avoid double-counting the off-hand event
+        Player player = event.getPlayer();
+        var action = event.getAction();
+        if (action != org.bukkit.event.block.Action.RIGHT_CLICK_AIR && action != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) return;
+
+        ItemStack item = event.getItem();
+        if (item == null) return;
+
+        if (config.isFastEatEnabled() && (item.getType().isEdible() || item.getType() == Material.POTION)) {
+            eatStartMillis.putIfAbsent(player.getUniqueId(), System.currentTimeMillis());
+        }
+
+        if (config.isFastBowEnabled() && (item.getType() == Material.BOW || item.getType() == Material.CROSSBOW)) {
+            bowDrawStartMillis.putIfAbsent(player.getUniqueId(), System.currentTimeMillis());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onItemConsume(PlayerItemConsumeEvent event) {
+        if (!config.isFastEatEnabled()) return;
+        Player player = event.getPlayer();
+        UserData data = userDataManager.get(player.getUniqueId());
+        if (data == null) return;
+
+        Long startMillis = eatStartMillis.remove(player.getUniqueId());
+        if (startMillis == null) return; // never observed the start - nothing to compare
+
+        long elapsed = System.currentTimeMillis() - startMillis;
+        if (elapsed < MIN_EAT_MS) {
+            CheckResult result = CheckResult.flag(
+                    "FastEat",
+                    0.93,
+                    9.0,
+                    String.format(Locale.US, "Consumed %s faster than vanilla's animation allows (%dms, min ~%dms)",
+                            event.getItem().getType().name(), elapsed, MIN_EAT_MS),
+                    Map.of("item", event.getItem().getType().name(), "elapsedMs", elapsed)
+            );
+            pipeline.handleFlag(player, data, result);
+            data.addVl(result.vl());
+            data.adjustRisk(14.0);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onShootBow(EntityShootBowEvent event) {
+        if (!config.isFastBowEnabled()) return;
+        if (!(event.getEntity() instanceof Player player)) return;
+
+        UserData data = userDataManager.get(player.getUniqueId());
+        if (data == null) return;
+
+        Long startMillis = bowDrawStartMillis.remove(player.getUniqueId());
+        if (startMillis == null) return; // never observed the draw start - nothing to compare
+
+        long elapsed = System.currentTimeMillis() - startMillis;
+        float force = event.getForce();
+
+        if (force >= NEAR_FULL_FORCE && elapsed < MIN_FULL_CHARGE_MS) {
+            CheckResult result = CheckResult.flag(
+                    "FastBow",
+                    0.90,
+                    8.0,
+                    String.format(Locale.US, "Near-full draw force (%.2f) from an impossibly short charge (%dms, min ~%.0fms)",
+                            force, elapsed, MIN_FULL_CHARGE_MS),
+                    Map.of("force", force, "elapsedMs", elapsed)
+            );
+            pipeline.handleFlag(player, data, result);
+            data.addVl(result.vl());
+            data.adjustRisk(13.0);
+        }
     }
 }

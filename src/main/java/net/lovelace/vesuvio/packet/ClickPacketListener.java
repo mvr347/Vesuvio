@@ -82,9 +82,18 @@ public final class ClickPacketListener extends PacketListenerAbstract {
             WrapperPlayClientInteractEntity wrapper = new WrapperPlayClientInteractEntity(event);
             if (wrapper.getAction() == WrapperPlayClientInteractEntity.InteractAction.ATTACK) {
                 UserData data = userDataManager.getOrCreate(player);
-                long now = System.nanoTime();
                 int targetEntityId = wrapper.getEntityId();
 
+                // Definitive check first: a hit on the per-player fake-NPC trap needs no further
+                // validation and should not also feed the normal reach/angle/click pipeline with
+                // an "attack" against an entity that does not really exist.
+                var npcTrapManager = checkPipeline.getNpcTrapManager();
+                if (npcTrapManager != null && npcTrapManager.isTrapEntity(player.getUniqueId(), targetEntityId)) {
+                    virtualExecutor.execute(() -> checkPipeline.handleNpcTrapHit(player, data));
+                    return;
+                }
+
+                long now = System.nanoTime();
                 data.recordCombatAction();
                 data.getClickBuffer().addClick(now, true);
 
