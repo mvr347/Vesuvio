@@ -405,6 +405,30 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.world.xray.enabled", true);
     }
 
+    public boolean isTowerEnabled() {
+        return config.getBoolean("mechanics.world.tower.enabled", true);
+    }
+
+    public boolean isFastPlaceEnabled() {
+        return config.getBoolean("mechanics.world.fastplace.enabled", true);
+    }
+
+    public boolean isBlockReachEnabled() {
+        return config.getBoolean("mechanics.world.blockreach.enabled", true);
+    }
+
+    public boolean isGhostHandEnabled() {
+        return config.getBoolean("mechanics.world.ghosthand.enabled", true);
+    }
+
+    public boolean isFastEatEnabled() {
+        return config.getBoolean("mechanics.item.fasteat.enabled", true);
+    }
+
+    public boolean isFastBowEnabled() {
+        return config.getBoolean("mechanics.item.fastbow.enabled", true);
+    }
+
     public boolean isWavePunishmentEnabled() {
         return config.getBoolean("punishments.wave.enabled", true);
     }
