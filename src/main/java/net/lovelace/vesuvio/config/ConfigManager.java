@@ -307,6 +307,10 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.velocity.enabled", true);
     }
 
+    public boolean isElytraEnabled() {
+        return config.getBoolean("mechanics.movement.elytra.enabled", true);
+    }
+
     public boolean isRiptideExemptionEnabled() {
         return config.getBoolean("mechanics.movement.riptide-exemption.enabled", true);
     }

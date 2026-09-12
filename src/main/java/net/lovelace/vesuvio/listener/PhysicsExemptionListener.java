@@ -8,26 +8,34 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
+import org.bukkit.Material;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerRiptideEvent;
+import org.bukkit.inventory.EquipmentSlot;
 
 import java.util.List;
 
 /**
- * Grants the shared "recent velocity" exemption ({@link UserData#recordVelocity()}, already
- * respected by Speed/Fly/Phase/StepUp via {@link UserData#hasRecentVelocity()}) for two vanilla
- * physics events that legitimately move a player outside their own input: a Trident's Riptide
- * enchantment, and a piston shoving or retracting a block near them.
+ * Signals legitimate vanilla physics events to the movement checks that would otherwise
+ * misread them.
  *
- * <p>Neither currently produces anything the movement checks recognise as a server-applied
- * impulse - Riptide's dash and a piston's shove are not delivered the way knockback is (see
- * {@code TransactionPacketListener}, which captures the outbound EntityVelocity packet) - so
- * without this a rain-riptide dash reads as unexplained excess speed, and standing next to an
- * active piston reads as a block-clip (Phase) or an impossible step (StepUp).
+ * <p>Riptide and piston pushes both grant the shared "recent velocity" exemption
+ * ({@link UserData#recordVelocity()}, already respected by Speed/Fly/Phase/StepUp via
+ * {@link UserData#hasRecentVelocity()}) - neither currently produces anything the movement checks
+ * recognise as a server-applied impulse, since a Trident's Riptide dash and a piston's shove are
+ * not delivered the way knockback is (see {@code TransactionPacketListener}, which captures the
+ * outbound EntityVelocity packet). Without this a rain-riptide dash reads as unexplained excess
+ * speed, and standing next to an active piston reads as a block-clip (Phase) or an impossible step
+ * (StepUp).
+ *
+ * <p>A firework rocket used while gliding is tracked separately, via
+ * {@link UserData#recordElytraBoost()}, since {@link net.lovelace.vesuvio.check.movement.ElytraCheck}
+ * needs to know specifically whether a boost happened recently, not just that some velocity did.
  *
  * Author: Lovelace
  */
@@ -46,6 +54,20 @@ public final class PhysicsExemptionListener implements Listener {
         if (!config.isRiptideExemptionEnabled()) return;
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());
         if (data != null) data.recordVelocity();
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onFireworkBoost(PlayerInteractEvent event) {
+        if (!config.isElytraEnabled()) return;
+        if (event.getHand() != EquipmentSlot.HAND) return; // avoid double-counting the off-hand event
+        Player player = event.getPlayer();
+        if (!player.isGliding()) return;
+
+        var item = event.getItem();
+        if (item == null || item.getType() != Material.FIREWORK_ROCKET) return;
+
+        UserData data = userDataManager.get(player.getUniqueId());
+        if (data != null) data.recordElytraBoost();
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

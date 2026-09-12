@@ -581,6 +581,43 @@ public final class UserData {
     public void resetPhaseTicks() { this.phaseTicks = 0; }
 
     // -------------------------------------------------------------
+    // Elytra glide (see check.movement.ElytraCheck)
+    //
+    // A firework rocket's boost is not delivered as a server EntityVelocity packet the way
+    // knockback is - it is simulated by both client and server applying the same per-tick impulse
+    // over the rocket's flight duration - so it needs its own "recently boosted" signal rather than
+    // reusing UserData#hasRecentVelocity(). The altitude window accumulates net Y change over a
+    // few seconds: unboosted vanilla glide cannot sustain a net climb, so a sustained climb with no
+    // recent boost is the check's primary signal. Speed debt is a secondary, generously-tolerant
+    // catch-all for sustained excess 3D speed, mirroring SpeedCheck's debt model rather than a flat
+    // cap, since a legitimate steep dive can reach a genuinely high, unbounded-looking speed.
+    // -------------------------------------------------------------
+    private volatile long lastElytraBoostMillis = 0L;
+    private volatile long elytraWindowStartMillis = 0L;
+    private volatile double elytraWindowDeltaY = 0.0;
+    private volatile double elytraSpeedDebt = 0.0;
+    private volatile int elytraViolationStreak = 0;
+
+    public void recordElytraBoost() { this.lastElytraBoostMillis = System.currentTimeMillis(); }
+    public boolean hasRecentElytraBoost() { return (System.currentTimeMillis() - lastElytraBoostMillis) < 2000L; }
+
+    public long getElytraWindowStartMillis() { return elytraWindowStartMillis; }
+    public double getElytraWindowDeltaY() { return elytraWindowDeltaY; }
+    public void resetElytraWindow(long nowMillis) {
+        this.elytraWindowStartMillis = nowMillis;
+        this.elytraWindowDeltaY = 0.0;
+    }
+    public void addElytraWindowDeltaY(double v) { this.elytraWindowDeltaY += v; }
+
+    public double getElytraSpeedDebt() { return elytraSpeedDebt; }
+    public void addElytraSpeedDebt(double v) { this.elytraSpeedDebt = Math.max(0.0, this.elytraSpeedDebt + v); }
+    public void setElytraSpeedDebt(double v) { this.elytraSpeedDebt = v; }
+
+    public int getElytraViolationStreak() { return elytraViolationStreak; }
+    public void incrementElytraViolationStreak() { this.elytraViolationStreak++; }
+    public void resetElytraViolationStreak() { this.elytraViolationStreak = 0; }
+
+    // -------------------------------------------------------------
     // Blink / lag-switch (see check.movement.BlinkCheck)
     //
     // Tracks EVERY movement packet, position-carrying or not: a standing vanilla client sends the
