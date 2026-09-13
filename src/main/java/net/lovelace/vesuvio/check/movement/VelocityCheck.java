@@ -79,7 +79,9 @@ public final class VelocityCheck {
             return CheckResult.pass("Velocity");
         }
 
-        double impulse = Math.hypot(data.getPendingVelX(), data.getPendingVelZ());
+        double velX = data.getPendingVelX();
+        double velZ = data.getPendingVelZ();
+        double impulse = Math.hypot(velX, velZ);
         if (impulse < MIN_TRACKABLE_IMPULSE) {
             data.clearPendingVelocity();
             return CheckResult.pass("Velocity");
@@ -113,6 +115,17 @@ public final class VelocityCheck {
 
         if (ratio >= MIN_EXPECTED_RATIO) {
             data.decrementVelocityViolationStreak();
+            return CheckResult.pass("Velocity");
+        }
+
+        // A wall standing directly in the knockback's path can legitimately zero out a client's
+        // travel long before any anti-knockback client would need to - vanilla collision resolves
+        // the X and Z components of that motion independently against the world every tick, same
+        // as it does for ordinary walking. This reading proves nothing either way, so it must not
+        // build toward the streak: a player who gets hit into corners often (very ordinary PvP
+        // behaviour - 1v1 arenas, cornering an opponent) would otherwise accumulate a false streak
+        // purely from geometry, never from anything their client actually did.
+        if (env.isHorizontallyBlocked(velX, velZ)) {
             return CheckResult.pass("Velocity");
         }
 

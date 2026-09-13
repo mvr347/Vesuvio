@@ -49,11 +49,16 @@ public final class BlinkCheck {
     /**
      * Vanilla's positionReminder rolls over every 20 ticks (~1000ms at 20 TPS) when a player is
      * completely stationary, producing a real packet gap of up to that long with a perfectly
-     * healthy connection. The threshold sits well above that ceiling - with margin for server tick
-     * jitter and network delivery delay - so normal idle play never reads as a blink, while still
-     * being far shorter than a blink worth using.
+     * healthy connection. On top of that, an ordinary client-side hitch (chunk mesh rebuild, GC
+     * pause, alt-tab, shader compilation) stalls the render/tick loop that queues movement packets
+     * without touching the network thread that answers this plugin's transactions - so a healthy
+     * RTT during a silence is not proof of a blink by itself, only of packets genuinely being
+     * withheld. The threshold sits well above both the reminder ceiling and a single such hitch -
+     * with margin for server tick jitter and network delivery delay - so normal idle play or one
+     * unlucky client stutter never reads as a blink, while still being far shorter than a blink
+     * worth using.
      */
-    private static final double MIN_SILENCE_MS = 1500.0;
+    private static final double MIN_SILENCE_MS = 2200.0;
 
     /**
      * The connection counts as healthy through the silence only if the measured round-trip is well
@@ -65,8 +70,13 @@ public final class BlinkCheck {
     /** Absolute ceiling: past this, treat it as a real outage regardless of the ratio. */
     private static final double MAX_JUDGED_SILENCE_MS = 10_000.0;
 
-    /** Separate silences before a flag, so one odd scheduling gap is never enough. */
-    private static final int REQUIRED_STREAK = 2;
+    /**
+     * Separate silences before a flag. A single client-side hitch producing one silence past
+     * {@link #MIN_SILENCE_MS} is plausible on weaker hardware; a real blink module is used
+     * repeatedly, not once, so requiring three keeps that one unlucky stutter from ever being
+     * enough on its own.
+     */
+    private static final int REQUIRED_STREAK = 3;
 
     /**
      * How long a suspicious silence stays counted. Blinks are separated by ordinary play, so the

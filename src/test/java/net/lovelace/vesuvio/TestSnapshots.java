@@ -35,6 +35,10 @@ final class TestSnapshots {
         private boolean jumpBoost = false;
         private double jumpStrength = 0.42; // vanilla Attribute.JUMP_STRENGTH default
         private boolean gliding = false;
+        private boolean blockedPosX = false;
+        private boolean blockedNegX = false;
+        private boolean blockedPosZ = false;
+        private boolean blockedNegZ = false;
 
         Builder blockBelow(Material m) { this.blockBelow = m; return this; }
         Builder solidBelow(boolean v) { this.solidBelow = v; return this; }
@@ -44,6 +48,10 @@ final class TestSnapshots {
         Builder jumpBoost(boolean v) { this.jumpBoost = v; return this; }
         Builder jumpStrength(double v) { this.jumpStrength = v; return this; }
         Builder gliding(boolean v) { this.gliding = v; return this; }
+        Builder blockedPosX(boolean v) { this.blockedPosX = v; return this; }
+        Builder blockedNegX(boolean v) { this.blockedNegX = v; return this; }
+        Builder blockedPosZ(boolean v) { this.blockedPosZ = v; return this; }
+        Builder blockedNegZ(boolean v) { this.blockedNegZ = v; return this; }
 
         EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
@@ -57,6 +65,8 @@ final class TestSnapshots {
                     // inWater, inLava, climbing, inCobweb
                     false, false, false, false,
                     nearClimbable, solidBelow, insideSolidBlock, blockBelow,
+                    // blockedPosX, blockedNegX, blockedPosZ, blockedNegZ
+                    blockedPosX, blockedNegX, blockedPosZ, blockedNegZ,
                     // levitation, slowFalling, jumpBoost, blindness, dolphinsGrace, speedAmplifier
                     false, false, jumpBoost, false, false, -1,
                     // depthStrider, soulSpeed
