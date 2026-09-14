@@ -302,7 +302,8 @@ public final class WorldInteractionListener implements Listener {
             RayTraceResult hit = player.getWorld().rayTraceBlocks(eye, direction, distance - 0.2, FluidCollisionMode.NEVER, true);
             if (hit != null && hit.getHitBlock() != null && !hit.getHitBlock().equals(block)) {
                 Block obstruction = hit.getHitBlock();
-                if (obstruction.getType().isOccluding() && !obstruction.isPassable()) {
+                if (obstruction.getType().isOccluding() && !obstruction.isPassable()
+                        && !isAdjacent(obstruction, block)) {
                     CheckResult result = CheckResult.flag(
                             "GhostHand",
                             0.96,
@@ -316,6 +317,19 @@ public final class WorldInteractionListener implements Listener {
                 }
             }
         }
+    }
+
+    /**
+     * A block immediately touching the target (sharing a face, edge, or corner) is not a "wall" in
+     * the GhostHand sense - it's ordinary geometry a ray toward the target's exact center can graze
+     * near a boundary: a tunnel's own walls/ceiling while mining, or the block last placed while
+     * building along a straight wall/bridge, both legitimately sit right next to the block being
+     * interacted with. A genuine through-wall obstruction is never this close to its target.
+     */
+    private boolean isAdjacent(Block a, Block b) {
+        return Math.abs(a.getX() - b.getX()) <= 1
+                && Math.abs(a.getY() - b.getY()) <= 1
+                && Math.abs(a.getZ() - b.getZ()) <= 1;
     }
 
     /**

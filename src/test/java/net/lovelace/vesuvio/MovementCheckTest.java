@@ -308,6 +308,27 @@ class MovementCheckTest {
     }
 
     @Test
+    void velocityNeverFlagsRepeatedKnockbackIntoAWall() {
+        VelocityCheck check = new VelocityCheck();
+        TransactionManager transactions = new TransactionManager();
+        UUID uuid = UUID.randomUUID();
+        UserData data = new UserData(uuid, "CorneredPlayer");
+        // Knockback pushes +X, and there is a wall on that exact side - the repeated near-zero
+        // travel below is honest physics, not an anti-knockback client, and must never build
+        // toward a flag no matter how many times it happens (e.g. repeatedly cornering the same
+        // opponent in a 1v1 arena).
+        data.setEnvironment(TestSnapshots.builder().blockBelow(Material.GRASS_BLOCK).blockedPosX(true).build());
+
+        for (int event = 0; event < 12; event++) {
+            data.recordPendingVelocity(0.4, 0.36, 0.0, 0L);
+            for (int t = 0; t < 4; t++) {
+                assertFalse(check.check(uuid, data, transactions, 0.0, 0).isFlag(),
+                        "knockback absorbed by a wall directly in its path must never flag");
+            }
+        }
+    }
+
+    @Test
     void velocityWaitsForAcknowledgementBeforeJudging() {
         VelocityCheck check = new VelocityCheck();
         TransactionManager transactions = new TransactionManager();

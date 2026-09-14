@@ -132,7 +132,7 @@ class PhaseBlinkCheckTest {
         BlinkCheck check = new BlinkCheck();
         UUID uuid = UUID.randomUUID();
         // A stall shows up as a transaction round-trip on the order of the outage itself.
-        TransactionManager transactions = new StubTransactions(2000.0, 0.0);
+        TransactionManager transactions = new StubTransactions(2500.0, 0.0);
         UserData data = new UserData(uuid, "Lagging");
         data.setEnvironment(snapshot(false));
 
@@ -141,9 +141,9 @@ class PhaseBlinkCheckTest {
             now += 50 * MS;
             check.check(uuid, data, transactions, now);
         }
-        // Two second freeze, with the connection genuinely down through it.
+        // Freeze well past MIN_SILENCE_MS, with the connection genuinely down through it.
         for (int i = 0; i < 5; i++) {
-            now += 2000 * MS;
+            now += 2500 * MS;
             assertFalse(check.check(uuid, data, transactions, now).isFlag(),
                     "a real network stall must not be read as a lag switch");
         }
@@ -166,7 +166,7 @@ class PhaseBlinkCheckTest {
 
         boolean flagged = false;
         for (int i = 0; i < 5 && !flagged; i++) {
-            now += 1800 * MS; // movement silence, well past vanilla's ~1000ms idle reminder gap
+            now += 2500 * MS; // movement silence, safely past a single client-side hitch too
             CheckResult result = check.check(uuid, data, transactions, now);
             if (result.isFlag()) {
                 flagged = true;
@@ -187,15 +187,16 @@ class PhaseBlinkCheckTest {
         long now = 0L;
         boolean flagged = false;
 
-        // Two blinks with a full ten seconds of ordinary play between them - which is how the
-        // cheat is actually used. An earlier version decayed the count on every normal packet, so
-        // the run of clean ticks below reset it and the threshold was unreachable in practice.
-        for (int blink = 0; blink < 2 && !flagged; blink++) {
+        // Three blinks (REQUIRED_STREAK) with a full ten seconds of ordinary play between each -
+        // which is how the cheat is actually used. An earlier version decayed the count on every
+        // normal packet, so the run of clean ticks below reset it and the threshold was
+        // unreachable in practice.
+        for (int blink = 0; blink < 3 && !flagged; blink++) {
             for (int i = 0; i < 200; i++) {
                 now += 50 * MS;
                 if (check.check(uuid, data, transactions, now).isFlag()) flagged = true;
             }
-            now += 1800 * MS;
+            now += 2500 * MS;
             if (check.check(uuid, data, transactions, now).isFlag()) flagged = true;
         }
 
@@ -211,17 +212,17 @@ class PhaseBlinkCheckTest {
         data.setEnvironment(snapshot(false));
 
         long now = 0L;
+
+        // Two occurrences close together, then a single one three minutes later. Un-forgotten,
+        // 2 + 1 would reach REQUIRED_STREAK (3) and flag on the third; correctly windowed, the
+        // three-minute gap (> WINDOW_NANOS) must forget the first two, leaving just 1.
         now += 50 * MS;
         check.check(uuid, data, transactions, now);
-
-        // One odd gap, then the same again over three minutes later. Two isolated hiccups that far
-        // apart are not a pattern, and must not add up.
-        now += 1800 * MS;
-        assertFalse(check.check(uuid, data, transactions, now).isFlag());
+        now += 2500 * MS;
+        check.check(uuid, data, transactions, now);
 
         now += 200_000 * MS;
-        check.check(uuid, data, transactions, now);
-        now += 1800 * MS;
+        now += 2500 * MS;
         assertFalse(check.check(uuid, data, transactions, now).isFlag(),
                 "occurrences outside the window must not accumulate");
     }
@@ -242,7 +243,7 @@ class PhaseBlinkCheckTest {
             check.check(uuid, data, transactions, now);
         }
         for (int i = 0; i < 10; i++) {
-            now += 1800 * MS;
+            now += 2500 * MS;
             assertFalse(check.check(uuid, data, transactions, now).isFlag());
         }
     }

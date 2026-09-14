@@ -54,6 +54,14 @@ public record EnvironmentSnapshot(
         boolean insideSolidBlock,// feet or head occupy a full occluding cube (Phase/Clip signal)
         Material blockBelow,     // block directly beneath the feet (ice, soul sand, slime, ...)
 
+        // --- Immediate horizontal neighbours (feet/head height), for "is a wall right there"
+        // reasoning - e.g. VelocityCheck telling a genuine wall-collision apart from an
+        // anti-knockback client absorbing a knockback in the open ---
+        boolean blockedPosX,
+        boolean blockedNegX,
+        boolean blockedPosZ,
+        boolean blockedNegZ,
+
         // --- Potion effects ---
         boolean levitation,
         boolean slowFalling,
@@ -81,6 +89,7 @@ public record EnvironmentSnapshot(
             0, 0, 0,
             false, false, false, false, false, false, false, false, false, 0f,
             false, false, false, false, false, false, false, Material.AIR,
+            false, false, false, false,
             false, false, false, false, false, -1,
             0, 0,
             0.42,
@@ -101,5 +110,20 @@ public record EnvironmentSnapshot(
      */
     public boolean isMovementExempt() {
         return exemptGameMode || allowFlight || flying || gliding || insideVehicle || dead;
+    }
+
+    /**
+     * True if a solid wall stands between the player and travel in the given horizontal
+     * direction (e.g. the direction of a knockback impulse). Deliberately axis-based rather than
+     * a precise angle match: Minecraft resolves X and Z collision independently, so a wall on
+     * either contributing axis can legitimately zero out displacement along a diagonal impulse.
+     */
+    public boolean isHorizontallyBlocked(double dirX, double dirZ) {
+        boolean blocked = false;
+        if (dirX > 0.02) blocked |= blockedPosX;
+        else if (dirX < -0.02) blocked |= blockedNegX;
+        if (dirZ > 0.02) blocked |= blockedPosZ;
+        else if (dirZ < -0.02) blocked |= blockedNegZ;
+        return blocked;
     }
 }

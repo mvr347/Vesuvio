@@ -153,6 +153,10 @@ public final class EnvironmentSnapshotService {
                 blocks.solidBelow,
                 blocks.insideSolidBlock,
                 blocks.blockBelow,
+                blocks.blockedPosX,
+                blocks.blockedNegX,
+                blocks.blockedPosZ,
+                blocks.blockedNegZ,
                 player.hasPotionEffect(PotionEffectType.LEVITATION),
                 player.hasPotionEffect(PotionEffectType.SLOW_FALLING),
                 player.hasPotionEffect(PotionEffectType.JUMP_BOOST),
@@ -249,7 +253,23 @@ public final class EnvironmentSnapshotService {
         }
         cache.solidBelow = solidBelow;
         cache.nearClimbable = nearClimbable;
+
+        // Immediate horizontal neighbours at feet and head height: enough to tell "player is
+        // pressed against a wall on this side" from "player is in the open", which is all the
+        // consumers of this need - it doesn't have to be a precise collision AABB.
+        for (int dy = 0; dy <= 1; dy++) {
+            if (isWallBlocking(world, bx + 1, by + dy, bz)) cache.blockedPosX = true;
+            if (isWallBlocking(world, bx - 1, by + dy, bz)) cache.blockedNegX = true;
+            if (isWallBlocking(world, bx, by + dy, bz + 1)) cache.blockedPosZ = true;
+            if (isWallBlocking(world, bx, by + dy, bz - 1)) cache.blockedNegZ = true;
+        }
         return cache;
+    }
+
+    /** Same "genuinely solid, not just occluding-looking" test used for {@code insideSolidBlock}. */
+    private static boolean isWallBlocking(World world, int x, int y, int z) {
+        org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+        return block.getType().isOccluding() && !block.isPassable();
     }
 
     /** Blocks that make a claimed on-ground state or a survived fall plausible. */
@@ -282,5 +302,9 @@ public final class EnvironmentSnapshotService {
         boolean inCobweb;
         boolean insideSolidBlock;
         Material blockBelow = Material.AIR;
+        boolean blockedPosX;
+        boolean blockedNegX;
+        boolean blockedPosZ;
+        boolean blockedNegZ;
     }
 }
