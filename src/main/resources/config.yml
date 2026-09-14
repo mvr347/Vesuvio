@@ -58,6 +58,11 @@ layers:
       min-samples-per-class: 150
       timeout-minutes: 15
       python-executable: "python3"
+      # "logistic" (по умолчанию, безопаснее для автотренировки на небольшом датасете одного
+      # сервера), "histgb" (HistGradientBoostingClassifier) или "mlp" (небольшая нейросеть) -
+      # нелинейные модели ловят взаимодействия признаков, которых линейная модель принципиально
+      # не видит, но требуют больше данных, чтобы не переобучиться. См. train_models.py.
+      model-type: "logistic"
 
   # Уровень 3: Самообучение и память аномалий
   self-learning:
@@ -98,6 +103,22 @@ layers:
       cheat-on-ban: true
       # Максимальный размер датасета в памяти (старые образцы вытесняются новыми)
       max-dataset-size: 50000
+
+  # Ансамблевое взвешивание (2026-09-14): объединяет уверенность статистики/ONNX/самообучения/
+  # памяти аномалий/temporal-consistency в один взвешенный score. Не заменяет существующие VL-
+  # начисления по каждому слою (они настроены и проверены отдельно), а добавляет ОСТОРОЖНУЮ,
+  # ограниченную по величине надбавку к Risk, когда сразу несколько независимых слоёв синхронно
+  # "подозревают", даже если ни один по отдельности не пересёк порог флага.
+  ensemble:
+    enabled: true
+    weights:
+      statistical: 1.0
+      onnx: 1.5
+      self-learn: 1.0
+      anomaly: 0.6
+      temporal: 0.8
+    risk-threshold: 0.45     # ниже этого итоговый score не даёт вообще никакой надбавки
+    max-risk-contribution: 6.0 # потолок надбавки к Risk за одну оценку клика
 
 # ------------------------------------------------------------------------------
 # 2. МЕХАНИКИ ОБНАРУЖЕНИЯ И АДАПТАЦИЯ К RPG / ПВП
@@ -175,22 +196,29 @@ mechanics:
                             # почерк чита ElytraFly. Полёт с недавним фейерверком не проверяется
                             # вовсе: ускорение от ракет моделировать точно вслепую слишком рискованно
     blink:
-      enabled: false        # ОТКЛЮЧЕНО ПО УМОЛЧАНИЮ (2026-09-12): слишком много легитимных причин
-                            # дают точно ту же сигнатуру, что и настоящий блинк — здоровое
-                            # соединение (транзакции отвечают быстро на уровне Netty) при молчании
-                            # потока пакетов движения (который формируется только в основном
-                            # игровом цикле клиента): микро-фриз GC на клиенте при прогрузке чанков,
-                            # сворачивание игры / потеря фокуса окна (Sodium/Lunar по умолчанию
-                            # ограничивают FPS до 1-5 при потере фокуса), открытие инвентаря/сундука/
-                            # чата/F3. Пороги (MIN_SILENCE_MS=1500, REQUIRED_STREAK=2 за 2 минуты)
-                            # не спасают: любой из перечисленных сценариев легко даёт нужную
-                            # сигнатуру дважды за пару минут обычной игры.
-                            # ВАЖНО: в этом плагине НЕТ отдельного механизма setback/коррекции
-                            # позиции — большой прыжок после паузы в CheckPipeline.processMovement
-                            # (см. teleport-exemption, deltaX/Z > 10 блоков) молча сбрасывает
-                            # состояние без флага, а TimerCheck сбрасывает баланс в 0 на паузах
-                            # дольше 1000 мс вместо детекта. Поэтому отключение Blink оставляет
-                            # реальный лаг-свитч без выделенной защиты — осознанный компромисс.
+      enabled: true         # ПЕРЕСМОТРЕНО (2026-09-14): полностью переработанный детектор -
+                            # см. check.movement.BlinkCheck. Раньше был отключен по умолчанию,
+                            # т.к. старые пороги (MIN_SILENCE_MS=2200, REQUIRED_STREAK=3 без
+                            # доп. проверок) путали настоящий блинк с легитимными микро-фризами
+                            # клиента. Теперь: 1) окно occurrences — настоящее скользящее окно, а
+                            # не цепочка гэпов; 2) отдельный режим "короткого блинка" (900-1550мс) с
+                            # повышенным требуемым streak; 3) "release burst" — резкий скачок
+                            # позиции сразу после молчания подтверждает блинк немедленно, без
+                            # накопления streak, закрывая прежнюю дыру, когда большой прыжок после
+                            # паузы в CheckPipeline.processMovement (teleport-exemption,
+                            # deltaX/Z > 10 блоков) молча сбрасывал состояние без флага;
+                            # 4) явные исключения: полёт на элитре/плавание/транспорт/смерть/
+                            # недавний телепорт/недавний импульс (нокбэк, Riptide, поршень).
+      min-silence-ms: 1550.0       # порог "длинного" блинка (выше потолка ванильного
+                                   # positionReminder ~1000мс и одного клиентского фриза)
+      max-judged-silence-ms: 10000.0 # выше этого — считается настоящим обрывом связи
+      healthy-rtt-fraction: 0.5    # RTT транзакций должен быть < (тишина * эта доля)
+      required-streak: 3           # сколько срабатываний в окне нужно для флага (длинный блинк)
+      window-ms: 120000             # длина скользящего окна для подсчёта occurrences (2 минуты)
+      short-silence-min-ms: 900.0  # нижняя граница "короткого" блинка
+      short-streak-bonus: 2         # доп. срабатывания, нужные короткому блинку без release burst
+      release-burst-min-blocks: 1.6 # лишнее смещение (блоков) сверх правдоподобного = release burst
+      release-burst-window-ms: 400.0 # сколько мс после тишины ещё засчитывается release burst
     velocity:
       enabled: true         # Детект AntiKnockback: сравнение реального смещения с отправленным
                             # сервером импульсом, начиная с момента подтверждения транзакции
@@ -229,6 +257,41 @@ mechanics:
   combat:
     angle:
       enabled: true         # Детект ударов вне поля зрения (Silent Aim / Killaura)
+    # Пороги и веса KillauraAngleCheck (2026-09-14 переработка): угол считается по нескольким
+    # точкам хитбокса (центр/голова/ноги/ближайшая точка), SilentAim использует перемотанный по
+    # реальному RTT хитбокс, добавлены ReactionTime, TargetSwitch и AimConsistency поверх старых
+    # PerfectAimLock/StaticAimTracking. dynamic-sensitivity умножает/делит пороги на Trust/Risk
+    # игрока (см. UserData#getSensitivityMultiplier).
+    killaura:
+      dynamic-sensitivity: true
+      fov-limit-degrees: 75.0          # максимальный угол атаки от направления взгляда
+      silent-aim-angle-degrees: 45.0   # угол, при котором прицел уже не может задеть хитбокс
+      hitbox-expand: 0.28              # базовое расширение хитбокса под погрешность рейкаста
+      ping-buffer-high: 0.20           # доп. расширение при пинге выше ping-buffer-threshold-ms
+      ping-buffer-low: 0.08            # доп. расширение при обычном пинге
+      ping-buffer-threshold-ms: 120.0
+      wallhit-tolerance: 0.35          # запас (блоков) перед тем как считать блок препятствием
+      perfect-aim:
+        angle-degrees: 0.6             # порог "идеального" прицела (суб-градусная точность)
+        streak: 6                      # сколько подряд идеальных попаданий для флага
+      static-tracking:
+        target-delta-degrees: 4.0      # насколько должен был измениться требуемый угол
+        player-delta-degrees: 0.5      # насколько РЕАЛЬНО повернулась камера игрока (макс.)
+        max-angle-degrees: 10.0        # угол промаха, при котором попадание ещё засчитывается
+        streak: 3
+      reaction:
+        min-ms: 35.0                   # минимально правдоподобное время реакции человека
+        streak: 5
+        significant-rotation-degrees: 2.0 # порог "настоящего" поворота камеры (не микро-джиттер)
+      target-switch:
+        window-ms: 600.0               # окно между атаками, в котором сравнивается переключение
+        min-required-delta-degrees: 20.0 # насколько должен отличаться угол к новой цели
+        max-look-delta-degrees: 3.0    # насколько МАЛО реально повернулась камера при переключении
+        streak: 3
+      aim-consistency:
+        max-error-degrees: 1.2         # абсолютный потолок ошибки прицеливания
+        min-jitter-degrees: 0.15       # минимальный "пол" естественного дрожания руки
+        streak: 8
     autocriticals:
       enabled: true         # Детект микро-прыжков пакетов Auto Criticals
     backtrack:
@@ -327,6 +390,9 @@ mechanics:
     wallhit: false           # KillauraAngleCheck's attack-through-wall sub-flag
     perfectaimlock: false    # KillauraAngleCheck's sub-degree aim-lock streak sub-flag
     staticaimtracking: false # KillauraAngleCheck's hit-rotation consistency sub-flag
+    reactiontime: false      # KillauraAngleCheck's implausible reaction-time sub-flag
+    targetswitch: false      # KillauraAngleCheck's multi-target switch sub-flag
+    aimconsistency: false    # KillauraAngleCheck's per-player jitter-floor sub-flag
     temporalconsistency: false
     banevasion: false        # Recommend keeping this visible - staff should see evasion attempts immediately
     brand-detection: true   # Анализ бренда клиента бесшумен (только снижает Trust)

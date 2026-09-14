@@ -182,6 +182,7 @@ public final class PlayerLifecycleListener implements Listener {
         if (data != null) {
             data.setInitialRotation(false);
             data.resetGcdStreak();
+            data.recordTeleport();
         }
     }
 
@@ -191,6 +192,7 @@ public final class PlayerLifecycleListener implements Listener {
         if (data != null) {
             data.setInitialRotation(false);
             data.resetGcdStreak();
+            data.recordTeleport();
         }
     }
 

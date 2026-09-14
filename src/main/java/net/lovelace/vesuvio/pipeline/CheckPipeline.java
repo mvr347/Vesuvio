@@ -67,9 +67,9 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.TimerCheck timerCheck = new net.lovelace.vesuvio.check.movement.TimerCheck();
     private final net.lovelace.vesuvio.check.movement.VelocityCheck velocityCheck = new net.lovelace.vesuvio.check.movement.VelocityCheck();
     private final net.lovelace.vesuvio.check.movement.PhaseCheck phaseCheck = new net.lovelace.vesuvio.check.movement.PhaseCheck();
-    private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck = new net.lovelace.vesuvio.check.movement.BlinkCheck();
+    private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck;
     private final net.lovelace.vesuvio.check.movement.ElytraCheck elytraCheck = new net.lovelace.vesuvio.check.movement.ElytraCheck();
-    private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck();
+    private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck;
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
     private final net.lovelace.vesuvio.check.combat.AutoCriticalsCheck autoCriticalsCheck = new net.lovelace.vesuvio.check.combat.AutoCriticalsCheck();
@@ -104,6 +104,8 @@ public final class CheckPipeline {
         this.transactionManager = transactionManager;
         this.npcTrapManager = npcTrapManager;
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
+        this.blinkCheck = net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(config);
+        this.angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck(config, hitboxTracker, transactionManager);
     }
 
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
@@ -141,8 +143,10 @@ public final class CheckPipeline {
         }
 
         // Temporal Consistency Check (Mechanic 1.2)
+        double temporalConfidence = 0.0;
         if (config.isTemporalConsistencyEnabled()) {
             CheckResult tempResult = temporalCheck.check(data);
+            temporalConfidence = tempResult.confidence();
             if (tempResult.isFlag()) {
                 data.addVl(tempResult.vl());
                 data.adjustRisk(15.0);
@@ -280,12 +284,43 @@ public final class CheckPipeline {
                 return null;
             });
         }
+
+        // -------------------------------------------------------------
+        // Ensemble scoring (see EnsembleScorer): combines this evaluation's statistical/self-learn/
+        // anomaly/temporal signals with the most recently known ONNX probability into one weighted
+        // score. ONNX itself is evaluated asynchronously above and may not have completed yet for
+        // THIS click - data.getLastMLProbability() is deliberately a best-effort "most recent known"
+        // value rather than blocking on it, since the ensemble contribution is a soft corroborating
+        // signal, not a hard decision.
+        // -------------------------------------------------------------
+        if (config.isEnsembleScoringEnabled()) {
+            EnsembleScorer.Inputs ensembleInputs = new EnsembleScorer.Inputs(
+                    statResult.confidence(), data.getLastMLProbability(), data.getLastSelfLearnProbability(),
+                    repeatScore, temporalConfidence);
+            double ensembleScore = EnsembleScorer.score(ensembleInputs, config);
+            if (ensembleScore >= config.getEnsembleRiskThreshold()) {
+                double contribution = (ensembleScore - config.getEnsembleRiskThreshold())
+                        / Math.max(1e-6, 1.0 - config.getEnsembleRiskThreshold())
+                        * config.getEnsembleMaxRiskContribution();
+                data.adjustRisk(contribution);
+            }
+        }
     }
 
     /**
      * Processes aim updates with delta rotations.
      */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch) {
+        // KillauraAngleCheck's ReactionTime sub-check needs to know when the attacker's camera
+        // last made a "real" turn, not merely received a rotation packet - tracked here since this
+        // is the one place every aim update (combat or not) passes through.
+        long nowNanos = System.nanoTime();
+        data.setLastRotationNanos(nowNanos);
+        double combinedRotation = Math.abs(deltaYaw) + Math.abs(deltaPitch);
+        if (combinedRotation >= config.getKillauraReactionSignificantRotationDegrees()) {
+            data.setLastSignificantRotationNanos(nowNanos);
+        }
+
         // BadPackets Pitch Bounds Check
         if (config.isBadPacketsEnabled() && config.isBadPacketsPitchBounds()) {
             CheckResult pitchResult = badPacketsCheck.checkPitch(data.getLastPitch());
@@ -590,7 +625,7 @@ public final class CheckPipeline {
         // client sends position-less flying packets each tick, and it is the silence of that whole
         // stream (not of positions alone) that distinguishes a lag switch from standing still.
         if (config.isBlinkEnabled() && transactionManager != null) {
-            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager, packetReceiptNanos);
+            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager, packetReceiptNanos, hasPos);
             if (blinkResult.isFlag()) {
                 data.addVl(blinkResult.vl());
                 data.adjustRisk(blinkResult.confidence() * 12.0);
@@ -623,6 +658,20 @@ public final class CheckPipeline {
         // than a tick (idle player resuming, post-lag burst) has to be handled differently rather
         // than being read as one very fast tick.
         double elapsedMs = prevNanos == 0L ? 50.0 : (nowNanos - prevNanos) / 1_000_000.0;
+
+        // 1a-1. Blink release-burst confirmation. Must run BEFORE the teleport-size exclusion below
+        // discards this delta: a real blink's release is frequently exactly that size (queued
+        // movement flushed in one packet), which is precisely why it used to be silently absorbed
+        // there with no flag at all instead of being recognised as the signature it is.
+        if (config.isBlinkEnabled() && transactionManager != null) {
+            CheckResult burstResult = blinkCheck.checkReleaseBurst(data, deltaX, deltaY, deltaZ, elapsedMs, nowNanos);
+            if (burstResult.isFlag()) {
+                data.addVl(burstResult.vl());
+                data.adjustRisk(burstResult.confidence() * 12.0);
+                data.setLastTriggeredCheck(burstResult.checkName());
+                handleFlag(player, data, burstResult);
+            }
+        }
 
         // Exclude teleports / huge jumps
         if (Math.abs(deltaX) > 10.0 || Math.abs(deltaY) > 15.0 || Math.abs(deltaZ) > 10.0) {

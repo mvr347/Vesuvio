@@ -168,6 +168,8 @@ public final class ModelAutoTrainer {
         command.add(stagingDir.toString());
         command.add("--domains");
         command.add(String.join(",", readyDomains));
+        command.add("--model-type");
+        command.add(config.getAutoRetrainModelType());
 
         LOGGER.info("[Vesuvio] Auto-retrain: starting training for domain(s) " + readyDomains + " ...");
 
