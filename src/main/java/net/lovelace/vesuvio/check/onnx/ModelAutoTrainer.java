@@ -320,6 +320,17 @@ public final class ModelAutoTrainer {
             return false;
         }
 
+        double suggested = readJsonNumber(json, "suggested_threshold");
+        if (!Double.isNaN(suggested)) {
+            // Surfaced rather than applied: the live threshold is an operator's setting, and
+            // silently rewriting config.yml from a background task would be a surprising thing for
+            // a plugin to do. Logged so the recommendation is actually actionable.
+            LOGGER.info(String.format(Locale.US,
+                    "[Vesuvio] Auto-retrain: '%s' reaches the configured false-positive budget at "
+                            + "threshold %.3f - set layers.onnx.models.%s.threshold to that if you want to match it.",
+                    domain, suggested, domain + "_model"));
+        }
+
         LOGGER.info(String.format(Locale.US,
                 "[Vesuvio] Auto-retrain: '%s' model passed the quality gate (precision=%.3f, recall=%.3f).",
                 domain, precision, recall));

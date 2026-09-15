@@ -139,12 +139,25 @@ def build_model(model_type: str, deps):
 
     if model_type == "histgb":
         HistGradientBoostingClassifier = deps["HistGradientBoostingClassifier"]
-        classifier = HistGradientBoostingClassifier(
-            max_iter=150, max_depth=6, learning_rate=0.08,
-            l2_regularization=0.1, random_state=42,
-        )
+        # class_weight balances the loss the same way the logistic model already did. Cheat
+        # samples are far rarer than legit ones here, and without it the model minimises loss
+        # mostly by agreeing that everyone is legit.
+        try:
+            classifier = HistGradientBoostingClassifier(
+                max_iter=150, max_depth=6, learning_rate=0.08,
+                l2_regularization=0.1, random_state=42, class_weight="balanced",
+            )
+        except TypeError:
+            # class_weight landed in scikit-learn 1.2; older versions still work, just unbalanced.
+            print("[warn] this scikit-learn is too old for HistGB class_weight - training unbalanced")
+            classifier = HistGradientBoostingClassifier(
+                max_iter=150, max_depth=6, learning_rate=0.08,
+                l2_regularization=0.1, random_state=42,
+            )
     elif model_type == "mlp":
         MLPClassifier = deps["MLPClassifier"]
+        # MLPClassifier supports neither class_weight nor sample_weight, so class imbalance is
+        # not corrected for this model type - one more reason it is not the default.
         classifier = MLPClassifier(
             hidden_layer_sizes=(24,), activation="relu", alpha=1e-3,
             max_iter=800, early_stopping=True, random_state=42,
