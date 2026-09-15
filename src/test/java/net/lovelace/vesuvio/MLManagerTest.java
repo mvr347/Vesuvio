@@ -73,6 +73,30 @@ public class MLManagerTest {
             System.out.println("Aim Model Result: prob=" + aimRes.probability() + ", expl=" + aimRes.explanation());
             assertTrue(aimRes.probability() >= 0.0 && aimRes.probability() <= 1.0);
 
+            // The bundled models were exported before the feature set widened (16 click / 8 aim
+            // inputs), while the extractors now produce 20 and 16. Inference must keep working
+            // against those existing models instead of throwing a shape mismatch on every call -
+            // MLManager fits the vector to the width each model declares.
+            float[] widerClickFeatures = new float[20];
+            System.arraycopy(clickFeatures, 0, widerClickFeatures, 0, clickFeatures.length);
+            widerClickFeatures[16] = 3.0f;  // IQR
+            widerClickFeatures[18] = 0.85f; // longest-run fraction
+
+            MLResult widerClickRes = mlManager.evaluateAsync("click_model", widerClickFeatures).get();
+            assertNotNull(widerClickRes);
+            assertTrue(widerClickRes.probability() >= 0.0 && widerClickRes.probability() <= 1.0,
+                    "a wider vector must still produce a usable probability against an older model");
+
+            float[] widerAimFeatures = new float[16];
+            System.arraycopy(aimFeatures, 0, widerAimFeatures, 0, aimFeatures.length);
+            widerAimFeatures[8] = 0.4f;   // mean aim error
+            widerAimFeatures[11] = 0.02f; // target-speed/error correlation
+
+            MLResult widerAimRes = mlManager.evaluateAsync("aim_model", widerAimFeatures).get();
+            assertNotNull(widerAimRes);
+            assertTrue(widerAimRes.probability() >= 0.0 && widerAimRes.probability() <= 1.0,
+                    "a wider aim vector must still produce a usable probability against an older model");
+
             var field = MLManager.class.getDeclaredField("sessions");
             field.setAccessible(true);
             @SuppressWarnings("unchecked")

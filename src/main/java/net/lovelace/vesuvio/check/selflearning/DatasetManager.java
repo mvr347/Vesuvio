@@ -25,7 +25,8 @@ import java.util.logging.Logger;
 public final class DatasetManager {
 
     private static final Logger LOGGER = Logger.getLogger("Vesuvio-Dataset");
-    private static final int FEATURE_COUNT = 16;
+    /** Matches ClickFeatureExtractor.FEATURE_COUNT - the widest vector any domain persists. */
+    private static final int FEATURE_COUNT = 20;
 
     /**
      * Where a label came from. This is not cosmetic: it decides whether a sample may be trained on
@@ -183,8 +184,13 @@ public final class DatasetManager {
             .append(s.label()).append(",")
             .append(s.timestamp()).append(",")
             .append(s.reviewer());
-        for (float f : s.features()) {
-            line.append(",").append(String.format(Locale.US, "%.6f", f));
+        // Always emit exactly FEATURE_COUNT columns, padding a narrower vector with zeros: the
+        // aim domain is narrower than the click domain, and both share this file. Writing a short
+        // row would shift the domain/source columns out of position for that row and make it
+        // unreadable - which is exactly what the header-driven reader would then skip.
+        float[] f = s.features();
+        for (int i = 0; i < FEATURE_COUNT; i++) {
+            line.append(",").append(String.format(Locale.US, "%.6f", i < f.length ? f[i] : 0f));
         }
         line.append(",").append(s.domain());
         line.append(",").append(s.source() == null ? LabelSource.UNKNOWN : s.source());
@@ -220,11 +226,25 @@ public final class DatasetManager {
         int imported = 0;
 
         try (BufferedReader reader = Files.newBufferedReader(source, StandardCharsets.UTF_8)) {
-            String header = reader.readLine(); // Skip header
+            String header = reader.readLine();
+            // How many feature columns this particular file carries is read from its own header
+            // rather than assumed: the feature set grows over time (features are only appended),
+            // so a file written before the current FEATURE_COUNT is perfectly valid and its rows
+            // must be zero-padded rather than misread - the column after the features is the
+            // domain, and reading it as a float would silently drop the whole row.
+            int fileFeatureCount = countFeatureColumns(header);
+            if (fileFeatureCount <= 0) {
+                LOGGER.warning("[Vesuvio] Dataset file has no recognisable feature columns: " + source);
+                return 0;
+            }
+            int domainIdx = 5 + fileFeatureCount;
+            int sourceIdx = domainIdx + 1;
+            int usable = Math.min(fileFeatureCount, FEATURE_COUNT);
+
             String line;
             while ((line = reader.readLine()) != null) {
                 String[] parts = line.split(",");
-                if (parts.length < 21) continue;
+                if (parts.length < domainIdx) continue;
 
                 UUID uuid = UUID.fromString(parts[0]);
                 String name = parts[1];
@@ -233,13 +253,12 @@ public final class DatasetManager {
                 String reviewer = parts[4];
 
                 float[] features = new float[FEATURE_COUNT];
-                for (int i = 0; i < FEATURE_COUNT; i++) {
+                for (int i = 0; i < usable; i++) {
                     features[i] = Float.parseFloat(parts[5 + i]);
                 }
-                // Older exports (before the domain column existed) have exactly 21 columns and
-                // default to "click"; domain is column 22 and label provenance column 23.
-                String domain = (parts.length >= 22) ? parts[21] : "click";
-                LabelSource labelSource = (parts.length >= 23) ? parseSource(parts[22]) : inferLegacySource(reviewer);
+                String domain = (parts.length > domainIdx) ? parts[domainIdx] : "click";
+                LabelSource labelSource = (parts.length > sourceIdx)
+                        ? parseSource(parts[sourceIdx]) : inferLegacySource(reviewer);
 
                 dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain, labelSource));
                 imported++;
@@ -249,6 +268,19 @@ public final class DatasetManager {
         }
 
         return imported;
+    }
+
+    /** Number of {@code f<N>} columns declared by a CSV header, or -1 if it is unreadable. */
+    private static int countFeatureColumns(String header) {
+        if (header == null || header.isBlank()) return -1;
+        int count = 0;
+        for (String column : header.split(",")) {
+            String trimmed = column.trim();
+            if (trimmed.length() > 1 && trimmed.charAt(0) == 'f' && Character.isDigit(trimmed.charAt(1))) {
+                count++;
+            }
+        }
+        return count > 0 ? count : -1;
     }
 
     private static LabelSource parseSource(String raw) {

@@ -28,6 +28,8 @@ public final class MLManager implements AutoCloseable {
     private final OrtEnvironment env;
     private final Map<String, OrtSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, ModelConfig> configs = new ConcurrentHashMap<>();
+    /** Input width per loaded model, read from the model and invalidated on every (re)load. */
+    private final Map<String, Integer> inputWidths = new ConcurrentHashMap<>();
     private final AtomicLong totalInferences = new AtomicLong(0);
 
     public MLManager() {
@@ -56,6 +58,7 @@ public final class MLManager implements AutoCloseable {
         }
 
         OrtSession old = sessions.put(name, session);
+        inputWidths.remove(name); // a retrained model may have a different feature width
         if (old != null) {
             try {
                 old.close();
@@ -97,10 +100,14 @@ public final class MLManager implements AutoCloseable {
 
             OrtSession session = sessions.get(modelName);
             if (session != null && env != null) {
-                float[] inputFeatures = features;
-                if ("aim_model".equalsIgnoreCase(modelName) && features != null && features.length > 8) {
-                    inputFeatures = Arrays.copyOf(features, 8);
-                }
+                // Fit the vector to whatever width this particular model was trained with, read
+                // from the model itself. Feature sets grow over time, and a model exported before
+                // a new feature existed would otherwise start throwing a shape-mismatch on every
+                // single inference the moment the extractor widened. Truncating keeps an older
+                // model serving its original columns (which still mean the same thing, since
+                // features are only ever appended), and zero-padding covers the reverse case.
+                int expected = expectedInputWidth(modelName, session);
+                float[] inputFeatures = fitToWidth(features, expected);
                 try (OnnxTensor tensor = OnnxTensor.createTensor(env, new float[][]{inputFeatures})) {
                     var results = session.run(Map.of(inputName, tensor));
                     // Expected output: probabilities vector or tensor
@@ -115,7 +122,7 @@ public final class MLManager implements AutoCloseable {
                         LOGGER.warning("[Vesuvio] ONNX model '" + modelName
                                 + "' returned an unrecognised output shape - falling back to the heuristic.");
                     } else {
-                        Map<String, Object> details = buildDetails(features, probability);
+                        Map<String, Object> details = buildDetails(modelName, features, probability);
                         String expl = String.format("ONNX %s inference confidence: %.1f%%", modelName, probability * 100);
                         return MLResult.of(modelName, probability, threshold, weight, expl, details);
                     }
@@ -126,7 +133,7 @@ public final class MLManager implements AutoCloseable {
 
             // High-precision neural fallback heuristic if .onnx file has not been loaded
             double probability = evaluateNeuralFallback(modelName, features);
-            Map<String, Object> details = buildDetails(features, probability);
+            Map<String, Object> details = buildDetails(modelName, features, probability);
             String expl = String.format("NeuralHeuristic %s probability: %.1f%%", modelName, probability * 100);
             return MLResult.of(modelName, probability, threshold, weight, expl, details);
         });
@@ -187,6 +194,44 @@ public final class MLManager implements AutoCloseable {
         return 1.0 / (1.0 + Math.exp(-z));
     }
 
+    /**
+     * Input width the loaded model actually expects, cached per session. Falls back to the
+     * historical hard-coded widths when the model does not declare a static dimension.
+     */
+    private int expectedInputWidth(String modelName, OrtSession session) {
+        Integer cached = inputWidths.get(modelName);
+        if (cached != null) return cached;
+
+        int width = -1;
+        try {
+            for (var entry : session.getInputInfo().values()) {
+                if (entry.getInfo() instanceof ai.onnxruntime.TensorInfo tensorInfo) {
+                    long[] shape = tensorInfo.getShape();
+                    if (shape.length >= 2 && shape[1] > 0) {
+                        width = (int) shape[1];
+                    }
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.FINE, "Could not read input width for " + modelName, e);
+        }
+
+        if (width <= 0) {
+            width = "aim_model".equalsIgnoreCase(modelName) ? 8 : 16;
+        }
+        inputWidths.put(modelName, width);
+        LOGGER.info("[Vesuvio] Model '" + modelName + "' expects " + width + " input feature(s).");
+        return width;
+    }
+
+    /** Truncates or zero-pads a feature vector to the given width. */
+    private static float[] fitToWidth(float[] features, int width) {
+        if (features == null) return new float[width];
+        if (features.length == width) return features;
+        return Arrays.copyOf(features, width);
+    }
+
     private double parseProbability(Object outputObj) {
         if (outputObj instanceof float[][] matrix) {
             if (matrix.length > 0 && matrix[0].length > 1) {
@@ -205,23 +250,41 @@ public final class MLManager implements AutoCloseable {
         return Double.NaN;
     }
 
-    private Map<String, Object> buildDetails(float[] features, double prob) {
+    /**
+     * Names the handful of features worth showing a reviewer. Keyed off the model rather than the
+     * vector length: both domains are now 16 wide or more, so length no longer identifies which
+     * extractor produced the vector, and picking the wrong set would label aim values with click
+     * names in the alert.
+     */
+    private Map<String, Object> buildDetails(String modelName, float[] features, double prob) {
         Map<String, Object> details = new HashMap<>();
         details.put("probability", prob);
-        if (features != null) {
-            if (features.length >= 15) {
-                details.put("cps", features[14]);
-                details.put("meanMs", features[0]);
-                details.put("stdDev", features[1]);
-                details.put("dupRatio", features[4]);
-                details.put("entropy", features[5]);
-            } else if (features.length >= 8) {
+        if (features == null) return details;
+
+        if ("aim_model".equalsIgnoreCase(modelName)) {
+            if (features.length >= 8) {
                 details.put("meanYaw", features[0]);
                 details.put("meanPitch", features[1]);
                 details.put("snapRatio", features[4]);
                 details.put("zeroRatio", features[5]);
                 details.put("jerk", features[6]);
                 details.put("gcdConsistency", features[7]);
+            }
+            if (features.length >= 16) {
+                details.put("meanAimErrorDeg", features[8]);
+                details.put("aimErrorStdDeg", features[10]);
+                details.put("targetSpeedErrorCorr", features[11]);
+                details.put("subDegreeFraction", features[13]);
+            }
+        } else if (features.length >= 15) {
+            details.put("cps", features[14]);
+            details.put("meanMs", features[0]);
+            details.put("stdDev", features[1]);
+            details.put("dupRatio", features[4]);
+            details.put("entropy", features[5]);
+            if (features.length >= 20) {
+                details.put("iqrMs", features[16]);
+                details.put("longestRunFraction", features[18]);
             }
         }
         return details;

@@ -50,7 +50,7 @@ import json
 import sys
 from pathlib import Path
 
-FEATURE_COUNT = 16
+FEATURE_COUNT = 20
 
 # Label sources that carry information the detection pipeline did not already have. BAN and
 # TRUSTED labels are self-confirming - the pipeline decided them with the very models being
@@ -64,8 +64,8 @@ EXTERNAL_SOURCES = {"STAFF", "TRAP"}
 # The exported model's input width MUST match that truncated width or ONNX Runtime throws a
 # shape-mismatch error on every single inference call. Click features use the full 16.
 DOMAIN_FEATURE_COUNT = {
-    "click": 16,
-    "aim": 8,
+    "click": 20,
+    "aim": 16,
 }
 
 
@@ -180,12 +180,23 @@ def load_dataset(dataset_path: Path, domain: str, feature_count: int):
 
     with dataset_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
+        # Feature columns are only ever appended, so a file written before the current width is
+        # still valid: read what it has and zero-pad the rest. Demanding the full width would
+        # silently discard every row collected before the last upgrade - i.e. the entire history.
+        available = sum(1 for c in (reader.fieldnames or [])
+                        if len(c) > 1 and c[0] == "f" and c[1:].isdigit())
+        usable = min(available, feature_count)
+        if available and available < feature_count:
+            print(f"[{domain}] dataset carries {available} feature columns, model expects "
+                  f"{feature_count} - padding the missing ones with zeros")
+
         for row in reader:
             if row.get("domain") != domain:
                 continue
             try:
                 label = int(row["label"])
-                feats = [float(row[f"f{i}"]) for i in range(feature_count)]
+                feats = [float(row[f"f{i}"]) for i in range(usable)]
+                feats.extend([0.0] * (feature_count - usable))
             except (KeyError, ValueError):
                 continue  # skip malformed row rather than aborting the whole run
             features.append(feats)

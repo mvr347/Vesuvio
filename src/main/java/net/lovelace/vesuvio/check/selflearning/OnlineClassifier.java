@@ -85,16 +85,26 @@ public final class OnlineClassifier {
 
     // Domain priors for ClickFeatureExtractor's 16-feature layout (positive = more suspect):
     // low variance, high duplicate ratio, low entropy, many consecutive identical, high CPS.
+    // Trailing entries (16-19) cover the outlier-resistant distribution shape: a tight IQR and a
+    // long single-cadence run are the two that most directly indicate a machine rhythm, so they
+    // start with a nudge; median/mean ratio and lag-2 autocorrelation start neutral and are left
+    // for SGD to learn.
     private static final double[] CLICK_PRIORS = {
-            -0.05, -0.40, 0.0, 0.0, 2.50, -0.80, 0.0, 2.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35, 0.0
+            -0.05, -0.40, 0.0, 0.0, 2.50, -0.80, 0.0, 2.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35, 0.0,
+            -0.30, 0.0, 1.20, 0.0
     };
 
     // Domain priors for AimFeatureExtractor's layout (indices 0-7 populated; 8-15 unused/zero):
     // meanYaw, meanPitch, varYaw, varPitch, snapRatio, zeroRatio, jerk, gcdConsistency.
     // High snapRatio/zeroRatio (snap-then-freeze) and low gcdConsistency (smooth trig aim,
     // fails vanilla mouse quantization) push toward "suspect".
+    // Trailing entries (8-15) are the target-relative features. The two with a clear a-priori
+    // direction get a nudge: a small mean aiming error and a near-zero correlation between target
+    // speed and error (a human's error grows with target speed - assistance keeps it flat) both
+    // point toward assistance. The rest start neutral.
     public static final double[] AIM_PRIORS = {
-            0.0, 0.0, 0.0, 0.0, 1.80, 1.20, 0.0, -1.00, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            0.0, 0.0, 0.0, 0.0, 1.80, 1.20, 0.0, -1.00,
+            -0.80, 0.0, -0.50, -1.20, 0.0, 1.00, 0.0, 0.0
     };
 
     /**

@@ -113,6 +113,39 @@ public class DatasetManagerPersistenceTest {
         }
     }
 
+    @Test
+    public void testNarrowerLegacyFileIsReadRatherThanDiscarded() throws IOException {
+        Path tempDir = Files.createTempDirectory("vesuvio-dataset-width-test");
+        try {
+            // A file written before the feature set widened: 16 feature columns, then domain and
+            // source. Demanding the current width would shift the domain column out of position
+            // and silently discard every historical row, so the reader takes the width from the
+            // file's own header and zero-pads the rest.
+            StringBuilder header = new StringBuilder("uuid,playerName,label,timestamp,reviewer");
+            for (int i = 0; i < 16; i++) header.append(",f").append(i);
+            header.append(",domain,source");
+
+            StringBuilder row = new StringBuilder(UUID.randomUUID() + ",Old,1,1700000000000,Admin");
+            for (int i = 0; i < 16; i++) row.append(",").append(i == 0 ? "42.000000" : "0.000000");
+            row.append(",click,STAFF");
+
+            Files.write(tempDir.resolve("auto_dataset.csv"),
+                    java.util.List.of(header.toString(), row.toString()));
+
+            DatasetManager manager = new DatasetManager(tempDir);
+            assertEquals(1, manager.getDatasetSize(), "a narrower legacy row must still load");
+            assertEquals(1, manager.countSamples("click", 1, DatasetManager.LabelSource.STAFF),
+                    "domain and source must be read from their real positions, not shifted");
+
+            DatasetManager.LabeledSample sample = manager.getSamples().iterator().next();
+            assertEquals(42.0f, sample.features()[0], 1e-4, "existing features must survive");
+            assertEquals(0f, sample.features()[19], 1e-6, "missing trailing features must be zero-padded");
+            manager.close();
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
     private void deleteRecursively(Path path) throws IOException {
         if (!Files.exists(path)) return;
         try (var stream = Files.walk(path)) {

@@ -1,6 +1,7 @@
 package net.lovelace.vesuvio.feature;
 
 import net.lovelace.vesuvio.data.AimRingBuffer;
+import net.lovelace.vesuvio.data.AimTrackingBuffer;
 
 import java.util.Arrays;
 
@@ -18,6 +19,11 @@ public final class AimFeatureExtractor {
     private static final ThreadLocal<float[]> YAW_BUFFER = ThreadLocal.withInitial(() -> new float[AimRingBuffer.SIZE]);
     private static final ThreadLocal<float[]> PITCH_BUFFER = ThreadLocal.withInitial(() -> new float[AimRingBuffer.SIZE]);
     private static final ThreadLocal<float[]> FEATURE_BUFFER = ThreadLocal.withInitial(() -> new float[FEATURE_COUNT]);
+    private static final ThreadLocal<float[]> TRACK_REQ_YAW = ThreadLocal.withInitial(() -> new float[AimTrackingBuffer.SIZE]);
+    private static final ThreadLocal<float[]> TRACK_ACT_YAW = ThreadLocal.withInitial(() -> new float[AimTrackingBuffer.SIZE]);
+    private static final ThreadLocal<float[]> TRACK_REQ_PITCH = ThreadLocal.withInitial(() -> new float[AimTrackingBuffer.SIZE]);
+    private static final ThreadLocal<float[]> TRACK_ACT_PITCH = ThreadLocal.withInitial(() -> new float[AimTrackingBuffer.SIZE]);
+    private static final ThreadLocal<long[]> TRACK_STAMPS = ThreadLocal.withInitial(() -> new long[AimTrackingBuffer.SIZE]);
 
     private AimFeatureExtractor() {}
 
@@ -84,6 +90,94 @@ public final class AimFeatureExtractor {
         // 8. GCD Divisor consistency (Minecraft sensitivity divisor test)
         // Checks whether rotation deltas align with legitimate mouse sensitivity step
         features[7] = calculateGCDConsistency(dy, n);
+
+        return features;
+    }
+
+    /**
+     * Extracts the same 0-7 rotation-dynamics features and additionally fills 8-15 with
+     * <em>target-relative</em> ones.
+     *
+     * <p>Features 0-7 describe the camera in isolation ("it turned 3.2° this tick"), which is
+     * blind to the one thing that separates aim assistance from a human: the relationship between
+     * the camera and the target. 8-15 describe that relationship - how large the aiming error is,
+     * how steady it is, and (most importantly) how quickly it responds to the target manoeuvring.
+     * A humanized module perturbs 0-7 easily by adding noise; it cannot make 8-15 look human
+     * without actually missing when the target jukes.
+     *
+     * <p>Slots 8-15 are zero when no tracking data exists, which is exactly what older models
+     * trained on the 8-wide vector already assume.
+     */
+    public static float[] extract(AimRingBuffer buffer, AimTrackingBuffer tracking) {
+        float[] features = extract(buffer);
+        if (tracking == null) return features;
+
+        float[] reqYaw = TRACK_REQ_YAW.get();
+        float[] actYaw = TRACK_ACT_YAW.get();
+        float[] reqPitch = TRACK_REQ_PITCH.get();
+        float[] actPitch = TRACK_ACT_PITCH.get();
+        long[] stamps = TRACK_STAMPS.get();
+        int t = tracking.copy(reqYaw, actYaw, reqPitch, actPitch, stamps);
+        if (t < 8) return features;
+
+        // 9. Mean absolute yaw error, 10. mean absolute pitch error.
+        double sumYawErr = 0, sumPitchErr = 0;
+        for (int i = 0; i < t; i++) {
+            sumYawErr += Math.abs(AimTrackingBuffer.wrapDegrees(actYaw[i], reqYaw[i]));
+            sumPitchErr += Math.abs(actPitch[i] - reqPitch[i]);
+        }
+        double meanYawErr = sumYawErr / t;
+        features[8] = (float) meanYawErr;
+        features[9] = (float) (sumPitchErr / t);
+
+        // 11. Standard deviation of yaw error. A human's error breathes as the target moves;
+        // a recalculated angle holds a near-constant offset.
+        double varYawErr = 0;
+        for (int i = 0; i < t; i++) {
+            double d = Math.abs(AimTrackingBuffer.wrapDegrees(actYaw[i], reqYaw[i])) - meanYawErr;
+            varYawErr += d * d;
+        }
+        features[10] = (float) Math.sqrt(varYawErr / t);
+
+        // 12. Correlation between how fast the target moves and how large the error is. A human
+        // lags behind a fast-moving target, so this is clearly positive; aim assistance keeps the
+        // error flat regardless of target speed, driving it toward zero.
+        double sumSpeed = 0, sumErr = 0;
+        for (int i = 1; i < t; i++) {
+            sumSpeed += Math.abs(AimTrackingBuffer.wrapDegrees(reqYaw[i], reqYaw[i - 1]));
+            sumErr += Math.abs(AimTrackingBuffer.wrapDegrees(actYaw[i], reqYaw[i]));
+        }
+        double meanSpeed = sumSpeed / (t - 1);
+        double meanErr = sumErr / (t - 1);
+        double cov = 0, varSpeed = 0, varErr = 0;
+        for (int i = 1; i < t; i++) {
+            double ds = Math.abs(AimTrackingBuffer.wrapDegrees(reqYaw[i], reqYaw[i - 1])) - meanSpeed;
+            double de = Math.abs(AimTrackingBuffer.wrapDegrees(actYaw[i], reqYaw[i])) - meanErr;
+            cov += ds * de;
+            varSpeed += ds * ds;
+            varErr += de * de;
+        }
+        features[11] = (varSpeed > 1e-9 && varErr > 1e-9)
+                ? (float) (cov / Math.sqrt(varSpeed * varErr)) : 0f;
+
+        // 13. Mean camera speed while tracking, 14. fraction of ticks the error sat under 1°.
+        int tightTicks = 0;
+        for (int i = 0; i < t; i++) {
+            if (Math.abs(AimTrackingBuffer.wrapDegrees(actYaw[i], reqYaw[i])) < 1.0f) tightTicks++;
+        }
+        features[12] = (float) meanSpeed;
+        features[13] = (float) tightTicks / t;
+
+        // 15. Signed mean yaw error - a persistent bias to one side is a human holding an offset,
+        // whereas a recomputed angle centres on zero.
+        double signedSum = 0;
+        for (int i = 0; i < t; i++) {
+            signedSum += AimTrackingBuffer.wrapDegrees(actYaw[i], reqYaw[i]);
+        }
+        features[14] = (float) (signedSum / t);
+
+        // 16. Samples actually available, normalized - lets a model discount a thin window.
+        features[15] = (float) t / AimTrackingBuffer.SIZE;
 
         return features;
     }

@@ -48,4 +48,46 @@ public class ClickFeatureExtractorTest {
         assertTrue(f[1] > 12.0f, "Human std dev should be > 12ms");
         assertTrue(f[4] < 0.25f, "Human duplicate ratio should be low (< 25%)");
     }
+
+    @Test
+    public void testOutlierResistantFeaturesSeparateAMacroFromAHuman() {
+        // The point of features 16-19: a humanized client hides behind mean/std-dev by injecting a
+        // few long pauses, which barely moves the quantiles or the run length underneath.
+        ClickRingBuffer macro = new ClickRingBuffer();
+        long now = 1_000_000_000L;
+        for (int i = 0; i < 65; i++) {
+            // A rigid 60ms cadence, with an occasional long pause thrown in to inflate std-dev
+            // exactly the way a "humanized" macro does.
+            long delta = (i % 12 == 11) ? 320_000_000L : 60_000_000L;
+            now += delta;
+            macro.addClick(now, false);
+        }
+        // extract() hands back a shared thread-local buffer, so the first result has to be cloned
+        // before extracting the second - otherwise both references point at the same array.
+        float[] m = ClickFeatureExtractor.extract(macro).clone();
+
+        ClickRingBuffer human = new ClickRingBuffer();
+        Random rng = new Random(7);
+        now = 1_000_000_000L;
+        for (int i = 0; i < 65; i++) {
+            long delta = (long) ((110 + rng.nextGaussian() * 25) * 1_000_000L);
+            if (delta < 40_000_000L) delta = 40_000_000L;
+            now += delta;
+            human.addClick(now, false);
+        }
+        float[] h = ClickFeatureExtractor.extract(human).clone();
+
+        assertEquals(ClickFeatureExtractor.FEATURE_COUNT, m.length);
+
+        // The injected pauses lift the macro's std-dev into the same range a real human shows
+        // (the human test above asserts > 12ms), so std-dev alone no longer separates them...
+        assertTrue(m[1] > 20.0f,
+                "injected pauses should lift the macro's std-dev into human range, was " + m[1]);
+        // ...but its interquartile range stays far tighter than a human's, and its longest
+        // single-cadence run far longer. That is the separation those features exist to provide.
+        assertTrue(m[16] < h[16],
+                "macro IQR (" + m[16] + ") must stay tighter than human IQR (" + h[16] + ")");
+        assertTrue(m[18] > h[18],
+                "macro longest-run (" + m[18] + ") must exceed human longest-run (" + h[18] + ")");
+    }
 }
