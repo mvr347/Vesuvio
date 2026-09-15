@@ -128,7 +128,9 @@ public final class ActiveLearning {
         // 1. Train online classifier
         classifier.train(sample.features(), label);
 
-        // 2. Persist to training dataset, under the domain the sample actually came from
+        // 2. Persist to training dataset, under the domain the sample actually came from and
+        // marked as a human verdict - the training script holds these out as validation rather
+        // than training on them, since they are the only non-self-confirming signal available.
         dataset.addSample(new DatasetManager.LabeledSample(
                 sample.playerUuid(),
                 sample.playerName(),
@@ -136,7 +138,8 @@ public final class ActiveLearning {
                 label,
                 System.currentTimeMillis(),
                 reviewer,
-                sample.domain()
+                sample.domain(),
+                DatasetManager.LabelSource.STAFF
         ));
 
         // 3. Adjust player's Trust/Risk if online

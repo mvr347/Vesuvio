@@ -296,6 +296,55 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                         + "(<yellow>Vesuvio-AutoTrain</yellow> logger). Models hot-reload automatically on success.</green>"));
             }
 
+            case "model" -> {
+                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.admin).</red>"));
+                    return true;
+                }
+                if (args.length < 2) {
+                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio model [shadow|promote <domain>|discard <domain>]</red>"));
+                    return true;
+                }
+                String action = args[1].toLowerCase();
+
+                if ("shadow".equals(action)) {
+                    var evaluator = modelAutoTrainer.getShadowEvaluator();
+                    sender.sendMessage(mm.deserialize(
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gold>Shadow candidates</gold>"));
+                    boolean any = false;
+                    for (String domain : net.lovelace.vesuvio.check.onnx.ModelAutoTrainer.domains()) {
+                        String modelName = domain + "_model";
+                        if (evaluator.get(modelName) == null) continue;
+                        any = true;
+                        sender.sendMessage(mm.deserialize("<gray>" + evaluator.describe(modelName) + "</gray>"));
+                    }
+                    if (!any) {
+                        sender.sendMessage(mm.deserialize(
+                                "<gray>No candidate is currently being shadowed. Enable "
+                                + "<yellow>layers.onnx.auto-retrain.shadow-mode</yellow> and wait for the next retrain.</gray>"));
+                    } else {
+                        // The ratio is what an operator actually decides on: it translates straight
+                        // into how much more (or less) work the candidate would create for staff.
+                        sender.sendMessage(mm.deserialize(
+                                "<gray>A ratio near <yellow>1.00x</yellow> means the candidate flags about as often as the "
+                                + "live model. Promote with <yellow>/vesuvio model promote <domain></yellow>.</gray>"));
+                    }
+                } else if ("promote".equals(action) || "discard".equals(action)) {
+                    if (args.length < 3) {
+                        sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio model " + action + " <click|aim></red>"));
+                        return true;
+                    }
+                    String domain = args[2].toLowerCase();
+                    String result = "promote".equals(action)
+                            ? modelAutoTrainer.promoteCandidate(domain)
+                            : modelAutoTrainer.discardCandidate(domain);
+                    sender.sendMessage(mm.deserialize("<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>"
+                            + result.replace("<", "&lt;") + "</green>"));
+                } else {
+                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio model [shadow|promote <domain>|discard <domain>]</red>"));
+                }
+            }
+
             case "dataset" -> {
                 if (args.length < 2) {
                     sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio dataset [export|import|stats]</red>"));
@@ -488,13 +537,14 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 + "<gold>/vesuvio reload</gold> <gray>- Перезагрузить конфиг и модели ONNX</gray><newline>"
                 + "<gold>/vesuvio retrain</gold> <gray>- Запустить переобучение ONNX-моделей на текущем датасете вручную</gray><newline>"
                 + "<gold>/vesuvio dataset [export|import|stats]</gold> <gray>- Управление датасетом обучения</gray><newline>"
+                + "<gold>/vesuvio model [shadow|promote|discard]</gold> <gray>- Кандидат в теневом режиме: сравнение с боевой моделью и публикация</gray><newline>"
                 + "<gradient:#ff4500:#ff8c00><b>==============================================</b></gradient>"));
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(List.of("alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset"), args[0]);
+            return filter(List.of("alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset", "model"), args[0]);
         }
         if (args.length == 2) {
             if ("spectate".equalsIgnoreCase(args[0]) || "debug".equalsIgnoreCase(args[0]) || "info".equalsIgnoreCase(args[0]) || "reset".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0]) || "suspect".equalsIgnoreCase(args[0])) {
@@ -507,6 +557,9 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 presets.add("list");
                 presets.add("save");
                 return filter(presets, args[1]);
+            }
+            if ("model".equalsIgnoreCase(args[0])) {
+                return filter(List.of("shadow", "promote", "discard"), args[1]);
             }
             if ("dataset".equalsIgnoreCase(args[0])) {
                 return filter(List.of("export", "import", "stats"), args[1]);
@@ -521,6 +574,10 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
             if ("suspect".equalsIgnoreCase(args[0])) {
                 return filter(List.of("add", "remove", "check"), args[2]);
+            }
+            if ("model".equalsIgnoreCase(args[0])
+                    && ("promote".equalsIgnoreCase(args[1]) || "discard".equalsIgnoreCase(args[1]))) {
+                return filter(List.of(net.lovelace.vesuvio.check.onnx.ModelAutoTrainer.domains()), args[2]);
             }
         }
         return Collections.emptyList();

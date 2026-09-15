@@ -34,20 +34,29 @@ public final class FeatureNormalizer {
     // ClickFeatureExtractor's 16-feature layout: meanMs, stdMs, skewness, kurtosis, dupRatio,
     // entropy, peakCps, consecutiveRatio, lowDelayRatio, highDelayRatio, meanAccelMs,
     // microPauseRatio, autocorrelation, outlierRatio, avgCps, temporalDeltaMs.
+    // Indices 16-19 are the outlier-resistant distribution shape added later: IQR (ms),
+    // median/mean ratio, longest-run fraction, lag-2 autocorrelation.
     private static final float[] CLICK_CENTER = {
-            120f, 25f, 0f, 0f, 0.08f, 3.0f, 9.0f, 0.05f, 0.05f, 0.05f, 15f, 0.15f, 0f, 0.03f, 7.5f, 0f
+            120f, 25f, 0f, 0f, 0.08f, 3.0f, 9.0f, 0.05f, 0.05f, 0.05f, 15f, 0.15f, 0f, 0.03f, 7.5f, 0f,
+            30f, 1.0f, 0.1f, 0f
     };
     private static final float[] CLICK_SCALE = {
-            60f, 25f, 1f, 2f, 0.15f, 1.2f, 5.0f, 0.12f, 0.12f, 0.10f, 15f, 0.15f, 0.3f, 0.08f, 3.5f, 15f
+            60f, 25f, 1f, 2f, 0.15f, 1.2f, 5.0f, 0.12f, 0.12f, 0.10f, 15f, 0.15f, 0.3f, 0.08f, 3.5f, 15f,
+            25f, 0.2f, 0.15f, 0.3f
     };
 
     // AimFeatureExtractor only ever populates indices 0-7 (meanYaw, meanPitch, yawStd, pitchStd,
     // snapRatio, zeroRatio, jerk, gcdConsistency); 8-15 are always zero padding, kept neutral here.
+    // Indices 8-15 are the target-relative features: mean |yaw error|, mean |pitch error|, error
+    // std-dev, target-speed/error correlation, mean camera speed, sub-1° fraction, signed mean
+    // yaw error, sample fill. They are zero when no tracking data exists.
     private static final float[] AIM_CENTER = {
-            8f, 5f, 6f, 4f, 0.05f, 0.05f, 3f, 0.5f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f
+            8f, 5f, 6f, 4f, 0.05f, 0.05f, 3f, 0.5f,
+            3f, 2f, 2.5f, 0.3f, 3f, 0.35f, 0f, 0.5f
     };
     private static final float[] AIM_SCALE = {
-            8f, 5f, 6f, 4f, 0.10f, 0.10f, 3f, 0.3f, 1f, 1f, 1f, 1f, 1f, 1f, 1f, 1f
+            8f, 5f, 6f, 4f, 0.10f, 0.10f, 3f, 0.3f,
+            3f, 2f, 2.5f, 0.4f, 3f, 0.3f, 2f, 0.4f
     };
 
     public static float[] center(Domain domain) {

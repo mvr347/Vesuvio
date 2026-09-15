@@ -2,6 +2,7 @@ package net.lovelace.vesuvio.check.statistical;
 
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.config.ConfigManager;
+import net.lovelace.vesuvio.data.DecayingEvidence;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.engine.HitboxHistoryTracker;
 import net.lovelace.vesuvio.engine.TransactionManager;
@@ -28,9 +29,15 @@ import java.util.Map;
  * 2. SilentAim: Attack packet sent while player crosshair ray completely misses entity hitbox,
  *    rewound to the moment the attacker's client actually saw it.
  * 3. KillauraAngle: Attacking entities outside human field of view (multi-point sampled).
- * 4. PerfectAimLock / StaticAimTracking / AimConsistency: streak-based aim-quality signatures.
+ * 4. PerfectAimLock / StaticAimTracking / AimConsistency: accumulator-based aim-quality signatures.
  * 5. ReactionTime: attack landing implausibly soon after the attacker last turned meaningfully.
  * 6. TargetSwitch: switching attack target without a corresponding look-delta.
+ *
+ * Sub-checks 4-6 accumulate decaying evidence ({@link DecayingEvidence}) rather than counting
+ * consecutive hits: a randomized aura defeats any "N in a row" counter for free by behaving humanly
+ * one hit out of five, while an accumulator only cares about the ratio of suspicious to clean hits
+ * inside a decay window. Each sub-check's configured {@code streak} value is reused as the score
+ * threshold, so previously tuned numbers keep their meaning (one suspicious hit is still worth 1.0).
  *
  * All angle/streak/tolerance thresholds are configurable (see ConfigManager) and, where noted,
  * scaled by the player's dynamic Trust/Risk sensitivity multiplier so a proven-clean player is not
@@ -213,26 +220,29 @@ public final class KillauraAngleCheck {
         // center every single tick instead of the natural jitter of manual tracking.
         // -------------------------------------------------------------
         double perfectAimAngle = config != null ? config.getKillauraPerfectAimAngleDegrees() : 0.6;
-        int perfectAimStreakReq = config != null ? config.getKillauraPerfectAimStreak() : 6;
+        double perfectAimThreshold = config != null ? config.getKillauraPerfectAimStreak() : 6;
+        DecayingEvidence perfectAimEvidence = data.getPerfectAimEvidence();
         if (effectiveAngle < perfectAimAngle) {
-            data.incrementPerfectAimStreak();
-            if (data.getPerfectAimStreak() >= perfectAimStreakReq) {
+            double score = perfectAimEvidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
+            if (score >= perfectAimThreshold && perfectAimEvidence.events() >= evidenceMinEvents()) {
                 Map<String, Object> details = new HashMap<>();
                 details.put("angle", effectiveAngle);
-                details.put("streak", data.getPerfectAimStreak());
+                details.put("score", score);
+                details.put("threshold", perfectAimThreshold);
+                details.put("hitsEvaluated", perfectAimEvidence.events());
                 details.put("target", target.getName() != null ? target.getName() : target.getType().name());
 
                 String explanation = String.format(Locale.US,
-                        "Inhuman aim-lock precision streak: %d consecutive sub-degree hits (Angle: %.3f°)",
-                        data.getPerfectAimStreak(), effectiveAngle);
+                        "Inhuman aim-lock precision: %.1f evidence over %d hits (threshold %.1f, Angle: %.3f°)",
+                        score, perfectAimEvidence.events(), perfectAimThreshold, effectiveAngle);
 
-                data.resetPerfectAimStreak();
+                perfectAimEvidence.reset();
                 data.setLastAttackTarget(target.getEntityId(), nowNanos);
                 data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
-                return CheckResult.flag("PerfectAimLock", 0.89, 2.0, explanation, details);
+                return CheckResult.flag("PerfectAimLock", confidenceFor(0.89, score, perfectAimThreshold), 2.0, explanation, details);
             }
         } else {
-            data.resetPerfectAimStreak();
+            perfectAimEvidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
         }
 
         // -------------------------------------------------------------
@@ -243,7 +253,7 @@ public final class KillauraAngleCheck {
         // than the player's real mouse noise floor across many hits. Distinct from PerfectAimLock
         // (fixed absolute angle) in that the bar is calibrated per-player.
         // -------------------------------------------------------------
-        CheckResult consistencyResult = checkAimConsistency(data, effectiveAngle, target);
+        CheckResult consistencyResult = checkAimConsistency(data, effectiveAngle, target, nowNanos);
         if (consistencyResult != null) {
             data.setLastAttackTarget(target.getEntityId(), nowNanos);
             data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
@@ -267,34 +277,37 @@ public final class KillauraAngleCheck {
         double staticTargetDelta = config != null ? config.getKillauraStaticTrackingTargetDeltaDegrees() : 4.0;
         double staticPlayerDelta = config != null ? config.getKillauraStaticTrackingPlayerDeltaDegrees() : 0.5;
         double staticMaxAngle = config != null ? config.getKillauraStaticTrackingMaxAngleDegrees() : 10.0;
-        int staticStreakReq = config != null ? config.getKillauraStaticTrackingStreak() : 3;
+        double staticThreshold = config != null ? config.getKillauraStaticTrackingStreak() : 3;
 
         if (data.hasLastAttackSnapshot()) {
             double targetAngularDelta = angularDiff(data.getLastAttackRequiredYaw(), requiredYaw)
                     + angularDiff(data.getLastAttackRequiredPitch(), requiredPitch);
             double playerAngularDelta = angularDiff(data.getLastAttackYaw(), currentYaw)
                     + angularDiff(data.getLastAttackPitch(), currentPitch);
+            DecayingEvidence staticEvidence = data.getStaticTrackingEvidence();
 
             if (targetAngularDelta > staticTargetDelta && playerAngularDelta < staticPlayerDelta && effectiveAngle < staticMaxAngle) {
-                data.incrementStaticTrackingStreak();
-                if (data.getStaticTrackingStreak() >= staticStreakReq) {
+                double score = staticEvidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
+                if (score >= staticThreshold && staticEvidence.events() >= evidenceMinEvents()) {
                     Map<String, Object> details = new HashMap<>();
                     details.put("targetAngularDelta", targetAngularDelta);
                     details.put("playerAngularDelta", playerAngularDelta);
                     details.put("angle", effectiveAngle);
-                    details.put("streak", data.getStaticTrackingStreak());
+                    details.put("score", score);
+                    details.put("threshold", staticThreshold);
+                    details.put("hitsEvaluated", staticEvidence.events());
 
                     String explanation = String.format(Locale.US,
-                            "Tracked a moving target (Δ%.1f°) with a frozen camera (Δ%.2f°) while still hitting (Angle: %.1f°)",
-                            targetAngularDelta, playerAngularDelta, effectiveAngle);
+                            "Tracked a moving target (Δ%.1f°) with a frozen camera (Δ%.2f°) while still hitting (Angle: %.1f°, evidence %.1f/%.1f)",
+                            targetAngularDelta, playerAngularDelta, effectiveAngle, score, staticThreshold);
 
-                    data.resetStaticTrackingStreak();
+                    staticEvidence.reset();
                     data.setLastAttackTarget(target.getEntityId(), nowNanos);
                     data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
-                    return CheckResult.flag("StaticAimTracking", 0.90, 2.3, explanation, details);
+                    return CheckResult.flag("StaticAimTracking", confidenceFor(0.90, score, staticThreshold), 2.3, explanation, details);
                 }
             } else {
-                data.resetStaticTrackingStreak();
+                staticEvidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
             }
         }
         data.setLastAttackTarget(target.getEntityId(), nowNanos);
@@ -327,25 +340,28 @@ public final class KillauraAngleCheck {
         double minRequiredDelta = config.getKillauraTargetSwitchMinRequiredDeltaDegrees();
         double maxLookDelta = config.getKillauraTargetSwitchMaxLookDeltaDegrees();
 
+        DecayingEvidence evidence = data.getTargetSwitchEvidence();
         if (requiredDelta > minRequiredDelta && lookDelta < maxLookDelta) {
-            data.incrementTargetSwitchStreak();
-            int required = config.getKillauraTargetSwitchStreak();
-            if (data.getTargetSwitchStreak() >= required) {
+            double threshold = config.getKillauraTargetSwitchStreak();
+            double score = evidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
+            if (score >= threshold && evidence.events() >= evidenceMinEvents()) {
                 Map<String, Object> details = new HashMap<>();
                 details.put("requiredDelta", requiredDelta);
                 details.put("lookDelta", lookDelta);
-                details.put("streak", data.getTargetSwitchStreak());
+                details.put("score", score);
+                details.put("threshold", threshold);
+                details.put("switchesEvaluated", evidence.events());
                 details.put("sinceLastAttackMs", sinceLastAttackMs);
 
                 String explanation = String.format(Locale.US,
-                        "Switched attack target (required Δ%.1f°) with almost no look movement (Δ%.2f°) within %.0fms",
-                        requiredDelta, lookDelta, sinceLastAttackMs);
+                        "Switched attack target (required Δ%.1f°) with almost no look movement (Δ%.2f°) within %.0fms, evidence %.1f/%.1f",
+                        requiredDelta, lookDelta, sinceLastAttackMs, score, threshold);
 
-                data.resetTargetSwitchStreak();
-                return CheckResult.flag("TargetSwitch", 0.91, 2.4, explanation, details);
+                evidence.reset();
+                return CheckResult.flag("TargetSwitch", confidenceFor(0.91, score, threshold), 2.4, explanation, details);
             }
         } else {
-            data.resetTargetSwitchStreak();
+            evidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
         }
         return null;
     }
@@ -368,24 +384,27 @@ public final class KillauraAngleCheck {
         // combat encounter entirely (stale from a much earlier fight) - not evidence of anything.
         if (reactionMs < 0 || reactionMs > 5000.0) return null;
 
+        DecayingEvidence evidence = data.getReactionTimeEvidence();
         if (reactionMs < minReactionMs) {
-            data.incrementReactionTimeStreak();
-            int required = config.getKillauraReactionStreak();
-            if (data.getReactionTimeStreak() >= required) {
+            double threshold = config.getKillauraReactionStreak();
+            double score = evidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
+            if (score >= threshold && evidence.events() >= evidenceMinEvents()) {
                 Map<String, Object> details = new HashMap<>();
                 details.put("reactionMs", reactionMs);
                 details.put("angle", effectiveAngle);
-                details.put("streak", data.getReactionTimeStreak());
+                details.put("score", score);
+                details.put("threshold", threshold);
+                details.put("attacksEvaluated", evidence.events());
 
                 String explanation = String.format(Locale.US,
-                        "Attack landed %.0fms after last meaningful turn, %d times running (min human ~%.0fms)",
-                        reactionMs, data.getReactionTimeStreak(), minReactionMs);
+                        "Attack landed %.0fms after last meaningful turn (min human ~%.0fms), evidence %.1f/%.1f over %d attacks",
+                        reactionMs, minReactionMs, score, threshold, evidence.events());
 
-                data.resetReactionTimeStreak();
-                return CheckResult.flag("ReactionTime", 0.87, 2.0, explanation, details);
+                evidence.reset();
+                return CheckResult.flag("ReactionTime", confidenceFor(0.87, score, threshold), 2.0, explanation, details);
             }
         } else {
-            data.resetReactionTimeStreak();
+            evidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
         }
         return null;
     }
@@ -396,7 +415,7 @@ public final class KillauraAngleCheck {
      * a single fixed angle - see the call site's comment for why that is a meaningfully different
      * signal from PerfectAimLock.
      */
-    private CheckResult checkAimConsistency(UserData data, double effectiveAngle, Entity target) {
+    private CheckResult checkAimConsistency(UserData data, double effectiveAngle, Entity target, long nowNanos) {
         if (config == null) return null;
         if (!data.getAimBuffer().isFull()) return null;
 
@@ -406,29 +425,61 @@ public final class KillauraAngleCheck {
         double jitterFloor = Math.max(config.getKillauraAimConsistencyMinJitterDegrees(), Math.min(yawStd, pitchStd) * 0.5);
         double maxError = config.getKillauraAimConsistencyMaxErrorDegrees();
 
+        DecayingEvidence evidence = data.getAimConsistencyEvidence();
         if (effectiveAngle < Math.min(maxError, jitterFloor)) {
-            data.incrementAimConsistencyStreak();
-            int required = config.getKillauraAimConsistencyStreak();
-            if (data.getAimConsistencyStreak() >= required) {
+            double threshold = config.getKillauraAimConsistencyStreak();
+            double score = evidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
+            if (score >= threshold && evidence.events() >= evidenceMinEvents()) {
                 Map<String, Object> details = new HashMap<>();
                 details.put("angle", effectiveAngle);
                 details.put("jitterFloor", jitterFloor);
                 details.put("yawStd", yawStd);
                 details.put("pitchStd", pitchStd);
-                details.put("streak", data.getAimConsistencyStreak());
+                details.put("score", score);
+                details.put("threshold", threshold);
+                details.put("hitsEvaluated", evidence.events());
                 details.put("target", target.getName() != null ? target.getName() : target.getType().name());
 
                 String explanation = String.format(Locale.US,
-                        "Aim error (%.2f°) consistently under this player's own mouse-jitter floor (%.2f°), %d hits running",
-                        effectiveAngle, jitterFloor, data.getAimConsistencyStreak());
+                        "Aim error (%.2f°) keeps landing under this player's own mouse-jitter floor (%.2f°): evidence %.1f/%.1f over %d hits",
+                        effectiveAngle, jitterFloor, score, threshold, evidence.events());
 
-                data.resetAimConsistencyStreak();
-                return CheckResult.flag("AimConsistency", 0.86, 1.8, explanation, details);
+                evidence.reset();
+                return CheckResult.flag("AimConsistency", confidenceFor(0.86, score, threshold), 1.8, explanation, details);
             }
         } else {
-            data.resetAimConsistencyStreak();
+            evidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
         }
         return null;
+    }
+
+    /** Half-life of accumulated aim evidence - see {@link DecayingEvidence} and config.yml. */
+    private double evidenceHalfLifeMs() {
+        return config != null ? config.getKillauraEvidenceHalfLifeMs() : 4000.0;
+    }
+
+    /** How much weight one clean hit refunds. Deliberately a partial refund, never a reset. */
+    private double evidenceCleanRelief() {
+        return config != null ? config.getKillauraEvidenceCleanRelief() : 0.5;
+    }
+
+    /**
+     * Minimum number of evaluated hits before any accumulator may produce a verdict. Without this
+     * floor a player whose first few hits happen to look tight could reach the threshold on pure
+     * chance, which is exactly the false positive the accumulator is meant to avoid.
+     */
+    private int evidenceMinEvents() {
+        return config != null ? config.getKillauraEvidenceMinEvents() : 4;
+    }
+
+    /**
+     * Nudges confidence up when the accumulator blew well past its threshold rather than creeping
+     * over it, capped so an accumulator flag never reads as more certain than a hard geometric one.
+     */
+    private static double confidenceFor(double base, double score, double threshold) {
+        if (threshold <= 0) return base;
+        double overshoot = Math.max(0.0, (score - threshold) / threshold);
+        return Math.min(base + 0.06, base + overshoot * 0.06);
     }
 
     /** Scales an "flag if metric > threshold"-style threshold down as sensitivity rises above 1.0. */

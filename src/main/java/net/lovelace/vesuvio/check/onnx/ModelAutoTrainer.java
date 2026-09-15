@@ -57,6 +57,7 @@ public final class ModelAutoTrainer {
     private final Path modelsDir;
     private final AtomicBoolean warnedMissingPython = new AtomicBoolean(false);
     private final AtomicBoolean trainingInProgress = new AtomicBoolean(false);
+    private final ShadowEvaluator shadowEvaluator = new ShadowEvaluator();
 
     private ScheduledExecutorService scheduler;
 
@@ -170,6 +171,13 @@ public final class ModelAutoTrainer {
         command.add(String.join(",", readyDomains));
         command.add("--model-type");
         command.add(config.getAutoRetrainModelType());
+        command.add("--max-fpr");
+        command.add(String.valueOf(config.getAutoRetrainMaxFpr()));
+        command.add("--half-life-days");
+        command.add(String.valueOf(config.getAutoRetrainSampleHalfLifeDays()));
+        if (config.isAutoRetrainCalibrationEnabled()) {
+            command.add("--calibrate");
+        }
 
         LOGGER.info("[Vesuvio] Auto-retrain: starting training for domain(s) " + readyDomains + " ...");
 
@@ -238,9 +246,25 @@ public final class ModelAutoTrainer {
                 LOGGER.warning("[Vesuvio] Auto-retrain: expected output " + staged + " was not produced, skipping hot-reload for " + domain + ".");
                 continue;
             }
+
+            if (!passesQualityGate(domain, stagingDir)) {
+                continue;
+            }
+
+            if (config.isShadowModeEnabled()) {
+                installAsShadowCandidate(domain, staged, stagingDir);
+                continue;
+            }
+
             Path live = modelsDir.resolve(modelFile);
             try {
                 Files.createDirectories(modelsDir);
+                // Keep the outgoing model so a bad retrain can be undone without waiting for the
+                // next cycle - see /vesuvio model rollback.
+                if (Files.exists(live)) {
+                    Files.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"),
+                            StandardCopyOption.REPLACE_EXISTING);
+                }
                 Files.copy(staged, live, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e) {
                 LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to install retrained model " + modelFile, e);
@@ -256,6 +280,249 @@ public final class ModelAutoTrainer {
                 }
             });
         }
+    }
+
+    /**
+     * Installs a gate-passing model as a shadow candidate instead of publishing it.
+     *
+     * <p>The offline report says the candidate is good on a held-out slice of the server's own
+     * historical dataset - but that dataset was collected by the current pipeline, so it
+     * systematically under-represents whatever the current pipeline is blind to. Shadow mode buys
+     * the missing evidence cheaply: the candidate scores the same live feature vectors as the
+     * production model, its verdicts are recorded and never acted on, and an operator promotes it
+     * once {@code /vesuvio model shadow} shows what it would actually have done.
+     */
+    private void installAsShadowCandidate(String domain, Path staged, Path stagingDir) {
+        String modelName = domain + "_model";
+        String shadowName = modelName + ShadowEvaluator.SHADOW_SUFFIX;
+        Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
+
+        try {
+            Files.createDirectories(modelsDir);
+            Files.copy(staged, candidate, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to stage shadow candidate for " + domain, e);
+            return;
+        }
+
+        // The candidate is judged at the threshold its own report recommends, not the live model's:
+        // thresholds are model-specific, and comparing a new model at the old model's operating
+        // point measures the wrong thing entirely.
+        double threshold = candidateThreshold(domain, stagingDir);
+        shadowEvaluator.clear(modelName);
+        mlManager.registerModel(new ModelConfig(shadowName, true, candidate.toString(),
+                threshold, config.getOnnxWeight(), "float_input"));
+        mlManager.hotReload(shadowName, candidate).thenAccept(success -> {
+            if (success) {
+                LOGGER.info(String.format(Locale.US,
+                        "[Vesuvio] Auto-retrain: '%s' passed the gate and is now running in SHADOW MODE at threshold "
+                                + "%.3f - it scores live traffic but changes nothing. Check '/vesuvio model shadow' "
+                                + "after a few hours, then '/vesuvio model promote %s' to publish it.",
+                        domain, threshold, domain));
+            } else {
+                LOGGER.warning("[Vesuvio] Auto-retrain: shadow candidate for " + domain + " failed to load.");
+            }
+        });
+    }
+
+    /** The operating threshold the candidate's own report recommends, or the configured default. */
+    private double candidateThreshold(String domain, Path stagingDir) {
+        Path reportPath = stagingDir.resolve(domain + "_report.json");
+        if (Files.exists(reportPath)) {
+            try {
+                double suggested = readJsonNumber(Files.readString(reportPath, StandardCharsets.UTF_8),
+                        "suggested_threshold");
+                if (!Double.isNaN(suggested) && suggested > 0.0 && suggested < 1.0) return suggested;
+            } catch (IOException ignored) {
+                // Falls through to the configured default - a missing report is already reported
+                // by the quality gate, which runs before this.
+            }
+        }
+        return config.getOnnxDefaultThreshold();
+    }
+
+    /**
+     * Publishes the shadow candidate for a domain as the live model.
+     *
+     * @return a human-readable result, suitable for sending straight back to the operator
+     */
+    public String promoteCandidate(String domain) {
+        Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
+        if (!Files.exists(candidate)) {
+            return "No shadow candidate staged for '" + domain + "'.";
+        }
+
+        String modelName = domain + "_model";
+        Path live = modelsDir.resolve(domain + "_model.onnx");
+        try {
+            if (Files.exists(live)) {
+                Files.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+            Files.copy(candidate, live, StandardCopyOption.REPLACE_EXISTING);
+            Files.deleteIfExists(candidate);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to promote shadow candidate for " + domain, e);
+            return "Failed to promote '" + domain + "' candidate - see console.";
+        }
+
+        String summary = shadowEvaluator.describe(modelName);
+        mlManager.unloadModel(modelName + ShadowEvaluator.SHADOW_SUFFIX);
+        shadowEvaluator.clear(modelName);
+        mlManager.hotReload(modelName, live);
+
+        LOGGER.info("[Vesuvio] Shadow candidate promoted to live for " + domain + " (" + summary + ")");
+        return "Promoted '" + domain + "' candidate to live. Previous model kept as "
+                + domain + "_model.onnx.previous. Observed: " + summary;
+    }
+
+    /** Throws away the shadow candidate for a domain without publishing it. */
+    public String discardCandidate(String domain) {
+        Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
+        String modelName = domain + "_model";
+        mlManager.unloadModel(modelName + ShadowEvaluator.SHADOW_SUFFIX);
+        shadowEvaluator.clear(modelName);
+        try {
+            boolean existed = Files.deleteIfExists(candidate);
+            return existed ? "Discarded the '" + domain + "' shadow candidate."
+                    : "No shadow candidate staged for '" + domain + "'.";
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to delete shadow candidate for " + domain, e);
+            return "Failed to delete the '" + domain + "' candidate file - see console.";
+        }
+    }
+
+    /** Live-vs-candidate comparison counters, written from the ONNX callbacks in CheckPipeline. */
+    public ShadowEvaluator getShadowEvaluator() {
+        return shadowEvaluator;
+    }
+
+    /** The domains this trainer knows about, for command completion and status output. */
+    public static String[] domains() {
+        return DOMAINS.clone();
+    }
+
+    /**
+     * Refuses to publish a retrained model that the training script could not validate, or that
+     * validated badly.
+     *
+     * <p>Previously every successful script run was copied into place and hot-reloaded on the
+     * spot, so a model trained on a handful of near-duplicate windows went straight to production
+     * with nothing watching. The script now writes a JSON report next to the model; a model that
+     * is unvalidated (too few distinct players to hold any out) or below the configured
+     * precision floor at the false-positive budget stays in staging, where an operator can still
+     * inspect it.
+     */
+    private boolean passesQualityGate(String domain, Path stagingDir) {
+        if (!config.isAutoRetrainQualityGateEnabled()) {
+            return true;
+        }
+
+        Path reportPath = stagingDir.resolve(domain + "_report.json");
+        if (!Files.exists(reportPath)) {
+            LOGGER.warning("[Vesuvio] Auto-retrain: no evaluation report for '" + domain
+                    + "' - refusing to publish an unmeasured model. (Is the bundled training script outdated?)");
+            return false;
+        }
+
+        String json;
+        try {
+            json = Files.readString(reportPath, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: could not read evaluation report for " + domain, e);
+            return false;
+        }
+
+        if (!readJsonBoolean(json, "validated")) {
+            LOGGER.warning("[Vesuvio] Auto-retrain: '" + domain + "' model is UNVALIDATED (too few distinct "
+                    + "players to hold any out) - not publishing. More players need to contribute samples.");
+            return false;
+        }
+
+        double precision = readJsonNumber(json, "precision_at_max_fpr");
+        double recall = readJsonNumber(json, "recall_at_max_fpr");
+        double minPrecision = config.getAutoRetrainMinPrecision();
+
+        if (Double.isNaN(precision) || precision < minPrecision) {
+            LOGGER.warning(String.format(Locale.US,
+                    "[Vesuvio] Auto-retrain: '%s' model scored precision=%.3f (recall=%.3f) at the configured "
+                            + "false-positive budget, below the %.3f floor - not publishing.",
+                    domain, precision, recall, minPrecision));
+            return false;
+        }
+
+        // Calibration gate. Every threshold an operator sets in config.yml is a probability, so a
+        // model whose 0.9 does not actually mean "9 in 10 such windows are cheats" silently
+        // redefines every one of those settings. A badly miscalibrated model can still have a fine
+        // PR-AUC - ranking and calibration are different properties - which is exactly why this is
+        // checked separately rather than assumed from the precision figure above.
+        double calibrationError = readJsonNumber(json, "ece");
+        double maxCalibrationError = config.getAutoRetrainMaxCalibrationError();
+        if (!Double.isNaN(calibrationError) && maxCalibrationError > 0 && calibrationError > maxCalibrationError) {
+            LOGGER.warning(String.format(Locale.US,
+                    "[Vesuvio] Auto-retrain: '%s' model is poorly calibrated (expected calibration error %.3f > %.3f) "
+                            + "- not publishing, because the probability thresholds in config.yml would no longer mean "
+                            + "what they say. Enabling layers.onnx.auto-retrain.calibrate usually fixes this.",
+                    domain, calibrationError, maxCalibrationError));
+            return false;
+        }
+
+        double suggested = readJsonNumber(json, "suggested_threshold");
+        if (!Double.isNaN(suggested)) {
+            // Surfaced rather than applied: the live threshold is an operator's setting, and
+            // silently rewriting config.yml from a background task would be a surprising thing for
+            // a plugin to do. Logged so the recommendation is actually actionable.
+            LOGGER.info(String.format(Locale.US,
+                    "[Vesuvio] Auto-retrain: '%s' reaches the configured false-positive budget at "
+                            + "threshold %.3f - set layers.onnx.models.%s.threshold to that if you want to match it.",
+                    domain, suggested, domain + "_model"));
+        }
+
+        LOGGER.info(String.format(Locale.US,
+                "[Vesuvio] Auto-retrain: '%s' model passed the quality gate (precision=%.3f, recall=%.3f, "
+                        + "calibration error=%s).",
+                domain, precision, recall,
+                Double.isNaN(calibrationError) ? "n/a" : String.format(Locale.US, "%.3f", calibrationError)));
+        return true;
+    }
+
+    /**
+     * Minimal field reader for the flat, machine-generated report the training script writes.
+     * Deliberately not a JSON dependency: the document is one level deep and written by code in
+     * this same repository, so a full parser would be more surface area than the task needs.
+     */
+    private static double readJsonNumber(String json, String field) {
+        String needle = "\"" + field + "\"";
+        int at = json.indexOf(needle);
+        if (at < 0) return Double.NaN;
+        int colon = json.indexOf(':', at + needle.length());
+        if (colon < 0) return Double.NaN;
+
+        int i = colon + 1;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        int start = i;
+        while (i < json.length() && "-+.eE0123456789".indexOf(json.charAt(i)) >= 0) i++;
+        if (start == i) return Double.NaN;
+        try {
+            return Double.parseDouble(json.substring(start, i));
+        } catch (NumberFormatException e) {
+            return Double.NaN;
+        }
+    }
+
+    private static boolean readJsonBoolean(String json, String field) {
+        String needle = "\"" + field + "\"";
+        int at = json.indexOf(needle);
+        if (at < 0) return false;
+        int colon = json.indexOf(':', at + needle.length());
+        if (colon < 0) return false;
+        return json.regionMatches(true, skipWhitespace(json, colon + 1), "true", 0, 4);
+    }
+
+    private static int skipWhitespace(String s, int from) {
+        int i = from;
+        while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++;
+        return i;
     }
 
     private void logScriptOutput(List<String> lines) {

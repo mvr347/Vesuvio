@@ -144,6 +144,63 @@ public final class ConfigManager {
         return config.getString("layers.onnx.auto-retrain.model-type", "logistic");
     }
 
+    /**
+     * Whether a retrained model must pass its evaluation report before being published. Without
+     * this a model trained on a handful of near-duplicate windows goes straight to production.
+     */
+    public boolean isAutoRetrainQualityGateEnabled() {
+        return config.getBoolean("layers.onnx.auto-retrain.quality-gate.enabled", true);
+    }
+
+    /**
+     * Whether a retrained model that passes the quality gate is published immediately, or first
+     * runs as a shadow candidate scoring live traffic without acting on it.
+     *
+     * <p>The gate's verdict comes from a held-out slice of the server's own historical dataset -
+     * which was collected by the current pipeline and therefore under-represents whatever the
+     * current pipeline is blind to. Shadow mode is how an operator sees what a candidate would
+     * really have done before it can do it. Off by default: it needs someone to come back and
+     * promote, and an unattended server is better served by the gate alone than by a candidate
+     * nobody ever looks at.
+     */
+    public boolean isShadowModeEnabled() {
+        return config.getBoolean("layers.onnx.auto-retrain.shadow-mode", false);
+    }
+
+    /** False-positive budget the training script picks its operating threshold against. */
+    public double getAutoRetrainMaxFpr() {
+        return config.getDouble("layers.onnx.auto-retrain.quality-gate.max-false-positive-rate", 0.001);
+    }
+
+    /**
+     * Age at which a training sample counts half as much. The cheat landscape turns over - a
+     * client from a year ago has since been rewritten - so a long-lived server's accumulated
+     * history should not outvote the last few weeks. 0 disables age weighting.
+     */
+    public double getAutoRetrainSampleHalfLifeDays() {
+        return config.getDouble("layers.onnx.auto-retrain.sample-half-life-days", 30.0);
+    }
+
+    /**
+     * Whether the retrained classifier is wrapped in sigmoid (Platt) calibration, so its reported
+     * probability can be taken at face value. Matters because every ONNX threshold in this file is
+     * written as a probability; an uncalibrated model quietly gives those numbers a different
+     * meaning after each retrain.
+     */
+    public boolean isAutoRetrainCalibrationEnabled() {
+        return config.getBoolean("layers.onnx.auto-retrain.calibrate", true);
+    }
+
+    /** Expected calibration error above which a retrained model is not published. 0 disables the check. */
+    public double getAutoRetrainMaxCalibrationError() {
+        return config.getDouble("layers.onnx.auto-retrain.quality-gate.max-calibration-error", 0.25);
+    }
+
+    /** Precision at that budget below which a retrained model is not published. */
+    public double getAutoRetrainMinPrecision() {
+        return config.getDouble("layers.onnx.auto-retrain.quality-gate.min-precision", 0.90);
+    }
+
     // Layer 3
     public boolean isSelfLearningEnabled() {
         return config.getBoolean("layers.self-learning.enabled", true);
@@ -179,6 +236,32 @@ public final class ConfigManager {
 
     public double getOnlineClassifierSilentRiskThreshold() {
         return config.getDouble("layers.self-learning.online-classifier.silent-risk-threshold", 0.65);
+    }
+
+    // -------------------------------------------------------------
+    // Rolling multi-window capture (see data.FeatureSnapshotHistory). A confirmed label used to
+    // record exactly one feature window - the one in the buffer at the instant the ban fired,
+    // which is the least representative moment of the session. These knobs control how many
+    // earlier windows are kept and replayed under that same label.
+    // -------------------------------------------------------------
+
+    public boolean isAutoCollectHistoryEnabled() {
+        return config.getBoolean("layers.self-learning.auto-collection.history.enabled", true);
+    }
+
+    /** How often each online player's feature vectors are snapshotted into their history. */
+    public int getAutoCollectHistoryIntervalSeconds() {
+        return config.getInt("layers.self-learning.auto-collection.history.interval-seconds", 45);
+    }
+
+    /** How many earlier windows a confirmed label may replay. */
+    public int getAutoCollectHistoryMaxSamples() {
+        return config.getInt("layers.self-learning.auto-collection.history.max-samples", 4);
+    }
+
+    /** Windows older than this are dropped - they describe a part of the session the label may not cover. */
+    public int getAutoCollectHistoryMaxAgeMinutes() {
+        return config.getInt("layers.self-learning.auto-collection.history.max-age-minutes", 10);
     }
 
     public boolean isAutoCollectionEnabled() {
@@ -235,6 +318,15 @@ public final class ConfigManager {
     /** Max Risk contributed per click evaluation by the ensemble score alone. */
     public double getEnsembleMaxRiskContribution() {
         return config.getDouble("layers.ensemble.max-risk-contribution", 6.0);
+    }
+
+    /**
+     * How old the last ONNX probability may be before the ensemble stops counting it. Only reached
+     * when no inference ran for the click being scored (model disabled, or throttled); past this
+     * age the ONNX term is dropped from the fusion rather than defaulted to a clean 0.0.
+     */
+    public double getEnsembleMaxOnnxAgeMs() {
+        return config.getDouble("layers.ensemble.max-onnx-age-ms", 3000.0);
     }
 
     /** Ensemble score must clear this before it contributes anything - avoids constant background noise. */
@@ -573,8 +665,73 @@ public final class ConfigManager {
         return config.getInt("mechanics.combat.killaura.aim-consistency.streak", 8);
     }
 
+    // -------------------------------------------------------------
+    // Shared evidence-accumulator behaviour for the aim sub-checks (perfect-aim, static-tracking,
+    // reaction, target-switch, aim-consistency). Each sub-check's existing `streak` value is reused
+    // as the score threshold - one suspicious hit is still worth 1.0, so tuned values keep their
+    // meaning - but a clean hit now only refunds `clean-relief` instead of wiping the counter, and
+    // unused evidence fades with `half-life-ms`. See data.DecayingEvidence for the reasoning.
+    // -------------------------------------------------------------
+
+    public double getKillauraEvidenceHalfLifeMs() {
+        return config.getDouble("mechanics.combat.killaura.evidence.half-life-ms", 4000.0);
+    }
+
+    public double getKillauraEvidenceCleanRelief() {
+        return config.getDouble("mechanics.combat.killaura.evidence.clean-relief", 0.5);
+    }
+
+    public int getKillauraEvidenceMinEvents() {
+        return config.getInt("mechanics.combat.killaura.evidence.min-events", 4);
+    }
+
     public boolean isKillauraDynamicSensitivityEnabled() {
         return config.getBoolean("mechanics.combat.killaura.dynamic-sensitivity", true);
+    }
+
+    // Strafe-reversal sensorimotor-latency check (see check.statistical.StrafeReversalCheck).
+    public boolean isStrafeReversalEnabled() {
+        return config.getBoolean("mechanics.combat.strafe-reversal.enabled", true);
+    }
+
+    /** Degrees per tick the target's required angle must be moving, both before and after, to count as a reversal. */
+    public double getStrafeReversalMinSpeedDegrees() {
+        return config.getDouble("mechanics.combat.strafe-reversal.min-speed-degrees", 1.5);
+    }
+
+    /** How many ticks after a reversal the camera's response is still looked for. */
+    public int getStrafeReversalMaxResponseTicks() {
+        return config.getInt("mechanics.combat.strafe-reversal.max-response-ticks", 10);
+    }
+
+    /** Response this fast (ticks) is faster than human sensorimotor delay allows. */
+    public int getStrafeReversalFastResponseTicks() {
+        return config.getInt("mechanics.combat.strafe-reversal.fast-response-ticks", 1);
+    }
+
+    /** Response at least this slow (ticks) is squarely in the human range and credits the player back. */
+    public int getStrafeReversalHumanResponseTicks() {
+        return config.getInt("mechanics.combat.strafe-reversal.human-response-ticks", 3);
+    }
+
+    public double getStrafeReversalScorePerFastEvent() {
+        return config.getDouble("mechanics.combat.strafe-reversal.score-per-fast-event", 1.0);
+    }
+
+    public double getStrafeReversalDecayPerHumanEvent() {
+        return config.getDouble("mechanics.combat.strafe-reversal.decay-per-human-event", 0.5);
+    }
+
+    public int getStrafeReversalMinEvents() {
+        return config.getInt("mechanics.combat.strafe-reversal.min-events", 8);
+    }
+
+    public double getStrafeReversalFlagScore() {
+        return config.getDouble("mechanics.combat.strafe-reversal.flag-score", 6.0);
+    }
+
+    public long getStrafeReversalIntervalMs() {
+        return config.getLong("mechanics.combat.strafe-reversal.analysis-interval-ms", 500L);
     }
 
     public boolean isAutoCriticalsEnabled() {

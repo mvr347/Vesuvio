@@ -12,9 +12,15 @@ import java.util.Arrays;
  */
 public final class ClickFeatureExtractor {
 
-    public static final int FEATURE_COUNT = 16;
+    /**
+     * Features are only ever <em>appended</em>, never reordered or repurposed. Older persisted
+     * samples and older exported models keep meaning what they meant: the dataset zero-pads short
+     * rows on load and {@code MLManager} fits the vector to whatever width a given model declares.
+     */
+    public static final int FEATURE_COUNT = 20;
 
     private static final ThreadLocal<long[]> TEMP_BUFFER = ThreadLocal.withInitial(() -> new long[ClickRingBuffer.SIZE]);
+    private static final ThreadLocal<long[]> SORT_BUFFER = ThreadLocal.withInitial(() -> new long[ClickRingBuffer.SIZE]);
     private static final ThreadLocal<float[]> FEATURE_BUFFER = ThreadLocal.withInitial(() -> new float[FEATURE_COUNT]);
 
     private ClickFeatureExtractor() {}
@@ -179,6 +185,56 @@ public final class ClickFeatureExtractor {
             features[15] = (float) (meanMs - earlyCombatMeanMs);
         } else {
             features[15] = 0f;
+        }
+
+        // ---------------------------------------------------------------------
+        // 17-20: outlier-resistant shape of the interval distribution. Mean and standard
+        // deviation are exactly what a humanized client perturbs first - injecting a few long
+        // pauses moves both while leaving the underlying rhythm intact. Quantiles, run lengths
+        // and a second autocorrelation lag describe that rhythm directly, and barely move under
+        // a handful of injected outliers.
+        // ---------------------------------------------------------------------
+        long[] sorted = SORT_BUFFER.get();
+        System.arraycopy(data, 0, sorted, 0, n);
+        Arrays.sort(sorted, 0, n);
+
+        double q1Ms = sorted[n / 4] / 1_000_000.0;
+        double medianMs = sorted[n / 2] / 1_000_000.0;
+        double q3Ms = sorted[(3 * n) / 4] / 1_000_000.0;
+
+        // 17. Interquartile range (ms) - previously computed only for StatisticalClickCheck and
+        // never handed to any model, despite being one of the strongest single signals it has.
+        features[16] = (float) Math.max(0.0, q3Ms - q1Ms);
+
+        // 18. Median-to-mean ratio: ~1.0 for a symmetric machine rhythm, pushed away from 1.0 by
+        // the long tail a human's occasional hesitation produces.
+        features[17] = (meanMs > 1e-6) ? (float) (medianMs / meanMs) : 0f;
+
+        // 19. Longest run of intervals within 3ms of one another, as a fraction of the window.
+        // A macro holds one cadence for long stretches; a human's drifts continuously.
+        int longestRun = 1;
+        int currentRun = 1;
+        for (int i = 1; i < n; i++) {
+            if (Math.abs(data[i] - data[i - 1]) <= 3_000_000L) {
+                currentRun++;
+                if (currentRun > longestRun) longestRun = currentRun;
+            } else {
+                currentRun = 1;
+            }
+        }
+        features[18] = (float) longestRun / n;
+
+        // 20. Lag-2 autocorrelation. Alternating patterns (every other click identical - typical
+        // of double-click and drag-click scripts) show up here while lag-1 alone misses them.
+        if (n >= 4) {
+            double auto2 = 0;
+            for (int i = 2; i < n; i++) {
+                auto2 += (data[i] - meanNanos) * (data[i - 2] - meanNanos);
+            }
+            double denom2 = (n * stdNanos * stdNanos);
+            features[19] = (denom2 > 1e-9) ? (float) (auto2 / denom2) : 0f;
+        } else {
+            features[19] = 0f;
         }
 
         return features;
