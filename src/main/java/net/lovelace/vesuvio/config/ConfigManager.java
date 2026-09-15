@@ -144,6 +144,24 @@ public final class ConfigManager {
         return config.getString("layers.onnx.auto-retrain.model-type", "logistic");
     }
 
+    /**
+     * Whether a retrained model must pass its evaluation report before being published. Without
+     * this a model trained on a handful of near-duplicate windows goes straight to production.
+     */
+    public boolean isAutoRetrainQualityGateEnabled() {
+        return config.getBoolean("layers.onnx.auto-retrain.quality-gate.enabled", true);
+    }
+
+    /** False-positive budget the training script picks its operating threshold against. */
+    public double getAutoRetrainMaxFpr() {
+        return config.getDouble("layers.onnx.auto-retrain.quality-gate.max-false-positive-rate", 0.001);
+    }
+
+    /** Precision at that budget below which a retrained model is not published. */
+    public double getAutoRetrainMinPrecision() {
+        return config.getDouble("layers.onnx.auto-retrain.quality-gate.min-precision", 0.90);
+    }
+
     // Layer 3
     public boolean isSelfLearningEnabled() {
         return config.getBoolean("layers.self-learning.enabled", true);

@@ -85,7 +85,7 @@ public final class AutoDatasetCollector {
             float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean()).clone();
             datasetManager.addSample(new DatasetManager.LabeledSample(
                     player.getUniqueId(), player.getName(), features, 1,
-                    System.currentTimeMillis(), "AutoCollector(ban)", "click"
+                    System.currentTimeMillis(), "AutoCollector(ban)", "click", DatasetManager.LabelSource.BAN
             ));
             clickClassifier.train(features, 1);
             collected = true;
@@ -94,7 +94,7 @@ public final class AutoDatasetCollector {
             float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer()).clone();
             datasetManager.addSample(new DatasetManager.LabeledSample(
                     player.getUniqueId(), player.getName(), aimFeatures, 1,
-                    System.currentTimeMillis(), "AutoCollector(ban)", "aim"
+                    System.currentTimeMillis(), "AutoCollector(ban)", "aim", DatasetManager.LabelSource.BAN
             ));
             aimClassifier.train(aimFeatures, 1);
             collected = true;
@@ -105,6 +105,45 @@ public final class AutoDatasetCollector {
             LOGGER.info(String.format(
                     "[Vesuvio AutoLearn] Auto-collected CHEAT sample(s) for %s on ban (click classifier: %d samples, aim classifier: %d samples)",
                     player.getName(), clickClassifier.getTrainedSamplesCount(), aimClassifier.getTrainedSamplesCount()));
+        }
+    }
+
+    /**
+     * Call when a player hit a per-player packet trap entity (see engine.NpcTrapManager).
+     *
+     * <p>This is the only cheat label in the system that is <em>not</em> self-confirming. A ban
+     * label records that the pipeline's own thresholds fired, so training on it mostly teaches the
+     * models to reproduce their current opinion - including its mistakes. A trap hit is decided by
+     * something the pipeline's statistics had no part in: a legitimate client never renders the
+     * entity and cannot swing at it, so the label carries information the models did not already
+     * have. Collected unconditionally, and never throttled.
+     */
+    public void collectTrapSample(Player player, UserData data) {
+        if (!config.isAutoCollectionEnabled()) return;
+
+        boolean collected = false;
+        if (data.getClickBuffer().getCount() >= 16) {
+            float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean()).clone();
+            datasetManager.addSample(new DatasetManager.LabeledSample(
+                    player.getUniqueId(), player.getName(), features, 1,
+                    System.currentTimeMillis(), "NpcTrap", "click", DatasetManager.LabelSource.TRAP
+            ));
+            clickClassifier.train(features, 1);
+            collected = true;
+        }
+        if (data.getAimBuffer().getCount() >= 16) {
+            float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer()).clone();
+            datasetManager.addSample(new DatasetManager.LabeledSample(
+                    player.getUniqueId(), player.getName(), aimFeatures, 1,
+                    System.currentTimeMillis(), "NpcTrap", "aim", DatasetManager.LabelSource.TRAP
+            ));
+            aimClassifier.train(aimFeatures, 1);
+            collected = true;
+        }
+
+        if (collected) {
+            autoCheatCount.incrementAndGet();
+            LOGGER.info("[Vesuvio AutoLearn] Auto-collected conclusive TRAP sample(s) for " + player.getName());
         }
     }
 
@@ -147,7 +186,7 @@ public final class AutoDatasetCollector {
             if (data.getClickBuffer().getCount() >= 16) {
                 float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean()).clone();
                 datasetManager.addSample(new DatasetManager.LabeledSample(
-                        player.getUniqueId(), player.getName(), features, 0, now, "AutoCollector(trusted)", "click"
+                        player.getUniqueId(), player.getName(), features, 0, now, "AutoCollector(trusted)", "click", DatasetManager.LabelSource.TRUSTED
                 ));
                 clickClassifier.train(features, 0);
                 collected = true;
@@ -155,7 +194,7 @@ public final class AutoDatasetCollector {
             if (data.isInCombat() && data.getAimBuffer().getCount() >= 16) {
                 float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer()).clone();
                 datasetManager.addSample(new DatasetManager.LabeledSample(
-                        player.getUniqueId(), player.getName(), aimFeatures, 0, now, "AutoCollector(trusted)", "aim"
+                        player.getUniqueId(), player.getName(), aimFeatures, 0, now, "AutoCollector(trusted)", "aim", DatasetManager.LabelSource.TRUSTED
                 ));
                 aimClassifier.train(aimFeatures, 0);
                 collected = true;

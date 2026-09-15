@@ -170,6 +170,8 @@ public final class ModelAutoTrainer {
         command.add(String.join(",", readyDomains));
         command.add("--model-type");
         command.add(config.getAutoRetrainModelType());
+        command.add("--max-fpr");
+        command.add(String.valueOf(config.getAutoRetrainMaxFpr()));
 
         LOGGER.info("[Vesuvio] Auto-retrain: starting training for domain(s) " + readyDomains + " ...");
 
@@ -238,9 +240,20 @@ public final class ModelAutoTrainer {
                 LOGGER.warning("[Vesuvio] Auto-retrain: expected output " + staged + " was not produced, skipping hot-reload for " + domain + ".");
                 continue;
             }
+
+            if (!passesQualityGate(domain, stagingDir)) {
+                continue;
+            }
+
             Path live = modelsDir.resolve(modelFile);
             try {
                 Files.createDirectories(modelsDir);
+                // Keep the outgoing model so a bad retrain can be undone without waiting for the
+                // next cycle - see /vesuvio model rollback.
+                if (Files.exists(live)) {
+                    Files.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"),
+                            StandardCopyOption.REPLACE_EXISTING);
+                }
                 Files.copy(staged, live, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e) {
                 LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to install retrained model " + modelFile, e);
@@ -256,6 +269,100 @@ public final class ModelAutoTrainer {
                 }
             });
         }
+    }
+
+    /**
+     * Refuses to publish a retrained model that the training script could not validate, or that
+     * validated badly.
+     *
+     * <p>Previously every successful script run was copied into place and hot-reloaded on the
+     * spot, so a model trained on a handful of near-duplicate windows went straight to production
+     * with nothing watching. The script now writes a JSON report next to the model; a model that
+     * is unvalidated (too few distinct players to hold any out) or below the configured
+     * precision floor at the false-positive budget stays in staging, where an operator can still
+     * inspect it.
+     */
+    private boolean passesQualityGate(String domain, Path stagingDir) {
+        if (!config.isAutoRetrainQualityGateEnabled()) {
+            return true;
+        }
+
+        Path reportPath = stagingDir.resolve(domain + "_report.json");
+        if (!Files.exists(reportPath)) {
+            LOGGER.warning("[Vesuvio] Auto-retrain: no evaluation report for '" + domain
+                    + "' - refusing to publish an unmeasured model. (Is the bundled training script outdated?)");
+            return false;
+        }
+
+        String json;
+        try {
+            json = Files.readString(reportPath, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: could not read evaluation report for " + domain, e);
+            return false;
+        }
+
+        if (!readJsonBoolean(json, "validated")) {
+            LOGGER.warning("[Vesuvio] Auto-retrain: '" + domain + "' model is UNVALIDATED (too few distinct "
+                    + "players to hold any out) - not publishing. More players need to contribute samples.");
+            return false;
+        }
+
+        double precision = readJsonNumber(json, "precision_at_max_fpr");
+        double recall = readJsonNumber(json, "recall_at_max_fpr");
+        double minPrecision = config.getAutoRetrainMinPrecision();
+
+        if (Double.isNaN(precision) || precision < minPrecision) {
+            LOGGER.warning(String.format(Locale.US,
+                    "[Vesuvio] Auto-retrain: '%s' model scored precision=%.3f (recall=%.3f) at the configured "
+                            + "false-positive budget, below the %.3f floor - not publishing.",
+                    domain, precision, recall, minPrecision));
+            return false;
+        }
+
+        LOGGER.info(String.format(Locale.US,
+                "[Vesuvio] Auto-retrain: '%s' model passed the quality gate (precision=%.3f, recall=%.3f).",
+                domain, precision, recall));
+        return true;
+    }
+
+    /**
+     * Minimal field reader for the flat, machine-generated report the training script writes.
+     * Deliberately not a JSON dependency: the document is one level deep and written by code in
+     * this same repository, so a full parser would be more surface area than the task needs.
+     */
+    private static double readJsonNumber(String json, String field) {
+        String needle = "\"" + field + "\"";
+        int at = json.indexOf(needle);
+        if (at < 0) return Double.NaN;
+        int colon = json.indexOf(':', at + needle.length());
+        if (colon < 0) return Double.NaN;
+
+        int i = colon + 1;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        int start = i;
+        while (i < json.length() && "-+.eE0123456789".indexOf(json.charAt(i)) >= 0) i++;
+        if (start == i) return Double.NaN;
+        try {
+            return Double.parseDouble(json.substring(start, i));
+        } catch (NumberFormatException e) {
+            return Double.NaN;
+        }
+    }
+
+    private static boolean readJsonBoolean(String json, String field) {
+        String needle = "\"" + field + "\"";
+        int at = json.indexOf(needle);
+        if (at < 0) return false;
+        int colon = json.indexOf(':', at + needle.length());
+        if (colon < 0) return false;
+        return json.regionMatches(true, skipWhitespace(json, colon + 1), "true", 0, 4);
+    }
+
+    private static int skipWhitespace(String s, int from) {
+        int i = from;
+        while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++;
+        return i;
     }
 
     private void logScriptOutput(List<String> lines) {

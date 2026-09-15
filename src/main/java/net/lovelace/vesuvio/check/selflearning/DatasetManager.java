@@ -27,6 +27,34 @@ public final class DatasetManager {
     private static final Logger LOGGER = Logger.getLogger("Vesuvio-Dataset");
     private static final int FEATURE_COUNT = 16;
 
+    /**
+     * Where a label came from. This is not cosmetic: it decides whether a sample may be trained on
+     * at all.
+     *
+     * <p>{@link #BAN} and {@link #TRUSTED} are <em>self-confirming</em> - the ban was decided by
+     * the same pipeline whose models the sample would train, and "trusted" means precisely "the
+     * pipeline has not flagged them". Training on those alone teaches the model to reproduce its
+     * own current opinion, including its mistakes: a legitimate play style that the heuristics
+     * mis-flag gets banned, is recorded as a cheat, and the model then learns to be more certain
+     * about the same error.
+     *
+     * <p>{@link #TRAP} and {@link #STAFF} are the only sources carrying information the pipeline
+     * did not already have - a packet-level trap entity a legitimate client cannot see, and a
+     * human verdict. The training script treats them accordingly (see scripts/train_models.py).
+     */
+    public enum LabelSource {
+        /** Auto-captured when the pipeline's own punishment threshold fired. Self-confirming. */
+        BAN,
+        /** Auto-captured from a high-Trust/low-Risk session. Self-confirming. */
+        TRUSTED,
+        /** Staff verdict via Active Learning or the web panel. External ground truth. */
+        STAFF,
+        /** Hit a per-player packet trap entity invisible to a legitimate client. Conclusive. */
+        TRAP,
+        /** Imported from an external CSV, or predating the source column. */
+        UNKNOWN
+    }
+
     public record LabeledSample(
             UUID playerUuid,
             String playerName,
@@ -34,11 +62,18 @@ public final class DatasetManager {
             int label, // 1 = cheat, 0 = legit
             long timestamp,
             String reviewer,
-            String domain // "click" or "aim" - which feature extractor/classifier this sample belongs to
+            String domain, // "click" or "aim" - which feature extractor/classifier this sample belongs to
+            LabelSource source
     ) {
         /** Legacy 6-arg constructor, defaults to the click domain (all pre-existing call sites). */
         public LabeledSample(UUID playerUuid, String playerName, float[] features, int label, long timestamp, String reviewer) {
-            this(playerUuid, playerName, features, label, timestamp, reviewer, "click");
+            this(playerUuid, playerName, features, label, timestamp, reviewer, "click", LabelSource.UNKNOWN);
+        }
+
+        /** Legacy 7-arg constructor, from before label provenance was tracked. */
+        public LabeledSample(UUID playerUuid, String playerName, float[] features, int label, long timestamp,
+                             String reviewer, String domain) {
+            this(playerUuid, playerName, features, label, timestamp, reviewer, domain, LabelSource.UNKNOWN);
         }
     }
 
@@ -137,7 +172,7 @@ public final class DatasetManager {
         for (int i = 0; i < FEATURE_COUNT; i++) {
             sb.append(",f").append(i);
         }
-        sb.append(",domain");
+        sb.append(",domain,source");
         return sb.toString();
     }
 
@@ -152,6 +187,7 @@ public final class DatasetManager {
             line.append(",").append(String.format(Locale.US, "%.6f", f));
         }
         line.append(",").append(s.domain());
+        line.append(",").append(s.source() == null ? LabelSource.UNKNOWN : s.source());
         return line.toString();
     }
 
@@ -201,10 +237,11 @@ public final class DatasetManager {
                     features[i] = Float.parseFloat(parts[5 + i]);
                 }
                 // Older exports (before the domain column existed) have exactly 21 columns and
-                // default to "click"; newer exports carry domain as column 22.
+                // default to "click"; domain is column 22 and label provenance column 23.
                 String domain = (parts.length >= 22) ? parts[21] : "click";
+                LabelSource labelSource = (parts.length >= 23) ? parseSource(parts[22]) : inferLegacySource(reviewer);
 
-                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain));
+                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain, labelSource));
                 imported++;
             }
         } catch (Exception e) {
@@ -212,6 +249,36 @@ public final class DatasetManager {
         }
 
         return imported;
+    }
+
+    private static LabelSource parseSource(String raw) {
+        if (raw == null || raw.isBlank()) return LabelSource.UNKNOWN;
+        try {
+            return LabelSource.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return LabelSource.UNKNOWN;
+        }
+    }
+
+    /**
+     * Recovers provenance for rows written before the source column existed, from the reviewer
+     * string the collectors already stamped. Rows that are neither recognisable auto-collector
+     * output stay UNKNOWN rather than being optimistically promoted to STAFF.
+     */
+    private static LabelSource inferLegacySource(String reviewer) {
+        if (reviewer == null) return LabelSource.UNKNOWN;
+        if (reviewer.startsWith("AutoCollector(ban)")) return LabelSource.BAN;
+        if (reviewer.startsWith("AutoCollector(trusted)")) return LabelSource.TRUSTED;
+        return LabelSource.UNKNOWN;
+    }
+
+    /** Counts labeled samples in memory matching a domain/label/source triple. */
+    public int countSamples(String domain, int label, LabelSource source) {
+        int count = 0;
+        for (LabeledSample s : dataset) {
+            if (domain.equals(s.domain()) && s.label() == label && s.source() == source) count++;
+        }
+        return count;
     }
 
     /** Flushes and closes the persistent-append writer. Call from plugin onDisable. */

@@ -597,6 +597,11 @@ public final class CheckPipeline {
     public void handleNpcTrapHit(Player player, UserData data) {
         if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
 
+        // The one label in the system that is not self-confirming: a legitimate client cannot see
+        // this entity at all, so the verdict owes nothing to the statistics the models would
+        // otherwise just be learning to reproduce.
+        selfLearning.getAutoDatasetCollector().collectTrapSample(player, data);
+
         Map<String, Object> details = new HashMap<>();
         details.put("target", "npc-trap");
 

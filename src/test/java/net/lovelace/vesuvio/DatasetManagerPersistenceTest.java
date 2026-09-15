@@ -48,6 +48,71 @@ public class DatasetManagerPersistenceTest {
         }
     }
 
+    @Test
+    public void testLabelProvenanceSurvivesARoundTrip() throws IOException {
+        Path tempDir = Files.createTempDirectory("vesuvio-dataset-source-test");
+        float[] features = new float[16];
+        features[0] = 42.0f;
+
+        try {
+            DatasetManager first = new DatasetManager(tempDir);
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "Trapped", features, 1, 1_700_000_000_000L, "NpcTrap", "click",
+                    DatasetManager.LabelSource.TRAP));
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "Reviewed", features, 1, 1_700_000_001_000L, "Admin", "click",
+                    DatasetManager.LabelSource.STAFF));
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "Banned", features, 1, 1_700_000_002_000L, "AutoCollector(ban)", "click",
+                    DatasetManager.LabelSource.BAN));
+            first.close();
+
+            DatasetManager second = new DatasetManager(tempDir);
+            // Provenance decides whether a label may be trained on at all, so it has to survive
+            // the CSV round trip intact - not collapse to a default.
+            assertEquals(1, second.countSamples("click", 1, DatasetManager.LabelSource.TRAP));
+            assertEquals(1, second.countSamples("click", 1, DatasetManager.LabelSource.STAFF));
+            assertEquals(1, second.countSamples("click", 1, DatasetManager.LabelSource.BAN));
+            second.close();
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
+    @Test
+    public void testLegacyRowsWithoutASourceColumnAreRecovered() throws IOException {
+        Path tempDir = Files.createTempDirectory("vesuvio-dataset-legacy-test");
+        float[] features = new float[16];
+
+        try {
+            // Rows written before the source column existed must not be silently promoted to a
+            // trusted provenance - the collectors' reviewer string is the only evidence available.
+            DatasetManager first = new DatasetManager(tempDir);
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "OldBan", features, 1, 1_700_000_000_000L, "AutoCollector(ban)", "click"));
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "OldTrusted", features, 0, 1_700_000_001_000L, "AutoCollector(trusted)", "click"));
+            first.close();
+
+            // Strip the source column back off, imitating a pre-upgrade file.
+            Path csv = tempDir.resolve("auto_dataset.csv");
+            var stripped = new java.util.ArrayList<String>();
+            for (String line : Files.readAllLines(csv)) {
+                int lastComma = line.lastIndexOf(',');
+                stripped.add(lastComma < 0 ? line : line.substring(0, lastComma));
+            }
+            Files.write(csv, stripped);
+
+            DatasetManager second = new DatasetManager(tempDir);
+            assertEquals(1, second.countSamples("click", 1, DatasetManager.LabelSource.BAN));
+            assertEquals(1, second.countSamples("click", 0, DatasetManager.LabelSource.TRUSTED));
+            assertEquals(0, second.countSamples("click", 1, DatasetManager.LabelSource.STAFF));
+            second.close();
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
     private void deleteRecursively(Path path) throws IOException {
         if (!Files.exists(path)) return;
         try (var stream = Files.walk(path)) {
