@@ -57,6 +57,7 @@ public final class ModelAutoTrainer {
     private final Path modelsDir;
     private final AtomicBoolean warnedMissingPython = new AtomicBoolean(false);
     private final AtomicBoolean trainingInProgress = new AtomicBoolean(false);
+    private final ShadowEvaluator shadowEvaluator = new ShadowEvaluator();
 
     private ScheduledExecutorService scheduler;
 
@@ -172,6 +173,11 @@ public final class ModelAutoTrainer {
         command.add(config.getAutoRetrainModelType());
         command.add("--max-fpr");
         command.add(String.valueOf(config.getAutoRetrainMaxFpr()));
+        command.add("--half-life-days");
+        command.add(String.valueOf(config.getAutoRetrainSampleHalfLifeDays()));
+        if (config.isAutoRetrainCalibrationEnabled()) {
+            command.add("--calibrate");
+        }
 
         LOGGER.info("[Vesuvio] Auto-retrain: starting training for domain(s) " + readyDomains + " ...");
 
@@ -245,6 +251,11 @@ public final class ModelAutoTrainer {
                 continue;
             }
 
+            if (config.isShadowModeEnabled()) {
+                installAsShadowCandidate(domain, staged, stagingDir);
+                continue;
+            }
+
             Path live = modelsDir.resolve(modelFile);
             try {
                 Files.createDirectories(modelsDir);
@@ -269,6 +280,126 @@ public final class ModelAutoTrainer {
                 }
             });
         }
+    }
+
+    /**
+     * Installs a gate-passing model as a shadow candidate instead of publishing it.
+     *
+     * <p>The offline report says the candidate is good on a held-out slice of the server's own
+     * historical dataset - but that dataset was collected by the current pipeline, so it
+     * systematically under-represents whatever the current pipeline is blind to. Shadow mode buys
+     * the missing evidence cheaply: the candidate scores the same live feature vectors as the
+     * production model, its verdicts are recorded and never acted on, and an operator promotes it
+     * once {@code /vesuvio model shadow} shows what it would actually have done.
+     */
+    private void installAsShadowCandidate(String domain, Path staged, Path stagingDir) {
+        String modelName = domain + "_model";
+        String shadowName = modelName + ShadowEvaluator.SHADOW_SUFFIX;
+        Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
+
+        try {
+            Files.createDirectories(modelsDir);
+            Files.copy(staged, candidate, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to stage shadow candidate for " + domain, e);
+            return;
+        }
+
+        // The candidate is judged at the threshold its own report recommends, not the live model's:
+        // thresholds are model-specific, and comparing a new model at the old model's operating
+        // point measures the wrong thing entirely.
+        double threshold = candidateThreshold(domain, stagingDir);
+        shadowEvaluator.clear(modelName);
+        mlManager.registerModel(new ModelConfig(shadowName, true, candidate.toString(),
+                threshold, config.getOnnxWeight(), "float_input"));
+        mlManager.hotReload(shadowName, candidate).thenAccept(success -> {
+            if (success) {
+                LOGGER.info(String.format(Locale.US,
+                        "[Vesuvio] Auto-retrain: '%s' passed the gate and is now running in SHADOW MODE at threshold "
+                                + "%.3f - it scores live traffic but changes nothing. Check '/vesuvio model shadow' "
+                                + "after a few hours, then '/vesuvio model promote %s' to publish it.",
+                        domain, threshold, domain));
+            } else {
+                LOGGER.warning("[Vesuvio] Auto-retrain: shadow candidate for " + domain + " failed to load.");
+            }
+        });
+    }
+
+    /** The operating threshold the candidate's own report recommends, or the configured default. */
+    private double candidateThreshold(String domain, Path stagingDir) {
+        Path reportPath = stagingDir.resolve(domain + "_report.json");
+        if (Files.exists(reportPath)) {
+            try {
+                double suggested = readJsonNumber(Files.readString(reportPath, StandardCharsets.UTF_8),
+                        "suggested_threshold");
+                if (!Double.isNaN(suggested) && suggested > 0.0 && suggested < 1.0) return suggested;
+            } catch (IOException ignored) {
+                // Falls through to the configured default - a missing report is already reported
+                // by the quality gate, which runs before this.
+            }
+        }
+        return config.getOnnxDefaultThreshold();
+    }
+
+    /**
+     * Publishes the shadow candidate for a domain as the live model.
+     *
+     * @return a human-readable result, suitable for sending straight back to the operator
+     */
+    public String promoteCandidate(String domain) {
+        Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
+        if (!Files.exists(candidate)) {
+            return "No shadow candidate staged for '" + domain + "'.";
+        }
+
+        String modelName = domain + "_model";
+        Path live = modelsDir.resolve(domain + "_model.onnx");
+        try {
+            if (Files.exists(live)) {
+                Files.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+            Files.copy(candidate, live, StandardCopyOption.REPLACE_EXISTING);
+            Files.deleteIfExists(candidate);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to promote shadow candidate for " + domain, e);
+            return "Failed to promote '" + domain + "' candidate - see console.";
+        }
+
+        String summary = shadowEvaluator.describe(modelName);
+        mlManager.unloadModel(modelName + ShadowEvaluator.SHADOW_SUFFIX);
+        shadowEvaluator.clear(modelName);
+        mlManager.hotReload(modelName, live);
+
+        LOGGER.info("[Vesuvio] Shadow candidate promoted to live for " + domain + " (" + summary + ")");
+        return "Promoted '" + domain + "' candidate to live. Previous model kept as "
+                + domain + "_model.onnx.previous. Observed: " + summary;
+    }
+
+    /** Throws away the shadow candidate for a domain without publishing it. */
+    public String discardCandidate(String domain) {
+        Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
+        String modelName = domain + "_model";
+        mlManager.unloadModel(modelName + ShadowEvaluator.SHADOW_SUFFIX);
+        shadowEvaluator.clear(modelName);
+        try {
+            boolean existed = Files.deleteIfExists(candidate);
+            return existed ? "Discarded the '" + domain + "' shadow candidate."
+                    : "No shadow candidate staged for '" + domain + "'.";
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to delete shadow candidate for " + domain, e);
+            return "Failed to delete the '" + domain + "' candidate file - see console.";
+        }
+    }
+
+    /** Live-vs-candidate comparison counters, written from the ONNX callbacks in CheckPipeline. */
+    public ShadowEvaluator getShadowEvaluator() {
+        return shadowEvaluator;
+    }
+
+    /** The domains this trainer knows about, for command completion and status output. */
+    public static String[] domains() {
+        return DOMAINS.clone();
     }
 
     /**
@@ -320,6 +451,22 @@ public final class ModelAutoTrainer {
             return false;
         }
 
+        // Calibration gate. Every threshold an operator sets in config.yml is a probability, so a
+        // model whose 0.9 does not actually mean "9 in 10 such windows are cheats" silently
+        // redefines every one of those settings. A badly miscalibrated model can still have a fine
+        // PR-AUC - ranking and calibration are different properties - which is exactly why this is
+        // checked separately rather than assumed from the precision figure above.
+        double calibrationError = readJsonNumber(json, "ece");
+        double maxCalibrationError = config.getAutoRetrainMaxCalibrationError();
+        if (!Double.isNaN(calibrationError) && maxCalibrationError > 0 && calibrationError > maxCalibrationError) {
+            LOGGER.warning(String.format(Locale.US,
+                    "[Vesuvio] Auto-retrain: '%s' model is poorly calibrated (expected calibration error %.3f > %.3f) "
+                            + "- not publishing, because the probability thresholds in config.yml would no longer mean "
+                            + "what they say. Enabling layers.onnx.auto-retrain.calibrate usually fixes this.",
+                    domain, calibrationError, maxCalibrationError));
+            return false;
+        }
+
         double suggested = readJsonNumber(json, "suggested_threshold");
         if (!Double.isNaN(suggested)) {
             // Surfaced rather than applied: the live threshold is an operator's setting, and
@@ -332,8 +479,10 @@ public final class ModelAutoTrainer {
         }
 
         LOGGER.info(String.format(Locale.US,
-                "[Vesuvio] Auto-retrain: '%s' model passed the quality gate (precision=%.3f, recall=%.3f).",
-                domain, precision, recall));
+                "[Vesuvio] Auto-retrain: '%s' model passed the quality gate (precision=%.3f, recall=%.3f, "
+                        + "calibration error=%s).",
+                domain, precision, recall,
+                Double.isNaN(calibrationError) ? "n/a" : String.format(Locale.US, "%.3f", calibrationError)));
         return true;
     }
 

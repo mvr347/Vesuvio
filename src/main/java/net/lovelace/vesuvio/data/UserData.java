@@ -50,6 +50,15 @@ public final class UserData {
     // Live display metrics
     private volatile double lastCalculatedCPS = 0.0;
     private volatile double lastMLProbability = 0.0;
+    private volatile long lastMLProbabilityNanos = 0L;
+
+    /**
+     * Rolling history of this session's feature vectors, so a confirmed label (ban or trap) can be
+     * recorded against several windows of the session rather than only the instant it fired.
+     * See {@link FeatureSnapshotHistory} for why one window per label is not enough.
+     */
+    private final FeatureSnapshotHistory featureHistory = new FeatureSnapshotHistory();
+    public FeatureSnapshotHistory getFeatureHistory() { return featureHistory; }
     private volatile String lastTriggeredCheck = "None";
 
     // ML inference throttle
@@ -255,7 +264,17 @@ public final class UserData {
         return lastMLProbability;
     }
 
+    /**
+     * When {@link #setLastMLProbability(double)} last ran. The ensemble needs this to tell a
+     * probability produced for the click it is scoring from one left over from a fight minutes ago;
+     * a stale value is dropped from the fusion entirely rather than counted as evidence of calm.
+     */
+    public long getLastMLProbabilityNanos() {
+        return lastMLProbabilityNanos;
+    }
+
     public void setLastMLProbability(double lastMLProbability) {
+        this.lastMLProbabilityNanos = System.nanoTime();
         this.lastMLProbability = lastMLProbability;
     }
 
@@ -461,10 +480,15 @@ public final class UserData {
     public void setPrevAirDeltaY(double value) { this.prevAirDeltaY = value; }
 
     // Consecutive near-perfect (sub-degree) aim-lock hits during combat, tracked by KillauraAngleCheck.
-    private volatile int perfectAimStreak = 0;
-    public int getPerfectAimStreak() { return perfectAimStreak; }
-    public void incrementPerfectAimStreak() { this.perfectAimStreak++; }
-    public void resetPerfectAimStreak() { this.perfectAimStreak = 0; }
+    private final DecayingEvidence perfectAimEvidence = new DecayingEvidence();
+    public DecayingEvidence getPerfectAimEvidence() { return perfectAimEvidence; }
+    /**
+     * Kept for the API/web-panel snapshot, which has always exposed this as an int. It now reports
+     * the accumulated evidence weight rather than a consecutive count - same scale (one suspicious
+     * hit is worth 1.0), but it no longer collapses to zero the instant one hit looks human.
+     */
+    public int getPerfectAimStreak() { return (int) Math.round(perfectAimEvidence.peek()); }
+    public void resetPerfectAimStreak() { perfectAimEvidence.reset(); }
 
     // Consecutive hits whose required hitbox rewind exceeded what the attacker's real transaction
     // RTT could explain, tracked by check.combat.BackTrackCheck.
@@ -855,7 +879,6 @@ public final class UserData {
     private volatile float lastAttackPitch = 0f;
     private volatile float lastAttackRequiredYaw = 0f;
     private volatile float lastAttackRequiredPitch = 0f;
-    private volatile int staticTrackingStreak = 0;
 
     public boolean hasLastAttackSnapshot() { return hasLastAttackSnapshot; }
     public float getLastAttackYaw() { return lastAttackYaw; }
@@ -871,9 +894,10 @@ public final class UserData {
         this.hasLastAttackSnapshot = true;
     }
 
-    public int getStaticTrackingStreak() { return staticTrackingStreak; }
-    public void incrementStaticTrackingStreak() { this.staticTrackingStreak++; }
-    public void resetStaticTrackingStreak() { this.staticTrackingStreak = 0; }
+    private final DecayingEvidence staticTrackingEvidence = new DecayingEvidence();
+    public DecayingEvidence getStaticTrackingEvidence() { return staticTrackingEvidence; }
+    public int getStaticTrackingStreak() { return (int) Math.round(staticTrackingEvidence.peek()); }
+    public void resetStaticTrackingStreak() { staticTrackingEvidence.reset(); }
 
     // -------------------------------------------------------------
     // KillauraAngleCheck: reaction-time tracking. lastRotationNanos updates on every aim packet;
@@ -888,10 +912,10 @@ public final class UserData {
     public long getLastSignificantRotationNanos() { return lastSignificantRotationNanos; }
     public void setLastSignificantRotationNanos(long v) { this.lastSignificantRotationNanos = v; }
 
-    private volatile int reactionTimeStreak = 0;
-    public int getReactionTimeStreak() { return reactionTimeStreak; }
-    public void incrementReactionTimeStreak() { this.reactionTimeStreak++; }
-    public void resetReactionTimeStreak() { this.reactionTimeStreak = 0; }
+    private final DecayingEvidence reactionTimeEvidence = new DecayingEvidence();
+    public DecayingEvidence getReactionTimeEvidence() { return reactionTimeEvidence; }
+    public int getReactionTimeStreak() { return (int) Math.round(reactionTimeEvidence.peek()); }
+    public void resetReactionTimeStreak() { reactionTimeEvidence.reset(); }
 
     // -------------------------------------------------------------
     // KillauraAngleCheck: multi-target switch tracking. Records which entity the last attack was
@@ -907,17 +931,17 @@ public final class UserData {
         this.lastAttackNanos = nowNanos;
     }
 
-    private volatile int targetSwitchStreak = 0;
-    public int getTargetSwitchStreak() { return targetSwitchStreak; }
-    public void incrementTargetSwitchStreak() { this.targetSwitchStreak++; }
-    public void resetTargetSwitchStreak() { this.targetSwitchStreak = 0; }
+    private final DecayingEvidence targetSwitchEvidence = new DecayingEvidence();
+    public DecayingEvidence getTargetSwitchEvidence() { return targetSwitchEvidence; }
+    public int getTargetSwitchStreak() { return (int) Math.round(targetSwitchEvidence.peek()); }
+    public void resetTargetSwitchStreak() { targetSwitchEvidence.reset(); }
 
-    // Aim-consistency layer: rolling count of consecutive attacks whose required-aim error stayed
-    // below the natural-jitter floor established by the player's own recent AimRingBuffer variance.
-    private volatile int aimConsistencyStreak = 0;
-    public int getAimConsistencyStreak() { return aimConsistencyStreak; }
-    public void incrementAimConsistencyStreak() { this.aimConsistencyStreak++; }
-    public void resetAimConsistencyStreak() { this.aimConsistencyStreak = 0; }
+    // Aim-consistency layer: accumulated evidence that this player's required-aim error keeps
+    // landing below the natural-jitter floor established by their own recent AimRingBuffer variance.
+    private final DecayingEvidence aimConsistencyEvidence = new DecayingEvidence();
+    public DecayingEvidence getAimConsistencyEvidence() { return aimConsistencyEvidence; }
+    public int getAimConsistencyStreak() { return (int) Math.round(aimConsistencyEvidence.peek()); }
+    public void resetAimConsistencyStreak() { aimConsistencyEvidence.reset(); }
 
     // -------------------------------------------------------------
     // Target-relative aim tracking (see engine.AimTrackingService and

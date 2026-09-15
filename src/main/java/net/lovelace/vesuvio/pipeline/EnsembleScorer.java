@@ -22,26 +22,39 @@ public final class EnsembleScorer {
 
     private EnsembleScorer() {}
 
+    /**
+     * @param onnxProbability the ONNX layer's probability for the evaluation being scored, or
+     *                        {@code null} when that layer produced nothing usable for it - the
+     *                        model is disabled, inference was throttled, or the only available
+     *                        probability is stale. A missing signal is dropped from the fusion
+     *                        along with its weight rather than substituted with 0.0: feeding a
+     *                        zero would make "the model has not spoken" read as "the model says
+     *                        this player is clean", diluting the signals that did speak.
+     */
     public record Inputs(
             double statisticalConfidence,
-            double onnxProbability,
+            Double onnxProbability,
             double selfLearnProbability,
             float anomalyRepeatScore,
             double temporalConfidence
     ) {}
 
-    /** Weighted sum of the (already 0..1-ish) per-layer signals, clamped to [0, 1]. */
+    /** Weighted mean of the (already 0..1-ish) per-layer signals that are present, clamped to [0, 1]. */
     public static double score(Inputs in, ConfigManager config) {
         if (in == null || config == null) return 0.0;
         double weighted =
                 config.getEnsembleWeightStatistical() * in.statisticalConfidence()
-                        + config.getEnsembleWeightOnnx() * in.onnxProbability()
                         + config.getEnsembleWeightSelfLearn() * in.selfLearnProbability()
                         + config.getEnsembleWeightAnomaly() * in.anomalyRepeatScore()
                         + config.getEnsembleWeightTemporal() * in.temporalConfidence();
-        double totalWeight = config.getEnsembleWeightStatistical() + config.getEnsembleWeightOnnx()
-                + config.getEnsembleWeightSelfLearn() + config.getEnsembleWeightAnomaly()
-                + config.getEnsembleWeightTemporal();
+        double totalWeight = config.getEnsembleWeightStatistical() + config.getEnsembleWeightSelfLearn()
+                + config.getEnsembleWeightAnomaly() + config.getEnsembleWeightTemporal();
+
+        if (in.onnxProbability() != null) {
+            weighted += config.getEnsembleWeightOnnx() * in.onnxProbability();
+            totalWeight += config.getEnsembleWeightOnnx();
+        }
+
         if (totalWeight <= 0) return 0.0;
         return Math.max(0.0, Math.min(1.0, weighted / totalWeight));
     }

@@ -149,6 +149,11 @@ public final class Vesuvio extends JavaPlugin {
                 npcTrapManager
         );
         this.checkPipeline.setAimTrackingService(aimTrackingService);
+        // Shadow mode (see ShadowEvaluator): mirrors every real ONNX inference to a staged
+        // candidate model without letting it affect anything. Wired unconditionally - the pipeline
+        // skips the mirror when no candidate is loaded, which is the case unless shadow mode is on
+        // and a retrain has produced one.
+        this.checkPipeline.setShadowEvaluator(modelAutoTrainer.getShadowEvaluator());
 
         // 8. Register Packet Listeners
         BrandPacketListener brandListener = new BrandPacketListener(userDataManager, configManager);

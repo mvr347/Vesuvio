@@ -56,6 +56,28 @@ public final class DatasetManager {
         UNKNOWN
     }
 
+    /**
+     * Conditions the sample was captured under. Deliberately NOT part of the feature vector fed to
+     * the models: ping and TPS are properties of the connection and the server, not of the player's
+     * behaviour, and training on them directly teaches "high-ping players are cheaters" - exactly
+     * the bias that makes an anticheat unusable for a distant playerbase.
+     *
+     * <p>They are recorded so the training script and any offline analysis can <em>slice</em> by
+     * them: if precision collapses above 200ms ping, or every false positive lands during a TPS
+     * dip, that is visible in the report instead of being an unexplained regression. The client
+     * brand serves the same purpose for a mod-pack-specific input pattern.
+     */
+    public record SampleContext(int pingMs, double tps, String clientBrand) {
+        public static final SampleContext UNKNOWN = new SampleContext(-1, -1.0, "");
+
+        /** Strips anything that would break a CSV row or a header-driven column index. */
+        public String safeBrand() {
+            if (clientBrand == null || clientBrand.isBlank()) return "";
+            String cleaned = clientBrand.replaceAll("[^A-Za-z0-9_.:-]", "_");
+            return cleaned.length() > 32 ? cleaned.substring(0, 32) : cleaned;
+        }
+    }
+
     public record LabeledSample(
             UUID playerUuid,
             String playerName,
@@ -64,17 +86,24 @@ public final class DatasetManager {
             long timestamp,
             String reviewer,
             String domain, // "click" or "aim" - which feature extractor/classifier this sample belongs to
-            LabelSource source
+            LabelSource source,
+            SampleContext context
     ) {
         /** Legacy 6-arg constructor, defaults to the click domain (all pre-existing call sites). */
         public LabeledSample(UUID playerUuid, String playerName, float[] features, int label, long timestamp, String reviewer) {
-            this(playerUuid, playerName, features, label, timestamp, reviewer, "click", LabelSource.UNKNOWN);
+            this(playerUuid, playerName, features, label, timestamp, reviewer, "click", LabelSource.UNKNOWN, SampleContext.UNKNOWN);
         }
 
         /** Legacy 7-arg constructor, from before label provenance was tracked. */
         public LabeledSample(UUID playerUuid, String playerName, float[] features, int label, long timestamp,
                              String reviewer, String domain) {
-            this(playerUuid, playerName, features, label, timestamp, reviewer, domain, LabelSource.UNKNOWN);
+            this(playerUuid, playerName, features, label, timestamp, reviewer, domain, LabelSource.UNKNOWN, SampleContext.UNKNOWN);
+        }
+
+        /** Legacy 8-arg constructor, from before capture context was recorded. */
+        public LabeledSample(UUID playerUuid, String playerName, float[] features, int label, long timestamp,
+                             String reviewer, String domain, LabelSource source) {
+            this(playerUuid, playerName, features, label, timestamp, reviewer, domain, source, SampleContext.UNKNOWN);
         }
     }
 
@@ -173,7 +202,7 @@ public final class DatasetManager {
         for (int i = 0; i < FEATURE_COUNT; i++) {
             sb.append(",f").append(i);
         }
-        sb.append(",domain,source");
+        sb.append(",domain,source,pingMs,tps,clientBrand");
         return sb.toString();
     }
 
@@ -194,6 +223,10 @@ public final class DatasetManager {
         }
         line.append(",").append(s.domain());
         line.append(",").append(s.source() == null ? LabelSource.UNKNOWN : s.source());
+        SampleContext ctx = s.context() == null ? SampleContext.UNKNOWN : s.context();
+        line.append(",").append(ctx.pingMs());
+        line.append(",").append(String.format(Locale.US, "%.2f", ctx.tps()));
+        line.append(",").append(ctx.safeBrand());
         return line.toString();
     }
 
@@ -243,7 +276,11 @@ public final class DatasetManager {
 
             String line;
             while ((line = reader.readLine()) != null) {
-                String[] parts = line.split(",");
+                // -1 keeps trailing empty fields. The client brand is the last column and is very
+                // often empty (the player never sent a brand packet), and the default split drops
+                // every trailing empty - which silently shortened those rows past the context
+                // columns and made their ping/TPS unreadable.
+                String[] parts = line.split(",", -1);
                 if (parts.length < domainIdx) continue;
 
                 UUID uuid = UUID.fromString(parts[0]);
@@ -259,8 +296,17 @@ public final class DatasetManager {
                 String domain = (parts.length > domainIdx) ? parts[domainIdx] : "click";
                 LabelSource labelSource = (parts.length > sourceIdx)
                         ? parseSource(parts[sourceIdx]) : inferLegacySource(reviewer);
+                // Context columns were added after source; rows written before that simply lack
+                // them and read back as UNKNOWN rather than shifting anything.
+                SampleContext context = SampleContext.UNKNOWN;
+                if (parts.length > sourceIdx + 3) {
+                    context = new SampleContext(
+                            parseIntOr(parts[sourceIdx + 1], -1),
+                            parseDoubleOr(parts[sourceIdx + 2], -1.0),
+                            parts[sourceIdx + 3]);
+                }
 
-                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain, labelSource));
+                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain, labelSource, context));
                 imported++;
             }
         } catch (Exception e) {
@@ -281,6 +327,22 @@ public final class DatasetManager {
             }
         }
         return count > 0 ? count : -1;
+    }
+
+    private static int parseIntOr(String raw, int fallback) {
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    private static double parseDoubleOr(String raw, double fallback) {
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (RuntimeException e) {
+            return fallback;
+        }
     }
 
     private static LabelSource parseSource(String raw) {

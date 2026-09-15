@@ -294,6 +294,28 @@ public final class MLManager implements AutoCloseable {
         return sessions.containsKey(name);
     }
 
+    /** The flag threshold a model is registered with, or the global default when it has none. */
+    public double getThreshold(String name) {
+        ModelConfig cfg = configs.get(name);
+        return cfg != null ? cfg.threshold() : 0.85;
+    }
+
+    /**
+     * Drops a loaded model and its registration. Used for shadow candidates (see
+     * {@link ShadowEvaluator}), which come and go with each retrain cycle - the live models are
+     * replaced in place by {@link #loadModel} instead and are never unloaded.
+     */
+    public void unloadModel(String name) {
+        configs.remove(name);
+        inputWidths.remove(name);
+        OrtSession session = sessions.remove(name);
+        if (session != null) {
+            try {
+                session.close();
+            } catch (OrtException ignored) {}
+        }
+    }
+
     public long getTotalInferences() {
         return totalInferences.get();
     }

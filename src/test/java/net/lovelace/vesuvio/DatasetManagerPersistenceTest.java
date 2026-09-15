@@ -82,26 +82,26 @@ public class DatasetManagerPersistenceTest {
     @Test
     public void testLegacyRowsWithoutASourceColumnAreRecovered() throws IOException {
         Path tempDir = Files.createTempDirectory("vesuvio-dataset-legacy-test");
-        float[] features = new float[16];
 
         try {
-            // Rows written before the source column existed must not be silently promoted to a
+            // A file exactly as it was written before the source column existed: features, then
+            // domain, and nothing after it. Rows like this must not be silently promoted to a
             // trusted provenance - the collectors' reviewer string is the only evidence available.
-            DatasetManager first = new DatasetManager(tempDir);
-            first.addSample(new DatasetManager.LabeledSample(
-                    UUID.randomUUID(), "OldBan", features, 1, 1_700_000_000_000L, "AutoCollector(ban)", "click"));
-            first.addSample(new DatasetManager.LabeledSample(
-                    UUID.randomUUID(), "OldTrusted", features, 0, 1_700_000_001_000L, "AutoCollector(trusted)", "click"));
-            first.close();
+            StringBuilder header = new StringBuilder("uuid,playerName,label,timestamp,reviewer");
+            for (int i = 0; i < 16; i++) header.append(",f").append(i);
+            header.append(",domain");
 
-            // Strip the source column back off, imitating a pre-upgrade file.
-            Path csv = tempDir.resolve("auto_dataset.csv");
-            var stripped = new java.util.ArrayList<String>();
-            for (String line : Files.readAllLines(csv)) {
-                int lastComma = line.lastIndexOf(',');
-                stripped.add(lastComma < 0 ? line : line.substring(0, lastComma));
+            StringBuilder banRow = new StringBuilder(UUID.randomUUID() + ",OldBan,1,1700000000000,AutoCollector(ban)");
+            StringBuilder trustedRow = new StringBuilder(UUID.randomUUID() + ",OldTrusted,0,1700000001000,AutoCollector(trusted)");
+            for (int i = 0; i < 16; i++) {
+                banRow.append(",0.000000");
+                trustedRow.append(",0.000000");
             }
-            Files.write(csv, stripped);
+            banRow.append(",click");
+            trustedRow.append(",click");
+
+            Files.write(tempDir.resolve("auto_dataset.csv"),
+                    java.util.List.of(header.toString(), banRow.toString(), trustedRow.toString()));
 
             DatasetManager second = new DatasetManager(tempDir);
             assertEquals(1, second.countSamples("click", 1, DatasetManager.LabelSource.BAN));
@@ -141,6 +141,75 @@ public class DatasetManagerPersistenceTest {
             assertEquals(42.0f, sample.features()[0], 1e-4, "existing features must survive");
             assertEquals(0f, sample.features()[19], 1e-6, "missing trailing features must be zero-padded");
             manager.close();
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
+    @Test
+    public void testCaptureContextSurvivesARoundTripAndSurvivesAnEmptyBrand() throws IOException {
+        Path tempDir = Files.createTempDirectory("vesuvio-dataset-context-test");
+        float[] features = new float[20];
+
+        try {
+            DatasetManager first = new DatasetManager(tempDir);
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "Distant", features, 1, 1_700_000_000_000L, "NpcTrap", "click",
+                    DatasetManager.LabelSource.TRAP, new DatasetManager.SampleContext(240, 19.4, "fabric")));
+            // Client brand is the last column and is very often empty - a player who never sent a
+            // brand packet. That must not shorten the row past the ping/TPS columns.
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "NoBrand", features, 0, 1_700_000_001_000L, "AutoCollector(trusted)", "click",
+                    DatasetManager.LabelSource.TRUSTED, new DatasetManager.SampleContext(35, 20.0, "")));
+            first.close();
+
+            DatasetManager second = new DatasetManager(tempDir);
+            assertEquals(2, second.getDatasetSize());
+
+            DatasetManager.SampleContext distant = null;
+            DatasetManager.SampleContext noBrand = null;
+            for (DatasetManager.LabeledSample sample : second.getSamples()) {
+                if ("Distant".equals(sample.playerName())) distant = sample.context();
+                if ("NoBrand".equals(sample.playerName())) noBrand = sample.context();
+            }
+            second.close();
+
+            assertNotNull(distant);
+            assertEquals(240, distant.pingMs());
+            assertEquals(19.4, distant.tps(), 0.01);
+            assertEquals("fabric", distant.clientBrand());
+
+            assertNotNull(noBrand);
+            assertEquals(35, noBrand.pingMs(), "an empty brand must not cost the ping column");
+            assertEquals(20.0, noBrand.tps(), 0.01);
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
+    @Test
+    public void testBrandWithACommaCannotBreakTheRow() throws IOException {
+        // Client brand is attacker-controlled text. A comma in it would shift every column after
+        // it and make the row unreadable, so it is sanitised on the way out.
+        Path tempDir = Files.createTempDirectory("vesuvio-dataset-brand-test");
+        float[] features = new float[20];
+
+        try {
+            DatasetManager first = new DatasetManager(tempDir);
+            first.addSample(new DatasetManager.LabeledSample(
+                    UUID.randomUUID(), "Spoofer", features, 1, 1_700_000_000_000L, "NpcTrap", "click",
+                    DatasetManager.LabelSource.TRAP,
+                    new DatasetManager.SampleContext(50, 20.0, "vanilla,click,STAFF,0,0")));
+            first.close();
+
+            DatasetManager second = new DatasetManager(tempDir);
+            assertEquals(1, second.getDatasetSize());
+            DatasetManager.LabeledSample sample = second.getSamples().iterator().next();
+            assertEquals("click", sample.domain(), "domain must still be read from its real position");
+            assertEquals(DatasetManager.LabelSource.TRAP, sample.source());
+            assertEquals(50, sample.context().pingMs());
+            assertFalse(sample.context().clientBrand().contains(","));
+            second.close();
         } finally {
             deleteRecursively(tempDir);
         }

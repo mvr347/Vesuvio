@@ -43,6 +43,7 @@ public final class CheckPipeline {
     private final Plugin plugin;
     private final ConfigManager config;
     private final MLManager mlManager;
+    private volatile net.lovelace.vesuvio.check.onnx.ShadowEvaluator shadowEvaluator;
     private final SelfLearningManager selfLearning;
     private final SmartAlertService alertService;
     private final DatabaseManager databaseManager;
@@ -123,6 +124,36 @@ public final class CheckPipeline {
         return aimTrackingService;
     }
 
+    /**
+     * Wired after construction (same reason as the tracking service above). Null unless shadow
+     * mode is in use, in which case every real inference is mirrored to the candidate model.
+     */
+    public void setShadowEvaluator(net.lovelace.vesuvio.check.onnx.ShadowEvaluator evaluator) {
+        this.shadowEvaluator = evaluator;
+    }
+
+    /**
+     * Mirrors one inference to the shadow candidate, if one is loaded for this model.
+     *
+     * <p>Runs on the ONNX completion callback, never on the main thread, and its result is only
+     * ever counted - it cannot touch VL, Risk, Trust or alerts. That is the entire contract of
+     * shadow mode: an unproven model gets to be measured against live traffic without being
+     * allowed to punish anyone on the strength of an offline score.
+     */
+    private void recordShadowVerdict(String modelName, float[] features, double liveProbability) {
+        var evaluator = shadowEvaluator;
+        if (evaluator == null) return;
+
+        String shadowName = modelName + net.lovelace.vesuvio.check.onnx.ShadowEvaluator.SHADOW_SUFFIX;
+        if (!mlManager.isModelLoaded(shadowName)) return;
+
+        double liveThreshold = mlManager.getThreshold(modelName);
+        double shadowThreshold = mlManager.getThreshold(shadowName);
+        mlManager.evaluateAsync(shadowName, features).thenAccept(shadowResult ->
+                evaluator.record(modelName, liveProbability, shadowResult.probability(),
+                        liveThreshold, shadowThreshold));
+    }
+
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
         return banEvasionManager;
     }
@@ -175,12 +206,18 @@ public final class CheckPipeline {
         float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean());
         boolean isSuspicious = statResult.isFlag() || statResult.confidence() > 0.40 || data.getLastCalculatedCPS() > 11.5;
 
+        // Held so the ensemble below can be scored against THIS click's probability rather than
+        // whatever the previous inference happened to leave behind - see the ensemble block.
+        java.util.concurrent.CompletableFuture<MLResult> clickMlFuture = null;
+
         if (config.isOnnxEnabled() && isSuspicious && data.shouldRunML()) {
             data.markMLRun();
             float[] featuresCopy = features.clone();
 
-            mlManager.evaluateAsync("click_model", featuresCopy).thenAccept(mlResult -> {
+            clickMlFuture = mlManager.evaluateAsync("click_model", featuresCopy);
+            clickMlFuture.thenAccept(mlResult -> {
                 data.setLastMLProbability(mlResult.probability());
+                recordShadowVerdict("click_model", featuresCopy, mlResult.probability());
 
                 if (mlResult.isFlag()) {
                     data.addVl(mlResult.vl() * config.getOnnxWeight());
@@ -208,10 +245,12 @@ public final class CheckPipeline {
         // AutoDatasetCollector + staff Active Learning verdicts). Gated on a minimum trained
         // sample count so an undertrained model at server start can't produce noisy flags.
         // -------------------------------------------------------------
+        double selfLearnProbability = 0.0;
         if (config.isSelfLearningEnabled()) {
             OnlineClassifier classifier = selfLearning.getOnlineClassifier();
             if (classifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
                 double selfLearnProb = classifier.predict(features);
+                selfLearnProbability = selfLearnProb;
                 data.setLastSelfLearnProbability(selfLearnProb);
 
                 if (selfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
@@ -301,25 +340,65 @@ public final class CheckPipeline {
         }
 
         // -------------------------------------------------------------
-        // Ensemble scoring (see EnsembleScorer): combines this evaluation's statistical/self-learn/
-        // anomaly/temporal signals with the most recently known ONNX probability into one weighted
-        // score. ONNX itself is evaluated asynchronously above and may not have completed yet for
-        // THIS click - data.getLastMLProbability() is deliberately a best-effort "most recent known"
-        // value rather than blocking on it, since the ensemble contribution is a soft corroborating
-        // signal, not a hard decision.
+        // Ensemble scoring (see EnsembleScorer): fuses this evaluation's statistical, self-learning,
+        // anomaly-repeat and temporal signals with the ONNX probability.
+        //
+        // The ONNX layer is evaluated asynchronously above, so reading data.getLastMLProbability()
+        // here would score this click against whatever the PREVIOUS inference left behind - which is
+        // wrong in both directions: a player whose last inference was a 0.9 keeps getting Risk for a
+        // click the model never saw, and a player whose inference is still in flight is fused with a
+        // stale 0.0 that reads as the model vouching for them. So when an inference was dispatched
+        // for this click, the ensemble is computed in its completion callback against the real
+        // probability; when none was (ONNX off, not suspicious, or throttled) the last known value
+        // is used only while it is still fresh, and otherwise the ONNX term is dropped from the
+        // fusion entirely rather than defaulted.
         // -------------------------------------------------------------
         if (config.isEnsembleScoringEnabled()) {
-            EnsembleScorer.Inputs ensembleInputs = new EnsembleScorer.Inputs(
-                    statResult.confidence(), data.getLastMLProbability(), data.getLastSelfLearnProbability(),
-                    repeatScore, temporalConfidence);
-            double ensembleScore = EnsembleScorer.score(ensembleInputs, config);
-            if (ensembleScore >= config.getEnsembleRiskThreshold()) {
-                double contribution = (ensembleScore - config.getEnsembleRiskThreshold())
-                        / Math.max(1e-6, 1.0 - config.getEnsembleRiskThreshold())
-                        * config.getEnsembleMaxRiskContribution();
-                data.adjustRisk(contribution);
+            final double statConfidence = statResult.confidence();
+            final double selfLearn = selfLearnProbability;
+            final float repeat = repeatScore;
+            final double temporal = temporalConfidence;
+
+            if (clickMlFuture != null) {
+                clickMlFuture
+                        .thenAccept(mlResult -> applyEnsemble(data, statConfidence, mlResult.probability(),
+                                selfLearn, repeat, temporal))
+                        .exceptionally(ex -> {
+                            // Inference failed; still score the rest of the layers rather than
+                            // silently dropping the whole ensemble contribution for this click.
+                            applyEnsemble(data, statConfidence, null, selfLearn, repeat, temporal);
+                            return null;
+                        });
+            } else {
+                applyEnsemble(data, statConfidence, freshOnnxProbability(data), selfLearn, repeat, temporal);
             }
         }
+    }
+
+    /**
+     * The last ONNX probability if it is recent enough to describe the player's current behaviour,
+     * otherwise {@code null} so {@link EnsembleScorer} drops the term and its weight instead of
+     * treating an absent signal as a clean one.
+     */
+    private Double freshOnnxProbability(UserData data) {
+        long producedAt = data.getLastMLProbabilityNanos();
+        if (producedAt == 0L) return null;
+        double ageMs = (System.nanoTime() - producedAt) / 1_000_000.0;
+        return ageMs <= config.getEnsembleMaxOnnxAgeMs() ? data.getLastMLProbability() : null;
+    }
+
+    /** Applies the bounded Risk contribution an above-threshold ensemble score earns. */
+    private void applyEnsemble(UserData data, double statConfidence, Double onnxProbability,
+                               double selfLearnProbability, float repeatScore, double temporalConfidence) {
+        EnsembleScorer.Inputs inputs = new EnsembleScorer.Inputs(
+                statConfidence, onnxProbability, selfLearnProbability, repeatScore, temporalConfidence);
+        double ensembleScore = EnsembleScorer.score(inputs, config);
+        if (ensembleScore < config.getEnsembleRiskThreshold()) return;
+
+        double contribution = (ensembleScore - config.getEnsembleRiskThreshold())
+                / Math.max(1e-6, 1.0 - config.getEnsembleRiskThreshold())
+                * config.getEnsembleMaxRiskContribution();
+        data.adjustRisk(contribution);
     }
 
     /**
@@ -378,6 +457,7 @@ public final class CheckPipeline {
                 data.markMLRun();
                 float[] featuresCopy = aimFeatures.clone();
                 mlManager.evaluateAsync("aim_model", featuresCopy).thenAccept(mlResult -> {
+                    recordShadowVerdict("aim_model", featuresCopy, mlResult.probability());
                     if (mlResult.isFlag()) {
                         data.addVl(mlResult.vl() * config.getOnnxWeight());
                         data.adjustRisk(mlResult.probability() * 10.0);
