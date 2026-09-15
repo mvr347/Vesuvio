@@ -107,9 +107,18 @@ public final class MLManager implements AutoCloseable {
                     Object outputObj = results.get(results.size() - 1).getValue();
                     double probability = parseProbability(outputObj);
 
-                    Map<String, Object> details = buildDetails(features, probability);
-                    String expl = String.format("ONNX %s inference confidence: %.1f%%", modelName, probability * 100);
-                    return MLResult.of(modelName, probability, threshold, weight, expl, details);
+                    if (Double.isNaN(probability)) {
+                        // An output shape we don't understand is a broken/incompatible model, not
+                        // evidence about this player. Returning a mid-range number here used to
+                        // feed 0.5 straight into the scoring pipeline as if the model had really
+                        // said "coin flip"; fall through to the heuristic instead.
+                        LOGGER.warning("[Vesuvio] ONNX model '" + modelName
+                                + "' returned an unrecognised output shape - falling back to the heuristic.");
+                    } else {
+                        Map<String, Object> details = buildDetails(features, probability);
+                        String expl = String.format("ONNX %s inference confidence: %.1f%%", modelName, probability * 100);
+                        return MLResult.of(modelName, probability, threshold, weight, expl, details);
+                    }
                 } catch (Exception e) {
                     LOGGER.log(Level.WARNING, "Error running ONNX inference for " + modelName + ", falling back", e);
                 }
@@ -191,7 +200,9 @@ public final class MLManager implements AutoCloseable {
         } else if (outputObj instanceof long[][] lMatrix) {
             if (lMatrix.length > 0 && lMatrix[0].length > 0) return (double) lMatrix[0][0];
         }
-        return 0.5;
+        // NaN means "could not read this model's output", which the caller turns into a fallback -
+        // deliberately not a number, so an unreadable output can never be mistaken for a verdict.
+        return Double.NaN;
     }
 
     private Map<String, Object> buildDetails(float[] features, double prob) {

@@ -43,6 +43,19 @@ public final class AutoDatasetCollector {
     private static final long LEGIT_COOLDOWN_MS = 60_000L; // hard floor, config interval also applies
     private static final double LEGIT_TO_CHEAT_RATIO_CAP = 3.0;
 
+    /**
+     * Legit samples collected unconditionally before the ratio cap starts applying at all.
+     *
+     * <p>Without this floor the cap made the dataset unusable on any server that had not banned
+     * anyone yet: with zero cheat samples the old {@code max(1, cheatCount) * 3} evaluated to
+     * three, so automatic legit collection stopped after three samples - far below the
+     * {@code min-samples-per-class} needed to train anything, meaning retraining could never fire.
+     * The floor is scaled off that same setting so the two cannot drift apart.
+     */
+    private int legitBootstrapFloor() {
+        return Math.max(500, config.getAutoRetrainMinSamplesPerClass() * 3);
+    }
+
     private final ConfigManager config;
     private final DatasetManager datasetManager;
     private final OnlineClassifier clickClassifier;
@@ -105,8 +118,14 @@ public final class AutoDatasetCollector {
         // Once auto-collected legit samples heavily outnumber cheat samples, stop adding more -
         // cheat collection (from bans) is unthrottled, so the ratio naturally recovers as real
         // cheaters get caught, rather than the dataset drifting further toward "everyone is legit".
-        int cheatSoFar = Math.max(1, autoCheatCount.get());
-        if (autoLegitCount.get() >= cheatSoFar * LEGIT_TO_CHEAT_RATIO_CAP) {
+        //
+        // Counts come from the dataset itself rather than in-memory counters: the CSV survives
+        // restarts (and is reloaded on startup) while the counters do not, so counters made the
+        // cap behave differently on every reboot. The bootstrap floor keeps a server with no bans
+        // yet from freezing its dataset at a handful of samples - see legitBootstrapFloor().
+        int cheatSamples = datasetManager.countSamples("click", 1) + datasetManager.countSamples("aim", 1);
+        int legitSamples = datasetManager.countSamples("click", 0) + datasetManager.countSamples("aim", 0);
+        if (legitSamples >= legitBootstrapFloor() && legitSamples >= cheatSamples * LEGIT_TO_CHEAT_RATIO_CAP) {
             return;
         }
 

@@ -768,6 +768,47 @@ public final class UserData {
 
     public void clearPendingBlink() { this.pendingBlinkNanos = 0L; }
 
+    // -------------------------------------------------------------
+    // Blink "flush burst" counter.
+    //
+    // A vanilla client that was frozen does NOT replay the movement it missed: it resumes from
+    // its current position, and its catch-up is bounded by the client's own tick-per-frame clamp
+    // (10 ticks), so at most a handful of packets arrive back-to-back. A blink module that
+    // buffers packets flushes the whole queue at once on release - tens of movement packets in a
+    // single netty read. Counting packets in a short window right after a silence separates those
+    // two directly, without any reference to displacement.
+    // -------------------------------------------------------------
+    private volatile long blinkFlushWindowStartNanos = 0L;
+    private volatile int blinkFlushPackets = 0;
+
+    public boolean hasBlinkFlushWindow() { return blinkFlushWindowStartNanos != 0L; }
+    public long getBlinkFlushWindowStartNanos() { return blinkFlushWindowStartNanos; }
+
+    public synchronized void startBlinkFlushWindow(long nowNanos) {
+        this.blinkFlushWindowStartNanos = nowNanos;
+        this.blinkFlushPackets = 0;
+    }
+
+    public synchronized int incrementBlinkFlushPackets() { return ++this.blinkFlushPackets; }
+
+    public synchronized void clearBlinkFlushWindow() {
+        this.blinkFlushWindowStartNanos = 0L;
+        this.blinkFlushPackets = 0;
+    }
+
+    /**
+     * True if the client produced a packet that only its main game loop can generate (swing, or an
+     * attack) inside the given window. A genuine client-side freeze stops that loop entirely, so
+     * nothing at all arrives; a blink suppresses movement while the player keeps fighting. This is
+     * the discriminator the original "silence + healthy RTT" test lacked - see BlinkCheck.
+     */
+    public boolean hadMainLoopActivityBetween(long fromNanos, long toNanos) {
+        long swing = lastSwingNanos;
+        if (swing > fromNanos && swing <= toNanos) return true;
+        long click = clickBuffer.getLastClickNanos();
+        return click > fromNanos && click <= toNanos;
+    }
+
     // Wall-clock time of the last movement packet exempted for being a huge (teleport-sized)
     // displacement, so BlinkCheck can tell "just teleported" apart from "silence just broke with a
     // huge catch-up jump" - both look identical at the position-delta level.

@@ -31,8 +31,15 @@ public final class ActiveLearning {
             String playerName,
             float[] features,
             double probability,
-            long timestamp
-    ) {}
+            long timestamp,
+            String domain // "click" or "aim" - must follow the sample into DatasetManager
+    ) {
+        /** Legacy 6-arg constructor, defaults to the click domain. */
+        public ReviewSample(String id, UUID playerUuid, String playerName, float[] features,
+                            double probability, long timestamp) {
+            this(id, playerUuid, playerName, features, probability, timestamp, "click");
+        }
+    }
 
     private final AtomicInteger sampleCounter = new AtomicInteger(100);
     private final Cache<String, ReviewSample> pendingReviews = Caffeine.newBuilder()
@@ -46,6 +53,16 @@ public final class ActiveLearning {
      * Creates a pending sample and alerts staff with interactive buttons.
      */
     public void requestReview(Player player, UserData data, MLResult result, float[] features) {
+        requestReview(player, data, result, features, "click");
+    }
+
+    /**
+     * @param domain which feature extractor produced {@code features} ("click"/"aim"). It has to
+     *               be carried through the verdict into {@link DatasetManager}: a sample stored
+     *               under the wrong domain trains the other domain's model on feature vectors
+     *               whose columns mean something entirely different.
+     */
+    public void requestReview(Player player, UserData data, MLResult result, float[] features, String domain) {
         String sampleId = "S" + sampleCounter.incrementAndGet();
         ReviewSample sample = new ReviewSample(
                 sampleId,
@@ -53,7 +70,8 @@ public final class ActiveLearning {
                 player.getName(),
                 features.clone(),
                 result.probability(),
-                System.currentTimeMillis()
+                System.currentTimeMillis(),
+                domain
         );
         pendingReviews.put(sampleId, sample);
 
@@ -110,14 +128,15 @@ public final class ActiveLearning {
         // 1. Train online classifier
         classifier.train(sample.features(), label);
 
-        // 2. Persist to training dataset
+        // 2. Persist to training dataset, under the domain the sample actually came from
         dataset.addSample(new DatasetManager.LabeledSample(
                 sample.playerUuid(),
                 sample.playerName(),
                 sample.features(),
                 label,
                 System.currentTimeMillis(),
-                reviewer
+                reviewer,
+                sample.domain()
         ));
 
         // 3. Adjust player's Trust/Risk if online
