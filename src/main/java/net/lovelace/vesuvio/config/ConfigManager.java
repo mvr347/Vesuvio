@@ -395,6 +395,26 @@ public final class ConfigManager {
         return config.getDouble("mechanics.movement.blink.release-burst-window-ms", 400.0);
     }
 
+    /**
+     * When true (default), a silence only flags if something proved the client's main loop was
+     * still running through it (swing/attack), or if the release produced a queued-packet flush /
+     * unexplained jump. Setting this false restores the old streak-only behaviour, which cannot
+     * distinguish a blink from an ordinary client-side freeze - see BlinkCheck's class javadoc.
+     */
+    public boolean isBlinkActivityProofRequired() {
+        return config.getBoolean("mechanics.movement.blink.activity-proof-required", true);
+    }
+
+    /** Window (ms) after a silence in which movement packets are counted for a flush burst. */
+    public double getBlinkFlushWindowMs() {
+        return config.getDouble("mechanics.movement.blink.flush-window-ms", 300.0);
+    }
+
+    /** Movement packets inside the flush window that count as a replayed queue rather than catch-up. */
+    public int getBlinkFlushMinPackets() {
+        return config.getInt("mechanics.movement.blink.flush-min-packets", 14);
+    }
+
     public boolean isVelocityEnabled() {
         return config.getBoolean("mechanics.movement.velocity.enabled", true);
     }

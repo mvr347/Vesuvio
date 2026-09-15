@@ -150,10 +150,12 @@ class PhaseBlinkCheckTest {
     }
 
     @Test
-    void blinkDetectsWithheldMovementOnHealthyConnection() {
+    void blinkDetectsMovementWithheldWhileClientKeptFighting() {
         BlinkCheck check = new BlinkCheck();
         UUID uuid = UUID.randomUUID();
-        // The signature: movement stops, but transactions keep coming back at a normal ping.
+        // The real signature: movement stops, transactions keep coming back at a normal ping, and
+        // the client goes on producing packets only its main game loop can make (swings). A frozen
+        // client produces none of those, which is what separates the two.
         TransactionManager transactions = new StubTransactions(45.0, 0.0);
         UserData data = new UserData(uuid, "Blinker");
         data.setEnvironment(snapshot(false));
@@ -164,21 +166,77 @@ class PhaseBlinkCheckTest {
             check.check(uuid, data, transactions, now);
         }
 
-        boolean flagged = false;
-        for (int i = 0; i < 5 && !flagged; i++) {
-            now += 2500 * MS; // movement silence, safely past a single client-side hitch too
-            CheckResult result = check.check(uuid, data, transactions, now);
-            if (result.isFlag()) {
-                flagged = true;
-                assertEquals("Blink", result.checkName());
-            }
-        }
-        assertTrue(flagged, "withheld movement on a healthy connection must be caught");
+        // Swing lands in the middle of the silence that follows.
+        data.setLastSwingNanos(now + 1500 * MS);
+        now += 2500 * MS;
+
+        CheckResult result = check.check(uuid, data, transactions, now);
+        assertTrue(result.isFlag(), "movement withheld while the client kept swinging must be caught");
+        assertEquals("Blink", result.checkName());
+        assertEquals("activity", result.details().get("evidence"));
     }
 
     @Test
-    void blinkCountsOccurrencesAcrossNormalPlay() {
+    void blinkIgnoresClientFreezeWithNoMainLoopActivity() {
         BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        // Identical packet-level signature to the test above - silence plus a healthy transaction
+        // RTT - but nothing proves the client was still running. This is an ordinary client-side
+        // freeze (chunk meshing, GC, alt-tab), and repeating it must never accumulate into a flag.
+        TransactionManager transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Stuttering");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int blink = 0; blink < 6; blink++) {
+            for (int i = 0; i < 200; i++) {
+                now += 50 * MS;
+                assertFalse(check.check(uuid, data, transactions, now).isFlag());
+            }
+            now += 2500 * MS;
+            assertFalse(check.check(uuid, data, transactions, now).isFlag(),
+                    "a client-side freeze must not be read as a lag switch, however often it repeats");
+        }
+    }
+
+    @Test
+    void blinkDetectsQueuedPacketFlush() {
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        TransactionManager transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Buffering");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 10; i++) {
+            now += 50 * MS;
+            check.check(uuid, data, transactions, now);
+        }
+
+        // Silence with no swing at all - the activity discriminator stays silent here on purpose.
+        now += 2500 * MS;
+        assertFalse(check.check(uuid, data, transactions, now).isFlag());
+
+        // Release: the buffered queue arrives back to back. A recovering vanilla client cannot do
+        // this - it resumes from its current position, capped by its own 10-ticks-per-frame clamp.
+        boolean flagged = false;
+        for (int i = 0; i < 20 && !flagged; i++) {
+            now += 2 * MS;
+            CheckResult result = check.check(uuid, data, transactions, now);
+            if (result.isFlag()) {
+                flagged = true;
+                assertEquals("flush", result.details().get("evidence"));
+            }
+        }
+        assertTrue(flagged, "a flushed packet queue must be caught");
+    }
+
+    @Test
+    void blinkStreakPathStillWorksWhenActivityProofIsDisabled() {
+        // Legacy behaviour, opt-in via activity-proof-required: false. Kept covered so the escape
+        // hatch an operator can fall back to does not rot.
+        BlinkCheck check = new BlinkCheck(1550.0, 10_000.0, 0.5, 3, 120_000L, 900.0, 2, 1.6, 400.0,
+                false, 300.0, 14);
         UUID uuid = UUID.randomUUID();
         TransactionManager transactions = new StubTransactions(45.0, 0.0);
         UserData data = new UserData(uuid, "Blinker");
@@ -187,10 +245,6 @@ class PhaseBlinkCheckTest {
         long now = 0L;
         boolean flagged = false;
 
-        // Three blinks (REQUIRED_STREAK) with a full ten seconds of ordinary play between each -
-        // which is how the cheat is actually used. An earlier version decayed the count on every
-        // normal packet, so the run of clean ticks below reset it and the threshold was
-        // unreachable in practice.
         for (int blink = 0; blink < 3 && !flagged; blink++) {
             for (int i = 0; i < 200; i++) {
                 now += 50 * MS;
@@ -200,7 +254,7 @@ class PhaseBlinkCheckTest {
             if (check.check(uuid, data, transactions, now).isFlag()) flagged = true;
         }
 
-        assertTrue(flagged, "blinks separated by normal play must still accumulate");
+        assertTrue(flagged, "blinks separated by normal play must still accumulate in legacy mode");
     }
 
     @Test
