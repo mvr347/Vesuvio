@@ -577,6 +577,51 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.combat.killaura.dynamic-sensitivity", true);
     }
 
+    // Strafe-reversal sensorimotor-latency check (see check.statistical.StrafeReversalCheck).
+    public boolean isStrafeReversalEnabled() {
+        return config.getBoolean("mechanics.combat.strafe-reversal.enabled", true);
+    }
+
+    /** Degrees per tick the target's required angle must be moving, both before and after, to count as a reversal. */
+    public double getStrafeReversalMinSpeedDegrees() {
+        return config.getDouble("mechanics.combat.strafe-reversal.min-speed-degrees", 1.5);
+    }
+
+    /** How many ticks after a reversal the camera's response is still looked for. */
+    public int getStrafeReversalMaxResponseTicks() {
+        return config.getInt("mechanics.combat.strafe-reversal.max-response-ticks", 10);
+    }
+
+    /** Response this fast (ticks) is faster than human sensorimotor delay allows. */
+    public int getStrafeReversalFastResponseTicks() {
+        return config.getInt("mechanics.combat.strafe-reversal.fast-response-ticks", 1);
+    }
+
+    /** Response at least this slow (ticks) is squarely in the human range and credits the player back. */
+    public int getStrafeReversalHumanResponseTicks() {
+        return config.getInt("mechanics.combat.strafe-reversal.human-response-ticks", 3);
+    }
+
+    public double getStrafeReversalScorePerFastEvent() {
+        return config.getDouble("mechanics.combat.strafe-reversal.score-per-fast-event", 1.0);
+    }
+
+    public double getStrafeReversalDecayPerHumanEvent() {
+        return config.getDouble("mechanics.combat.strafe-reversal.decay-per-human-event", 0.5);
+    }
+
+    public int getStrafeReversalMinEvents() {
+        return config.getInt("mechanics.combat.strafe-reversal.min-events", 8);
+    }
+
+    public double getStrafeReversalFlagScore() {
+        return config.getDouble("mechanics.combat.strafe-reversal.flag-score", 6.0);
+    }
+
+    public long getStrafeReversalIntervalMs() {
+        return config.getLong("mechanics.combat.strafe-reversal.analysis-interval-ms", 500L);
+    }
+
     public boolean isAutoCriticalsEnabled() {
         return config.getBoolean("mechanics.combat.autocriticals.enabled", true);
     }

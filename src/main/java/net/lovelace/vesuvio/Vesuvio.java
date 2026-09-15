@@ -42,6 +42,7 @@ public final class Vesuvio extends JavaPlugin {
     private UserDataManager userDataManager;
     private net.lovelace.vesuvio.engine.TransactionManager transactionManager;
     private net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService;
+    private net.lovelace.vesuvio.engine.AimTrackingService aimTrackingService;
     private MLManager mlManager;
     private SelfLearningManager selfLearningManager;
     private net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
@@ -122,6 +123,8 @@ public final class Vesuvio extends JavaPlugin {
         // Main-thread world/player snapshots, so the movement checks running on virtual threads
         // never touch the Bukkit API themselves.
         this.environmentSnapshotService = new net.lovelace.vesuvio.engine.EnvironmentSnapshotService(userDataManager);
+        // Per-tick target-relative aim capture, feeding StrafeReversalCheck.
+        this.aimTrackingService = new net.lovelace.vesuvio.engine.AimTrackingService(userDataManager);
         var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager, transactionManager);
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
@@ -145,6 +148,7 @@ public final class Vesuvio extends JavaPlugin {
                 transactionManager,
                 npcTrapManager
         );
+        this.checkPipeline.setAimTrackingService(aimTrackingService);
 
         // 8. Register Packet Listeners
         BrandPacketListener brandListener = new BrandPacketListener(userDataManager, configManager);
@@ -232,6 +236,7 @@ public final class Vesuvio extends JavaPlugin {
         // measure latency against.
         Bukkit.getScheduler().runTaskTimer(this, () -> {
             environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers());
+            aimTrackingService.tick(Bukkit.getOnlinePlayers());
             for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
                 transactionManager.tick(online);
             }

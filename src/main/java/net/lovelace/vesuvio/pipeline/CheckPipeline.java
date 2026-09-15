@@ -70,6 +70,8 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck;
     private final net.lovelace.vesuvio.check.movement.ElytraCheck elytraCheck = new net.lovelace.vesuvio.check.movement.ElytraCheck();
     private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck;
+    private final net.lovelace.vesuvio.check.statistical.StrafeReversalCheck strafeReversalCheck;
+    private net.lovelace.vesuvio.engine.AimTrackingService aimTrackingService;
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
     private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
     private final net.lovelace.vesuvio.check.combat.AutoCriticalsCheck autoCriticalsCheck = new net.lovelace.vesuvio.check.combat.AutoCriticalsCheck();
@@ -106,6 +108,19 @@ public final class CheckPipeline {
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
         this.blinkCheck = net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(config);
         this.angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck(config, hitboxTracker, transactionManager);
+        this.strafeReversalCheck = new net.lovelace.vesuvio.check.statistical.StrafeReversalCheck(config);
+    }
+
+    /**
+     * Wired after construction because the tracking service needs the plugin's tick scheduler,
+     * which is set up later in {@code Vesuvio#onEnable} than the pipeline itself.
+     */
+    public void setAimTrackingService(net.lovelace.vesuvio.engine.AimTrackingService service) {
+        this.aimTrackingService = service;
+    }
+
+    public net.lovelace.vesuvio.engine.AimTrackingService getAimTrackingService() {
+        return aimTrackingService;
     }
 
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
@@ -470,6 +485,20 @@ public final class CheckPipeline {
             }
         }
 
+        // 2.6 Strafe-reversal sensorimotor latency. Runs off the aim-tracking buffer rather than
+        // this attack's geometry, so it is throttled instead of running per attack - the buffer
+        // only gains one sample per tick, and re-scanning it on every swing would just re-walk the
+        // same events.
+        if (config.isStrafeReversalEnabled() && data.shouldRunStrafeReversal(config.getStrafeReversalIntervalMs())) {
+            CheckResult reversalResult = strafeReversalCheck.check(data);
+            if (reversalResult.isFlag()) {
+                data.addVl(reversalResult.vl());
+                data.adjustRisk(reversalResult.confidence() * 10.0);
+                data.setLastTriggeredCheck(reversalResult.checkName());
+                handleFlag(player, data, reversalResult);
+            }
+        }
+
         // 3. Statistical Latency-Compensated Reach & Combat Angle check.
         //
         // These two are the only checks that need live world and entity data: resolving the target
@@ -512,6 +541,12 @@ public final class CheckPipeline {
                 data.setLastTriggeredCheck(reachResult.checkName());
                 handleFlag(player, data, reachResult);
             }
+        }
+
+        // Tell the per-tick aim tracker what this player is actually fighting, so it can record
+        // target-relative aim from here on (see AimTrackingService / StrafeReversalCheck).
+        if (aimTrackingService != null) {
+            aimTrackingService.noteTarget(player, target);
         }
 
         if (config.isKillauraAngleEnabled()) {

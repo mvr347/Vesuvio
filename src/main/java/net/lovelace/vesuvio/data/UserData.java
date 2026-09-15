@@ -918,4 +918,43 @@ public final class UserData {
     public int getAimConsistencyStreak() { return aimConsistencyStreak; }
     public void incrementAimConsistencyStreak() { this.aimConsistencyStreak++; }
     public void resetAimConsistencyStreak() { this.aimConsistencyStreak = 0; }
+
+    // -------------------------------------------------------------
+    // Target-relative aim tracking (see engine.AimTrackingService and
+    // check.statistical.StrafeReversalCheck). Filled once per tick on the main thread while the
+    // player is fighting, read off-thread by the checks.
+    // -------------------------------------------------------------
+    private final AimTrackingBuffer aimTrackingBuffer = new AimTrackingBuffer();
+    public AimTrackingBuffer getAimTrackingBuffer() { return aimTrackingBuffer; }
+
+    /**
+     * Decaying evidence accumulator for StrafeReversalCheck, deliberately not a consecutive
+     * streak: a randomized module breaks any "N in a row" requirement by behaving humanly one
+     * attack in five, whereas an accumulator reflects the balance of evidence across a fight.
+     */
+    private double strafeReversalScore = 0.0;
+    private int strafeReversalEvents = 0;
+    private volatile long lastStrafeReversalAnalyzedNanos = 0L;
+
+    public synchronized double getStrafeReversalScore() { return strafeReversalScore; }
+    public synchronized void addStrafeReversalScore(double delta) {
+        this.strafeReversalScore = Math.max(0.0, this.strafeReversalScore + delta);
+    }
+    public synchronized int getStrafeReversalEvents() { return strafeReversalEvents; }
+    public synchronized void incrementStrafeReversalEvents() { this.strafeReversalEvents++; }
+    public synchronized void resetStrafeReversal() {
+        this.strafeReversalScore = 0.0;
+        this.strafeReversalEvents = 0;
+    }
+    public long getLastStrafeReversalAnalyzedNanos() { return lastStrafeReversalAnalyzedNanos; }
+    public void setLastStrafeReversalAnalyzedNanos(long v) { this.lastStrafeReversalAnalyzedNanos = v; }
+
+    /** Throttle for StrafeReversalCheck - the buffer only gains one new sample per tick. */
+    private volatile long lastStrafeReversalRunMillis = 0L;
+    public boolean shouldRunStrafeReversal(long minIntervalMs) {
+        long now = System.currentTimeMillis();
+        if (now - lastStrafeReversalRunMillis < minIntervalMs) return false;
+        lastStrafeReversalRunMillis = now;
+        return true;
+    }
 }
