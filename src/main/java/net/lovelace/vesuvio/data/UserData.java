@@ -40,6 +40,12 @@ public final class UserData {
     private volatile long lastCombatActionMillis = 0;
     private volatile float earlyCombatVariance = -1f;
     private volatile float earlyCombatMean = -1f;
+    // Extended early-combat snapshot for TemporalConsistencyCheck's DupRatio/Entropy/Peak/signature
+    // comparison against the late-combat window - see that class for what each anomaly catches.
+    private volatile float earlyCombatDupRatio = -1f;
+    private volatile float earlyCombatEntropy = -1f;
+    private volatile float earlyCombatPeakCps = -1f;
+    private volatile long[] earlyCombatSignature = null;
 
     // Live display metrics
     private volatile double lastCalculatedCPS = 0.0;
@@ -189,6 +195,10 @@ public final class UserData {
             combatStartMillis = now;
             earlyCombatVariance = -1f;
             earlyCombatMean = -1f;
+            earlyCombatDupRatio = -1f;
+            earlyCombatEntropy = -1f;
+            earlyCombatPeakCps = -1f;
+            earlyCombatSignature = null;
         }
         lastCombatActionMillis = now;
     }
@@ -213,6 +223,15 @@ public final class UserData {
     public void setEarlyCombatMean(float earlyCombatMean) {
         this.earlyCombatMean = earlyCombatMean;
     }
+
+    public float getEarlyCombatDupRatio() { return earlyCombatDupRatio; }
+    public void setEarlyCombatDupRatio(float v) { this.earlyCombatDupRatio = v; }
+    public float getEarlyCombatEntropy() { return earlyCombatEntropy; }
+    public void setEarlyCombatEntropy(float v) { this.earlyCombatEntropy = v; }
+    public float getEarlyCombatPeakCps() { return earlyCombatPeakCps; }
+    public void setEarlyCombatPeakCps(float v) { this.earlyCombatPeakCps = v; }
+    public long[] getEarlyCombatSignature() { return earlyCombatSignature; }
+    public void setEarlyCombatSignature(long[] v) { this.earlyCombatSignature = v; }
 
     public boolean shouldRunML() {
         long now = System.currentTimeMillis();
@@ -671,25 +690,90 @@ public final class UserData {
 
     public long getLastAnyMovementNanos() { return lastAnyMovementNanos; }
     public void setLastAnyMovementNanos(long v) { this.lastAnyMovementNanos = v; }
-    private volatile long lastBlinkNanos = 0L;
+
+    /**
+     * Timestamp of the last movement packet that actually carried a position, tracked separately
+     * from {@link #lastAnyMovementNanos} purely for diagnostics (see BlinkCheck's "positionSilenceMs"
+     * detail). Gating the silence detector itself on this alone was considered and rejected: a
+     * player who simply stands still while panning the camera (looting, watching chat, aiming)
+     * legitimately sends rotation-only packets for seconds at a time with zero position packets,
+     * which would make ordinary play look identical to a blink candidate. Kept as a secondary,
+     * informational signal instead.
+     */
+    private volatile long lastPositionCarryingNanos = 0L;
+    public long getLastPositionCarryingNanos() { return lastPositionCarryingNanos; }
+    public void setLastPositionCarryingNanos(long v) { this.lastPositionCarryingNanos = v; }
+
+    /**
+     * Fixed-size ring of recent blink-candidate timestamps, used to compute a true sliding-window
+     * occurrence count rather than a gap-chained streak. A gap-chained streak (increment while
+     * consecutive gaps stay under the window, reset only on a gap that exceeds it) can be fooled by
+     * occurrences spaced just under the window apart forever - the span between the first and last
+     * would grow unbounded while never triggering the reset. Counting how many recorded timestamps
+     * actually fall inside [now - window, now] is the correct semantics for "N times in M minutes".
+     */
+    private final long[] blinkOccurrenceNanos = new long[16];
+    private int blinkOccurrenceHead = 0;
+    private int blinkOccurrenceFill = 0;
 
     public int getBlinkStreak() { return blinkStreak; }
 
     /**
      * Records a suspicious silence and returns the number counted inside the rolling window.
-     *
-     * <p>A window, not a per-packet streak: blinks are separated by ordinary play, so decaying the
-     * count on every normal packet - as the first cut of this did - would reset it between every
-     * pair of blinks and the threshold could never be reached at all. Occurrences that fall
-     * outside the window start the count over instead.
      */
     public synchronized int recordBlinkOccurrence(long nowNanos, long windowNanos) {
-        if (lastBlinkNanos != 0L && (nowNanos - lastBlinkNanos) > windowNanos) {
-            this.blinkStreak = 0;
+        blinkOccurrenceNanos[blinkOccurrenceHead] = nowNanos;
+        blinkOccurrenceHead = (blinkOccurrenceHead + 1) % blinkOccurrenceNanos.length;
+        if (blinkOccurrenceFill < blinkOccurrenceNanos.length) blinkOccurrenceFill++;
+
+        int inWindow = 0;
+        for (int i = 0; i < blinkOccurrenceFill; i++) {
+            if (nowNanos - blinkOccurrenceNanos[i] <= windowNanos) inWindow++;
         }
-        this.lastBlinkNanos = nowNanos;
-        return ++this.blinkStreak;
+        this.blinkStreak = inWindow;
+        return inWindow;
     }
+
+    // -------------------------------------------------------------
+    // Blink "release burst" pending-confirmation bridge.
+    //
+    // BlinkCheck's main silence detector runs at packet-receipt time, before the position for that
+    // same tick (if any) has been parsed - so it cannot itself look at the displacement that
+    // resolves the silence. Instead it stashes a candidate here, and CheckPipeline.processMovement
+    // calls BlinkCheck#checkReleaseBurst once the tick's real deltaX/Y/Z are known, which can
+    // upgrade a not-yet-streak-confirmed candidate straight to a flag if the position that broke
+    // the silence is an unexplained catch-up jump - exactly the signature a lag-switch produces
+    // when the client flushes its queued movement in one packet.
+    // -------------------------------------------------------------
+    private volatile long pendingBlinkNanos = 0L;
+    private volatile double pendingBlinkSilenceMs = 0.0;
+    private volatile double pendingBlinkRttMs = 0.0;
+    private volatile boolean pendingBlinkShort = false;
+    private volatile int pendingBlinkOccurrences = 0;
+
+    public boolean hasPendingBlink() { return pendingBlinkNanos != 0L; }
+    public long getPendingBlinkNanos() { return pendingBlinkNanos; }
+    public double getPendingBlinkSilenceMs() { return pendingBlinkSilenceMs; }
+    public double getPendingBlinkRttMs() { return pendingBlinkRttMs; }
+    public boolean isPendingBlinkShort() { return pendingBlinkShort; }
+    public int getPendingBlinkOccurrences() { return pendingBlinkOccurrences; }
+
+    public void setPendingBlink(long nowNanos, double silenceMs, double rttMs, boolean isShort, int occurrences) {
+        this.pendingBlinkNanos = nowNanos;
+        this.pendingBlinkSilenceMs = silenceMs;
+        this.pendingBlinkRttMs = rttMs;
+        this.pendingBlinkShort = isShort;
+        this.pendingBlinkOccurrences = occurrences;
+    }
+
+    public void clearPendingBlink() { this.pendingBlinkNanos = 0L; }
+
+    // Wall-clock time of the last movement packet exempted for being a huge (teleport-sized)
+    // displacement, so BlinkCheck can tell "just teleported" apart from "silence just broke with a
+    // huge catch-up jump" - both look identical at the position-delta level.
+    private volatile long lastTeleportMillis = 0L;
+    public void recordTeleport() { this.lastTeleportMillis = System.currentTimeMillis(); }
+    public boolean hasRecentTeleport() { return (System.currentTimeMillis() - lastTeleportMillis) < 1500L; }
 
 
     public double getPrevHorizontalSpeed() { return prevHorizontalSpeed; }
@@ -749,4 +833,48 @@ public final class UserData {
     public int getStaticTrackingStreak() { return staticTrackingStreak; }
     public void incrementStaticTrackingStreak() { this.staticTrackingStreak++; }
     public void resetStaticTrackingStreak() { this.staticTrackingStreak = 0; }
+
+    // -------------------------------------------------------------
+    // KillauraAngleCheck: reaction-time tracking. lastRotationNanos updates on every aim packet;
+    // lastSignificantRotationNanos only when the combined delta clears a configured "real turn"
+    // threshold, so a burst of sub-pixel jitter right before an attack does not read as the
+    // attacker having "just turned onto" the target.
+    // -------------------------------------------------------------
+    private volatile long lastRotationNanos = 0L;
+    private volatile long lastSignificantRotationNanos = 0L;
+    public long getLastRotationNanos() { return lastRotationNanos; }
+    public void setLastRotationNanos(long v) { this.lastRotationNanos = v; }
+    public long getLastSignificantRotationNanos() { return lastSignificantRotationNanos; }
+    public void setLastSignificantRotationNanos(long v) { this.lastSignificantRotationNanos = v; }
+
+    private volatile int reactionTimeStreak = 0;
+    public int getReactionTimeStreak() { return reactionTimeStreak; }
+    public void incrementReactionTimeStreak() { this.reactionTimeStreak++; }
+    public void resetReactionTimeStreak() { this.reactionTimeStreak = 0; }
+
+    // -------------------------------------------------------------
+    // KillauraAngleCheck: multi-target switch tracking. Records which entity the last attack was
+    // against and the aim state at that moment, so a switch to a DIFFERENT target can be compared
+    // against how much the attacker's own look actually moved to make that switch.
+    // -------------------------------------------------------------
+    private volatile int lastAttackTargetId = -1;
+    private volatile long lastAttackNanos = 0L;
+    public int getLastAttackTargetId() { return lastAttackTargetId; }
+    public long getLastAttackNanos() { return lastAttackNanos; }
+    public void setLastAttackTarget(int entityId, long nowNanos) {
+        this.lastAttackTargetId = entityId;
+        this.lastAttackNanos = nowNanos;
+    }
+
+    private volatile int targetSwitchStreak = 0;
+    public int getTargetSwitchStreak() { return targetSwitchStreak; }
+    public void incrementTargetSwitchStreak() { this.targetSwitchStreak++; }
+    public void resetTargetSwitchStreak() { this.targetSwitchStreak = 0; }
+
+    // Aim-consistency layer: rolling count of consecutive attacks whose required-aim error stayed
+    // below the natural-jitter floor established by the player's own recent AimRingBuffer variance.
+    private volatile int aimConsistencyStreak = 0;
+    public int getAimConsistencyStreak() { return aimConsistencyStreak; }
+    public void incrementAimConsistencyStreak() { this.aimConsistencyStreak++; }
+    public void resetAimConsistencyStreak() { this.aimConsistencyStreak = 0; }
 }

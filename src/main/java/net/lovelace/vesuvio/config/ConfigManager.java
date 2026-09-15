@@ -134,6 +134,16 @@ public final class ConfigManager {
         return config.getString("layers.onnx.auto-retrain.python-executable", "python3");
     }
 
+    /**
+     * "logistic" (default, safest for unattended retraining on a possibly-small per-server
+     * dataset), "histgb", or "mlp" - see scripts/train_models.py's --model-type. Nonlinear models
+     * can pick up feature interactions a linear one structurally cannot, at the cost of needing
+     * more data to validate well; left opt-in rather than the default for that reason.
+     */
+    public String getAutoRetrainModelType() {
+        return config.getString("layers.onnx.auto-retrain.model-type", "logistic");
+    }
+
     // Layer 3
     public boolean isSelfLearningEnabled() {
         return config.getBoolean("layers.self-learning.enabled", true);
@@ -193,6 +203,43 @@ public final class ConfigManager {
 
     public int getMaxDatasetSize() {
         return config.getInt("layers.self-learning.auto-collection.max-dataset-size", 50000);
+    }
+
+    // Ensemble scoring (see pipeline.EnsembleScorer) - combines per-layer signals into one
+    // weighted score contributing a bounded, silent Risk adjustment when several independently
+    // tuned layers all lean "suspect" even though none individually cleared its own flag threshold.
+    public boolean isEnsembleScoringEnabled() {
+        return config.getBoolean("layers.ensemble.enabled", true);
+    }
+
+    public double getEnsembleWeightStatistical() {
+        return config.getDouble("layers.ensemble.weights.statistical", 1.0);
+    }
+
+    public double getEnsembleWeightOnnx() {
+        return config.getDouble("layers.ensemble.weights.onnx", 1.5);
+    }
+
+    public double getEnsembleWeightSelfLearn() {
+        return config.getDouble("layers.ensemble.weights.self-learn", 1.0);
+    }
+
+    public double getEnsembleWeightAnomaly() {
+        return config.getDouble("layers.ensemble.weights.anomaly", 0.6);
+    }
+
+    public double getEnsembleWeightTemporal() {
+        return config.getDouble("layers.ensemble.weights.temporal", 0.8);
+    }
+
+    /** Max Risk contributed per click evaluation by the ensemble score alone. */
+    public double getEnsembleMaxRiskContribution() {
+        return config.getDouble("layers.ensemble.max-risk-contribution", 6.0);
+    }
+
+    /** Ensemble score must clear this before it contributes anything - avoids constant background noise. */
+    public double getEnsembleRiskThreshold() {
+        return config.getDouble("layers.ensemble.risk-threshold", 0.45);
     }
 
     // Mechanics
@@ -303,6 +350,51 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.blink.enabled", false);
     }
 
+    /** Silence (ms) past which a healthy-RTT gap starts being judged as a long-blink candidate. */
+    public double getBlinkMinSilenceMs() {
+        return config.getDouble("mechanics.movement.blink.min-silence-ms", 1550.0);
+    }
+
+    /** Absolute ceiling: past this, a silence is treated as a real outage regardless of RTT. */
+    public double getBlinkMaxJudgedSilenceMs() {
+        return config.getDouble("mechanics.movement.blink.max-judged-silence-ms", 10_000.0);
+    }
+
+    /** The transaction RTT must stay under (silence * this fraction) to count as "healthy". */
+    public double getBlinkHealthyRttFraction() {
+        return config.getDouble("mechanics.movement.blink.healthy-rtt-fraction", 0.5);
+    }
+
+    /** Occurrences required inside the sliding window before a long-blink candidate flags. */
+    public int getBlinkRequiredStreak() {
+        return config.getInt("mechanics.movement.blink.required-streak", 3);
+    }
+
+    /** Sliding-window length (ms) that occurrence counting looks back across. */
+    public long getBlinkWindowMs() {
+        return config.getLong("mechanics.movement.blink.window-ms", 120_000L);
+    }
+
+    /** Lower bound (ms) of the "short blink" silence band - above vanilla's ~1000ms reminder ceiling. */
+    public double getBlinkShortSilenceMinMs() {
+        return config.getDouble("mechanics.movement.blink.short-silence-min-ms", 900.0);
+    }
+
+    /** Extra occurrences a short-blink candidate needs beyond the normal streak requirement. */
+    public int getBlinkShortStreakBonus() {
+        return config.getInt("mechanics.movement.blink.short-streak-bonus", 2);
+    }
+
+    /** Extra displacement (blocks), beyond what elapsed time plausibly explains, that counts as a release burst. */
+    public double getBlinkReleaseBurstMinBlocks() {
+        return config.getDouble("mechanics.movement.blink.release-burst-min-blocks", 1.6);
+    }
+
+    /** How long (ms) after a silence-breaking packet a release-burst confirmation is still accepted. */
+    public double getBlinkReleaseBurstWindowMs() {
+        return config.getDouble("mechanics.movement.blink.release-burst-window-ms", 400.0);
+    }
+
     public boolean isVelocityEnabled() {
         return config.getBoolean("mechanics.movement.velocity.enabled", true);
     }
@@ -367,6 +459,102 @@ public final class ConfigManager {
 
     public boolean isKillauraAngleEnabled() {
         return config.getBoolean("mechanics.combat.angle.enabled", true);
+    }
+
+    public double getKillauraFovLimitDegrees() {
+        return config.getDouble("mechanics.combat.killaura.fov-limit-degrees", 75.0);
+    }
+
+    public double getKillauraSilentAimAngleDegrees() {
+        return config.getDouble("mechanics.combat.killaura.silent-aim-angle-degrees", 45.0);
+    }
+
+    public double getKillauraHitboxExpand() {
+        return config.getDouble("mechanics.combat.killaura.hitbox-expand", 0.28);
+    }
+
+    public double getKillauraPingBufferHigh() {
+        return config.getDouble("mechanics.combat.killaura.ping-buffer-high", 0.20);
+    }
+
+    public double getKillauraPingBufferLow() {
+        return config.getDouble("mechanics.combat.killaura.ping-buffer-low", 0.08);
+    }
+
+    public double getKillauraPingBufferThresholdMs() {
+        return config.getDouble("mechanics.combat.killaura.ping-buffer-threshold-ms", 120.0);
+    }
+
+    public double getKillauraWallhitTolerance() {
+        return config.getDouble("mechanics.combat.killaura.wallhit-tolerance", 0.35);
+    }
+
+    public double getKillauraPerfectAimAngleDegrees() {
+        return config.getDouble("mechanics.combat.killaura.perfect-aim.angle-degrees", 0.6);
+    }
+
+    public int getKillauraPerfectAimStreak() {
+        return config.getInt("mechanics.combat.killaura.perfect-aim.streak", 6);
+    }
+
+    public double getKillauraStaticTrackingTargetDeltaDegrees() {
+        return config.getDouble("mechanics.combat.killaura.static-tracking.target-delta-degrees", 4.0);
+    }
+
+    public double getKillauraStaticTrackingPlayerDeltaDegrees() {
+        return config.getDouble("mechanics.combat.killaura.static-tracking.player-delta-degrees", 0.5);
+    }
+
+    public double getKillauraStaticTrackingMaxAngleDegrees() {
+        return config.getDouble("mechanics.combat.killaura.static-tracking.max-angle-degrees", 10.0);
+    }
+
+    public int getKillauraStaticTrackingStreak() {
+        return config.getInt("mechanics.combat.killaura.static-tracking.streak", 3);
+    }
+
+    public double getKillauraReactionMinMs() {
+        return config.getDouble("mechanics.combat.killaura.reaction.min-ms", 35.0);
+    }
+
+    public int getKillauraReactionStreak() {
+        return config.getInt("mechanics.combat.killaura.reaction.streak", 5);
+    }
+
+    public double getKillauraReactionSignificantRotationDegrees() {
+        return config.getDouble("mechanics.combat.killaura.reaction.significant-rotation-degrees", 2.0);
+    }
+
+    public double getKillauraTargetSwitchWindowMs() {
+        return config.getDouble("mechanics.combat.killaura.target-switch.window-ms", 600.0);
+    }
+
+    public double getKillauraTargetSwitchMinRequiredDeltaDegrees() {
+        return config.getDouble("mechanics.combat.killaura.target-switch.min-required-delta-degrees", 20.0);
+    }
+
+    public double getKillauraTargetSwitchMaxLookDeltaDegrees() {
+        return config.getDouble("mechanics.combat.killaura.target-switch.max-look-delta-degrees", 3.0);
+    }
+
+    public int getKillauraTargetSwitchStreak() {
+        return config.getInt("mechanics.combat.killaura.target-switch.streak", 3);
+    }
+
+    public double getKillauraAimConsistencyMaxErrorDegrees() {
+        return config.getDouble("mechanics.combat.killaura.aim-consistency.max-error-degrees", 1.2);
+    }
+
+    public double getKillauraAimConsistencyMinJitterDegrees() {
+        return config.getDouble("mechanics.combat.killaura.aim-consistency.min-jitter-degrees", 0.15);
+    }
+
+    public int getKillauraAimConsistencyStreak() {
+        return config.getInt("mechanics.combat.killaura.aim-consistency.streak", 8);
+    }
+
+    public boolean isKillauraDynamicSensitivityEnabled() {
+        return config.getBoolean("mechanics.combat.killaura.dynamic-sensitivity", true);
     }
 
     public boolean isAutoCriticalsEnabled() {

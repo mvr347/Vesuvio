@@ -13,17 +13,31 @@ Reads the dataset CSV produced by DatasetManager (auto_dataset.csv, or any CSV e
 
     uuid,playerName,label,timestamp,reviewer,f0,f1,...,f15,domain
 
-Trains one binary logistic-regression classifier per requested --domains value ("click"/"aim"),
-using columns f0.. as the feature vector - all 16 (f0..f15) for "click" (ClickFeatureExtractor's
-full layout), only the first 8 (f0..f7) for "aim" (AimFeatureExtractor only ever populates that
-many; MLManager truncates aim feature vectors to 8 before inference, so the exported model's
-input width MUST match - see DOMAIN_FEATURE_COUNT below) - and `label` (1 = cheat, 0 = legit) as
-the target. Exports each model as <domain>_model.onnx with input name "float_input" and a
-(output_label, output_probability) output pair - matching what MLManager.evaluateAsync expects
-(it reads the *last* output tensor as a [-1, 2] probability matrix).
+Trains one binary classifier per requested --domains value ("click"/"aim"), using columns f0.. as
+the feature vector - all 16 (f0..f15) for "click" (ClickFeatureExtractor's full layout), only the
+first 8 (f0..f7) for "aim" (AimFeatureExtractor only ever populates that many; MLManager truncates
+aim feature vectors to 8 before inference, so the exported model's input width MUST match - see
+DOMAIN_FEATURE_COUNT below) - and `label` (1 = cheat, 0 = legit) as the target. Exports each model
+as <domain>_model.onnx with input name "float_input" and a (output_label, output_probability)
+output pair - matching what MLManager.evaluateAsync expects (it reads the *last* output tensor as
+a [-1, 2] probability matrix).
+
+Model type is selectable via --model-type:
+  - "logistic" (default, backward compatible): plain logistic regression.
+  - "histgb": HistGradientBoostingClassifier - a nonlinear, monotonicity-free model that can pick
+    up feature interactions (e.g. "low variance AND high duplicate ratio together" rather than
+    each pushing the decision independently) that a linear model structurally cannot represent.
+  - "mlp": a small single-hidden-layer MLPClassifier, for the same reason with a different
+    inductive bias - useful to compare against histgb on a given dataset.
+Every model type is wrapped in a scikit-learn Pipeline with a RobustScaler (median/IQR-based,
+resistant to the extreme outliers a cheat's own feature vectors often are) ahead of the classifier.
+skl2onnx converts the whole Pipeline - scaler included - into one ONNX graph, so the scaling
+happens inside the exported model and the Java side keeps sending raw, un-normalized features
+exactly as before; MLManager needs no changes for this.
 
 Usage:
     python3 train_models.py --dataset auto_dataset.csv --output-dir staging --domains click,aim
+    python3 train_models.py --dataset auto_dataset.csv --output-dir staging --domains click --model-type histgb
 
 Exit code 0 on success (all requested domains trained and written). Non-zero on any failure,
 with a human-readable message on stderr - ModelAutoTrainer logs this verbatim so a server
@@ -62,6 +76,10 @@ def load_dependencies():
         fail("numpy is not installed. Run: pip install -r requirements.txt")
     try:
         from sklearn.linear_model import LogisticRegression  # noqa: F401
+        from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: F401
+        from sklearn.neural_network import MLPClassifier  # noqa: F401
+        from sklearn.preprocessing import RobustScaler  # noqa: F401
+        from sklearn.pipeline import Pipeline  # noqa: F401
         from sklearn.model_selection import train_test_split  # noqa: F401
         from sklearn.metrics import accuracy_score, precision_score, recall_score  # noqa: F401
     except ImportError:
@@ -74,6 +92,10 @@ def load_dependencies():
 
     import numpy as np
     from sklearn.linear_model import LogisticRegression
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.preprocessing import RobustScaler
+    from sklearn.pipeline import Pipeline
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, precision_score, recall_score
     from skl2onnx import convert_sklearn
@@ -82,6 +104,10 @@ def load_dependencies():
     return {
         "np": np,
         "LogisticRegression": LogisticRegression,
+        "HistGradientBoostingClassifier": HistGradientBoostingClassifier,
+        "MLPClassifier": MLPClassifier,
+        "RobustScaler": RobustScaler,
+        "Pipeline": Pipeline,
         "train_test_split": train_test_split,
         "accuracy_score": accuracy_score,
         "precision_score": precision_score,
@@ -89,6 +115,40 @@ def load_dependencies():
         "convert_sklearn": convert_sklearn,
         "FloatTensorType": FloatTensorType,
     }
+
+
+def build_model(model_type: str, deps):
+    """Builds the (unfitted) Pipeline for the requested model type. HistGB/MLP are nonlinear and
+    can represent feature interactions a single logistic-regression decision boundary cannot;
+    logistic stays the default since it is the smallest, fastest, and most battle-tested choice."""
+    RobustScaler = deps["RobustScaler"]
+    Pipeline = deps["Pipeline"]
+
+    if model_type == "histgb":
+        HistGradientBoostingClassifier = deps["HistGradientBoostingClassifier"]
+        classifier = HistGradientBoostingClassifier(
+            max_iter=150, max_depth=6, learning_rate=0.08,
+            l2_regularization=0.1, random_state=42,
+        )
+    elif model_type == "mlp":
+        MLPClassifier = deps["MLPClassifier"]
+        classifier = MLPClassifier(
+            hidden_layer_sizes=(24,), activation="relu", alpha=1e-3,
+            max_iter=800, early_stopping=True, random_state=42,
+        )
+    elif model_type == "logistic":
+        LogisticRegression = deps["LogisticRegression"]
+        classifier = LogisticRegression(class_weight="balanced", max_iter=2000)
+    else:
+        fail(f"unknown --model-type '{model_type}' (expected logistic, histgb, or mlp)")
+        return None  # unreachable, keeps type checkers happy
+
+    # RobustScaler (median/IQR) ahead of every model type: cheat feature vectors are frequently
+    # extreme outliers themselves (near-zero variance, saturated duplicate ratio), which would
+    # otherwise skew a mean/std-based scaler's fitted range using the very data it needs to
+    # separate cleanly. skl2onnx bakes the fitted scaler into the exported graph, so the Java side
+    # keeps sending raw features unchanged.
+    return Pipeline([("scaler", RobustScaler()), ("classifier", classifier)])
 
 
 def load_dataset(dataset_path: Path, domain: str, feature_count: int):
@@ -111,9 +171,8 @@ def load_dataset(dataset_path: Path, domain: str, feature_count: int):
     return features, labels
 
 
-def train_domain(domain: str, dataset_path: Path, output_dir: Path, deps) -> bool:
+def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: str, deps) -> bool:
     np = deps["np"]
-    LogisticRegression = deps["LogisticRegression"]
     train_test_split = deps["train_test_split"]
     accuracy_score = deps["accuracy_score"]
     precision_score = deps["precision_score"]
@@ -144,7 +203,8 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, deps) -> boo
         X_train, y_train = X, y
         X_test, y_test = None, None
 
-    model = LogisticRegression(class_weight="balanced", max_iter=2000)
+    model = build_model(model_type, deps)
+    print(f"[{domain}] training model-type={model_type}")
     model.fit(X_train, y_train)
 
     if X_test is not None and len(X_test) > 0:
@@ -154,10 +214,14 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, deps) -> boo
         rec = recall_score(y_test, preds, zero_division=0)
         print(f"[{domain}] holdout accuracy={acc:.3f} precision={prec:.3f} recall={rec:.3f}")
 
+    # zipmap=False on the final classifier step (not the Pipeline id) - skl2onnx keys its options
+    # dict by the individual estimator instance, and the classifier is what emits the
+    # (label, probabilities) output pair MLManager expects.
+    classifier_step = model.named_steps["classifier"]
     onnx_model = convert_sklearn(
         model,
         initial_types=[("float_input", FloatTensorType([None, feature_count]))],
-        options={id(model): {"zipmap": False}},
+        options={id(classifier_step): {"zipmap": False}},
         target_opset=12,
     )
 
@@ -174,6 +238,8 @@ def main() -> None:
     parser.add_argument("--dataset", required=True, type=Path, help="Path to the dataset CSV.")
     parser.add_argument("--output-dir", required=True, type=Path, help="Directory to write <domain>_model.onnx into.")
     parser.add_argument("--domains", required=True, help="Comma-separated domains to train (click,aim).")
+    parser.add_argument("--model-type", default="logistic", choices=["logistic", "histgb", "mlp"],
+                         help="Classifier type (default: logistic, backward compatible).")
     args = parser.parse_args()
 
     if not args.dataset.exists():
@@ -187,7 +253,7 @@ def main() -> None:
 
     any_trained = False
     for domain in domains:
-        if train_domain(domain, args.dataset, args.output_dir, deps):
+        if train_domain(domain, args.dataset, args.output_dir, args.model_type, deps):
             any_trained = True
 
     if not any_trained:
