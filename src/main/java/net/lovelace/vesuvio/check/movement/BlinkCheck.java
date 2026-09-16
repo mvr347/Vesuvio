@@ -36,12 +36,16 @@ import java.util.UUID;
  *   <li><b>Main-loop activity during the silence.</b> A real freeze stops the whole main loop:
  *       no swing, no attacks, nothing. A blink suppresses <em>movement only</em> while the player
  *       keeps fighting, so swing/attack packets keep arriving through the silence. See
- *       {@link UserData#hadMainLoopActivityBetween}.</li>
+ *       {@link UserData#hadMainLoopActivityBetween}. Measured with a guard band at both edges of
+ *       the silence, because the client's own recovery tick emits its queued swing immediately
+ *       before the movement packet that ends the silence - see the call site.</li>
  *   <li><b>Flush burst.</b> A recovering vanilla client does not replay what it missed - it
  *       resumes from its current position, and its catch-up is bounded by the client's own
- *       10-ticks-per-frame clamp. A buffering blink module dumps the entire queue on release:
- *       tens of movement packets back to back. Counting packets just after a silence separates
- *       those directly.</li>
+ *       10-ticks-per-frame clamp, the rest of the backlog being discarded. A buffering blink
+ *       module dumps the entire queue on release: a 2s blink replays ~40 movement packets where
+ *       the client's own ceiling is ~16. What matters is that the ceiling is <em>derived</em>
+ *       (see {@link #flushThreshold()}) - a flat packet count does not separate the two, because
+ *       an ordinary freeze recovery sits right on top of it.</li>
  * </ul>
  * A third, weaker signal - an unexplained catch-up jump ({@link #checkReleaseBurst}) - stays as
  * it was, and still covers modules that drop packets rather than buffering them.
@@ -62,16 +66,30 @@ public final class BlinkCheck {
     private final boolean activityProofRequired;
     private final double flushWindowMs;
     private final int flushMinPackets;
+    private final int catchUpTickClamp;
+    private final int flushSafetyMargin;
+    private final double activityGuardMs;
 
     /** Defaults for a config-less caller (e.g. unit tests exercising the check in isolation). */
     public BlinkCheck() {
-        this(1550.0, 10_000.0, 0.5, 3, 120_000L, 900.0, 2, 1.6, 400.0, true, 300.0, 14);
+        this(1550.0, 10_000.0, 0.5, 3, 120_000L, 900.0, 2, 1.6, 400.0, true, 300.0, 22, 10, 6, 250.0);
+    }
+
+    /** Legacy 12-arg constructor, from before the flush ceiling and activity guard were derived. */
+    public BlinkCheck(double minSilenceMs, double maxJudgedSilenceMs, double healthyRttFraction,
+                       int requiredStreak, long windowMs, double shortSilenceMinMs,
+                       int shortBlinkStreakBonus, double releaseBurstMinBlocks, double releaseBurstWindowMs,
+                       boolean activityProofRequired, double flushWindowMs, int flushMinPackets) {
+        this(minSilenceMs, maxJudgedSilenceMs, healthyRttFraction, requiredStreak, windowMs,
+                shortSilenceMinMs, shortBlinkStreakBonus, releaseBurstMinBlocks, releaseBurstWindowMs,
+                activityProofRequired, flushWindowMs, flushMinPackets, 10, 6, 250.0);
     }
 
     public BlinkCheck(double minSilenceMs, double maxJudgedSilenceMs, double healthyRttFraction,
                        int requiredStreak, long windowMs, double shortSilenceMinMs,
                        int shortBlinkStreakBonus, double releaseBurstMinBlocks, double releaseBurstWindowMs,
-                       boolean activityProofRequired, double flushWindowMs, int flushMinPackets) {
+                       boolean activityProofRequired, double flushWindowMs, int flushMinPackets,
+                       int catchUpTickClamp, int flushSafetyMargin, double activityGuardMs) {
         this.minSilenceMs = minSilenceMs;
         this.maxJudgedSilenceMs = maxJudgedSilenceMs;
         this.healthyRttFraction = healthyRttFraction;
@@ -84,6 +102,9 @@ public final class BlinkCheck {
         this.activityProofRequired = activityProofRequired;
         this.flushWindowMs = flushWindowMs;
         this.flushMinPackets = flushMinPackets;
+        this.catchUpTickClamp = Math.max(1, catchUpTickClamp);
+        this.flushSafetyMargin = Math.max(0, flushSafetyMargin);
+        this.activityGuardMs = Math.max(0.0, activityGuardMs);
     }
 
     public static BlinkCheck fromConfig(ConfigManager config) {
@@ -99,7 +120,10 @@ public final class BlinkCheck {
                 config.getBlinkReleaseBurstWindowMs(),
                 config.isBlinkActivityProofRequired(),
                 config.getBlinkFlushWindowMs(),
-                config.getBlinkFlushMinPackets());
+                config.getBlinkFlushMinPackets(),
+                config.getBlinkCatchUpTickClamp(),
+                config.getBlinkFlushSafetyMargin(),
+                config.getBlinkActivityGuardMs());
     }
 
     /** Prints the active thresholds this instance was built with, for debug logging. */
@@ -107,10 +131,12 @@ public final class BlinkCheck {
         return String.format(Locale.US,
                 "minSilenceMs=%.1f maxJudgedSilenceMs=%.1f healthyRttFraction=%.2f requiredStreak=%d "
                         + "shortSilenceMinMs=%.1f shortStreakBonus=%d releaseBurstMinBlocks=%.2f "
-                        + "activityProofRequired=%b flushWindowMs=%.0f flushMinPackets=%d",
+                        + "activityProofRequired=%b flushWindowMs=%.0f flushMinPackets=%d "
+                        + "catchUpTickClamp=%d flushSafetyMargin=%d effectiveFlushThreshold=%d activityGuardMs=%.0f",
                 minSilenceMs, maxJudgedSilenceMs, healthyRttFraction, requiredStreak,
                 shortSilenceMinMs, shortBlinkStreakBonus, releaseBurstMinBlocks,
-                activityProofRequired, flushWindowMs, flushMinPackets);
+                activityProofRequired, flushWindowMs, flushMinPackets,
+                catchUpTickClamp, flushSafetyMargin, flushThreshold(), activityGuardMs);
     }
 
     /**
@@ -194,7 +220,24 @@ public final class BlinkCheck {
 
         // Discriminator 1: did anything that only the client's main loop can produce arrive while
         // the movement stream was silent? A freeze stops all of it; a blink does not.
-        boolean clientWasAlive = data.hadMainLoopActivityBetween(last, nowNanos);
+        //
+        // The window is narrowed by a guard band at BOTH edges, and that guard is what makes this
+        // test mean what it claims. A client resuming from a freeze runs its first tick as one
+        // unit: input handling (which emits the swing/attack for a click that was held or queued
+        // during the stall) runs before the movement send, so the swing lands a fraction of a
+        // millisecond BEFORE the packet that ends the silence - inside the raw window, and
+        // indistinguishable from a blink at that resolution. The mirror case exists at the start
+        // edge, where a swing emitted in the same tick as the last movement packet can arrive just
+        // after it and then the client freezes. Neither is evidence that the main loop ran DURING
+        // the silence; both used to read as proof that it did.
+        //
+        // A blink used in combat is unaffected: it swings throughout a silence of at least
+        // minSilenceMs, so activity lands in the middle, far from either edge.
+        long guardNanos = (long) (activityGuardMs * 1_000_000.0);
+        long activityFrom = last + guardNanos;
+        long activityTo = nowNanos - guardNanos;
+        boolean clientWasAlive = activityTo > activityFrom
+                && data.hadMainLoopActivityBetween(activityFrom, activityTo);
         if (clientWasAlive) {
             data.clearPendingBlink();
             data.clearBlinkFlushWindow();
@@ -228,9 +271,20 @@ public final class BlinkCheck {
         }
 
         int count = data.incrementBlinkFlushPackets();
-        if (count < flushMinPackets) return null;
+        if (count < flushThreshold()) return null;
 
         double silenceMs = data.getPendingBlinkSilenceMs();
+
+        // A module can only replay what it withheld. If the silence is too short for its backlog to
+        // have cleared the ceiling a legitimate client can reach anyway, this discriminator has
+        // nothing to say and must not speak: for a 900ms silence the backlog is 18 packets against
+        // a vanilla ceiling of 16, which is noise, not evidence. Short blinks are left to the other
+        // two discriminators rather than being guessed at here.
+        if (withheldTicks(silenceMs) < flushThreshold()) {
+            data.clearBlinkFlushWindow();
+            return null;
+        }
+
         double rtt = data.getPendingBlinkRttMs();
         boolean wasShort = data.isPendingBlinkShort();
         int occurrences = data.getPendingBlinkOccurrences();
@@ -283,6 +337,31 @@ public final class BlinkCheck {
         data.clearBlinkFlushWindow();
 
         return buildFlag(data, silenceMs, rtt, occurrences, wasShort, Evidence.DISPLACEMENT, displacement, 0);
+    }
+
+    /**
+     * Packet count a flush burst must exceed, derived rather than hand-tuned.
+     *
+     * <p>This is the fix for a real false positive: the threshold used to be a flat 14 packets in a
+     * 300ms window, which an ordinary client produces on its own. A client recovering from a freeze
+     * runs its dropped ticks in one frame, bounded by its catch-up clamp ({@code catchUpTickClamp},
+     * 10 in vanilla - the remainder of the backlog is discarded, not deferred), and then resumes
+     * its ordinary 20Hz stream for whatever is left of the window. That is
+     * {@code 10 + 300/50 = 16} packets before any cheat is involved, so 14 flagged every freeze
+     * recovery of a moving player.
+     *
+     * <p>Computing the ceiling instead of guessing it also keeps the two halves honest when an
+     * operator retunes {@code flush-window-ms}: widening the window raises what a legitimate client
+     * emits, and the threshold now follows it automatically.
+     */
+    private int flushThreshold() {
+        int vanillaCeiling = catchUpTickClamp + (int) Math.ceil(flushWindowMs / 50.0);
+        return Math.max(flushMinPackets, vanillaCeiling + flushSafetyMargin);
+    }
+
+    /** How many 20Hz movement packets the silence covers - the largest backlog a module could replay. */
+    private static int withheldTicks(double silenceMs) {
+        return (int) (silenceMs / 50.0);
     }
 
     /** Which discriminator produced the verdict - reported in the alert details. */

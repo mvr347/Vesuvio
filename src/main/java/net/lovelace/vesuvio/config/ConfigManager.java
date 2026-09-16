@@ -507,6 +507,29 @@ public final class ConfigManager {
         return config.getInt("mechanics.movement.blink.flush-min-packets", 14);
     }
 
+    /**
+     * How many ticks a client runs in one frame when catching up after a freeze. Vanilla clamps
+     * this at 10 and discards the rest of the backlog; it is exposed only so the derived flush
+     * ceiling can be adjusted for a client that behaves differently.
+     */
+    public int getBlinkCatchUpTickClamp() {
+        return config.getInt("mechanics.movement.blink.catch-up-tick-clamp", 10);
+    }
+
+    /** Headroom above the packet count a legitimate client can reach on its own. */
+    public int getBlinkFlushSafetyMargin() {
+        return config.getInt("mechanics.movement.blink.flush-safety-margin", 6);
+    }
+
+    /**
+     * Guard band at both edges of the silence when looking for main-loop activity. The client's
+     * own recovery tick emits a queued swing immediately before the movement packet that ends the
+     * silence, so activity at the edges proves nothing - see BlinkCheck.
+     */
+    public double getBlinkActivityGuardMs() {
+        return config.getDouble("mechanics.movement.blink.activity-guard-ms", 250.0);
+    }
+
     public boolean isVelocityEnabled() {
         return config.getBoolean("mechanics.movement.velocity.enabled", true);
     }

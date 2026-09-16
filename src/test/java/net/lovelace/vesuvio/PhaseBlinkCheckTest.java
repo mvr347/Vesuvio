@@ -218,9 +218,10 @@ class PhaseBlinkCheckTest {
         assertFalse(check.check(uuid, data, transactions, now).isFlag());
 
         // Release: the buffered queue arrives back to back. A recovering vanilla client cannot do
-        // this - it resumes from its current position, capped by its own 10-ticks-per-frame clamp.
+        // this - its catch-up is capped at 10 ticks in one frame and the rest of the backlog is
+        // discarded, whereas the module replays what it withheld: 2500ms of silence is 50 packets.
         boolean flagged = false;
-        for (int i = 0; i < 20 && !flagged; i++) {
+        for (int i = 0; i < 50 && !flagged; i++) {
             now += 2 * MS;
             CheckResult result = check.check(uuid, data, transactions, now);
             if (result.isFlag()) {
@@ -315,6 +316,122 @@ class PhaseBlinkCheckTest {
         for (int i = 0; i < 10; i++) {
             now += 900 * MS;
             assertFalse(check.check(uuid, data, transactions, now).isFlag());
+        }
+    }
+
+    @Test
+    void vanillaFreezeRecoveryBurstIsNotAFlush() {
+        // The regression this pins down: the flush threshold used to be a flat 14 packets in a
+        // 300ms window, and a client recovering from a freeze produces exactly that on its own -
+        // its catch-up clamp runs 10 ticks in the first frame, then it resumes its ordinary 20Hz
+        // stream for the rest of the window. 10 + 6 = 16, comfortably past 14, with no cheat
+        // involved. Every freeze recovery of a moving player was flagged.
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        TransactionManager transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Hitching");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 40; i++) {
+            now += 50 * MS;
+            check.check(uuid, data, transactions, now);
+        }
+
+        // A 2s freeze: no packets at all, and no swing either - the loop is stopped.
+        now += 2000 * MS;
+        assertFalse(check.check(uuid, data, transactions, now).isFlag());
+
+        // Recovery: 10 catch-up ticks land in one frame (the rest of the backlog is discarded by
+        // the client, not deferred), then the normal 20Hz stream resumes.
+        for (int i = 0; i < 9; i++) {
+            now += 1 * MS;
+            assertFalse(check.check(uuid, data, transactions, now).isFlag(),
+                    "the client's own catch-up clamp is not a flushed queue");
+        }
+        for (int i = 0; i < 6; i++) {
+            now += 50 * MS;
+            assertFalse(check.check(uuid, data, transactions, now).isFlag(),
+                    "resuming the ordinary packet rate after a freeze is not a flushed queue");
+        }
+    }
+
+    @Test
+    void queuedSwingArrivingWithTheRecoveryFlushIsNotActivityProof() {
+        // The second false positive of the same kind. A client resuming from a freeze runs its
+        // first tick as one unit: input handling emits the swing for a click held during the stall
+        // BEFORE the movement send, so the swing lands a fraction of a millisecond before the
+        // packet that ends the silence. That used to read as "the main loop was alive during the
+        // silence" - proof of exactly the opposite of what happened.
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        TransactionManager transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "FrozenMidFight");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 40; i++) {
+            now += 50 * MS;
+            check.check(uuid, data, transactions, now);
+        }
+
+        now += 2000 * MS;
+        // The queued swing is flushed 0.2ms before the movement packet that ends the silence.
+        data.setLastSwingNanos(now - (MS / 5));
+
+        assertFalse(check.check(uuid, data, transactions, now).isFlag(),
+                "a swing arriving in the recovery flush is not evidence the loop ran during the silence");
+    }
+
+    @Test
+    void swingInTheMiddleOfTheSilenceStillProvesTheLoopWasAlive() {
+        // The guard band must not cost the detection it exists to protect: a blink used in combat
+        // swings throughout the silence, so activity lands far from either edge.
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        TransactionManager transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "BlinkingInCombat");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 40; i++) {
+            now += 50 * MS;
+            check.check(uuid, data, transactions, now);
+        }
+
+        long silenceStart = now;
+        now += 2000 * MS;
+        data.setLastSwingNanos(silenceStart + 1000 * MS); // dead centre of the silence
+
+        CheckResult result = check.check(uuid, data, transactions, now);
+        assertTrue(result.isFlag(), "swinging through the silence is still conclusive");
+        assertEquals("activity", result.details().get("evidence"));
+    }
+
+    @Test
+    void shortSilenceCannotBeJudgedByFlushAlone() {
+        // A module can only replay what it withheld. A 900ms silence backs up 18 packets against a
+        // legitimate client's own ceiling of 16 - that gap is noise, not evidence, so this
+        // discriminator has to stay quiet rather than guess.
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        TransactionManager transactions = new StubTransactions(20.0, 0.0);
+        UserData data = new UserData(uuid, "ShortHitch");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 40; i++) {
+            now += 50 * MS;
+            check.check(uuid, data, transactions, now);
+        }
+
+        now += 1000 * MS;
+        assertFalse(check.check(uuid, data, transactions, now).isFlag());
+
+        for (int i = 0; i < 40; i++) {
+            now += 2 * MS;
+            assertFalse(check.check(uuid, data, transactions, now).isFlag(),
+                    "a 900ms-band silence must not be judged on packet count alone");
         }
     }
 
