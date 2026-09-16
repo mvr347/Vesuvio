@@ -815,6 +815,33 @@ public final class UserData {
 
     public synchronized int incrementBlinkFlushPackets() { return ++this.blinkFlushPackets; }
 
+    /**
+     * Packet-accounting state for BlinkCheck: how many movement packets have arrived since the
+     * client last answered a transaction, and which answer that was. See BlinkCheck#checkBurstBudget.
+     */
+    private long blinkAckSequence = -1L;
+    private int blinkPacketsSinceAck = 0;
+
+    /**
+     * Records a movement packet against the current transaction-ack bucket and returns how many
+     * have now arrived in it. A new ack opens a new bucket.
+     */
+    public synchronized int recordMovementAgainstAck(long ackSequence) {
+        if (ackSequence != blinkAckSequence) {
+            blinkAckSequence = ackSequence;
+            blinkPacketsSinceAck = 1;
+        } else {
+            blinkPacketsSinceAck++;
+        }
+        return blinkPacketsSinceAck;
+    }
+
+    /** Drops the current bucket so one release cannot be reported twice. */
+    public synchronized void resetMovementAckBucket() {
+        blinkAckSequence = -1L;
+        blinkPacketsSinceAck = 0;
+    }
+
     public synchronized void clearBlinkFlushWindow() {
         this.blinkFlushWindowStartNanos = 0L;
         this.blinkFlushPackets = 0;

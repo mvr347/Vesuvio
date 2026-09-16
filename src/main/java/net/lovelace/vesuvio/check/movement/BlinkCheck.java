@@ -36,12 +36,15 @@ import java.util.UUID;
  *   <li><b>Main-loop activity during the silence.</b> A real freeze stops the whole main loop:
  *       no swing, no attacks, nothing. A blink suppresses <em>movement only</em> while the player
  *       keeps fighting, so swing/attack packets keep arriving through the silence. See
- *       {@link UserData#hadMainLoopActivityBetween}.</li>
- *   <li><b>Flush burst.</b> A recovering vanilla client does not replay what it missed - it
- *       resumes from its current position, and its catch-up is bounded by the client's own
- *       10-ticks-per-frame clamp. A buffering blink module dumps the entire queue on release:
- *       tens of movement packets back to back. Counting packets just after a silence separates
- *       those directly.</li>
+ *       {@link UserData#hadMainLoopActivityBetween}. Measured with a guard band at both edges of
+ *       the silence, because the client's own recovery tick emits its queued swing immediately
+ *       before the movement packet that ends the silence - see the call site.</li>
+ *   <li><b>Flush burst, accounted against the transaction stream.</b> Transaction answers and
+ *       movement packets share one ordered TCP connection, so no amount of network jitter can
+ *       reorder them - which makes the client's own answers a clock it keeps for us. Movement
+ *       packets that arrive without that clock advancing are packets the client cannot have
+ *       generated in real time. See {@link #checkBurstBudget} - this replaced a packet count over
+ *       a wall-clock window, which is precisely the measurement a bad connection distorts.</li>
  * </ul>
  * A third, weaker signal - an unexplained catch-up jump ({@link #checkReleaseBurst}) - stays as
  * it was, and still covers modules that drop packets rather than buffering them.
@@ -60,18 +63,35 @@ public final class BlinkCheck {
     private final double releaseBurstMinBlocks;
     private final double releaseBurstWindowMs;
     private final boolean activityProofRequired;
-    private final double flushWindowMs;
-    private final int flushMinPackets;
+    private final int catchUpTickClamp;
+    private final int burstSlop;
+    private final double activityGuardMs;
 
     /** Defaults for a config-less caller (e.g. unit tests exercising the check in isolation). */
     public BlinkCheck() {
-        this(1550.0, 10_000.0, 0.5, 3, 120_000L, 900.0, 2, 1.6, 400.0, true, 300.0, 14);
+        this(1550.0, 10_000.0, 0.5, 3, 120_000L, 900.0, 2, 1.6, 400.0, true, 10, 2, 250.0);
+    }
+
+    /**
+     * Legacy constructor from when the flush burst was counted over a wall-clock window. Those two
+     * parameters no longer exist - the burst is judged against the client's own transaction
+     * answers instead (see {@link #checkBurstBudget}) - and are accepted and ignored so existing
+     * call sites keep compiling.
+     */
+    public BlinkCheck(double minSilenceMs, double maxJudgedSilenceMs, double healthyRttFraction,
+                       int requiredStreak, long windowMs, double shortSilenceMinMs,
+                       int shortBlinkStreakBonus, double releaseBurstMinBlocks, double releaseBurstWindowMs,
+                       boolean activityProofRequired, double ignoredFlushWindowMs, int ignoredFlushMinPackets) {
+        this(minSilenceMs, maxJudgedSilenceMs, healthyRttFraction, requiredStreak, windowMs,
+                shortSilenceMinMs, shortBlinkStreakBonus, releaseBurstMinBlocks, releaseBurstWindowMs,
+                activityProofRequired, 10, 2, 250.0);
     }
 
     public BlinkCheck(double minSilenceMs, double maxJudgedSilenceMs, double healthyRttFraction,
                        int requiredStreak, long windowMs, double shortSilenceMinMs,
                        int shortBlinkStreakBonus, double releaseBurstMinBlocks, double releaseBurstWindowMs,
-                       boolean activityProofRequired, double flushWindowMs, int flushMinPackets) {
+                       boolean activityProofRequired,
+                       int catchUpTickClamp, int burstSlop, double activityGuardMs) {
         this.minSilenceMs = minSilenceMs;
         this.maxJudgedSilenceMs = maxJudgedSilenceMs;
         this.healthyRttFraction = healthyRttFraction;
@@ -82,8 +102,9 @@ public final class BlinkCheck {
         this.releaseBurstMinBlocks = releaseBurstMinBlocks;
         this.releaseBurstWindowMs = releaseBurstWindowMs;
         this.activityProofRequired = activityProofRequired;
-        this.flushWindowMs = flushWindowMs;
-        this.flushMinPackets = flushMinPackets;
+        this.catchUpTickClamp = Math.max(1, catchUpTickClamp);
+        this.burstSlop = Math.max(0, burstSlop);
+        this.activityGuardMs = Math.max(0.0, activityGuardMs);
     }
 
     public static BlinkCheck fromConfig(ConfigManager config) {
@@ -98,8 +119,9 @@ public final class BlinkCheck {
                 config.getBlinkReleaseBurstMinBlocks(),
                 config.getBlinkReleaseBurstWindowMs(),
                 config.isBlinkActivityProofRequired(),
-                config.getBlinkFlushWindowMs(),
-                config.getBlinkFlushMinPackets());
+                config.getBlinkCatchUpTickClamp(),
+                config.getBlinkBurstSlop(),
+                config.getBlinkActivityGuardMs());
     }
 
     /** Prints the active thresholds this instance was built with, for debug logging. */
@@ -107,10 +129,10 @@ public final class BlinkCheck {
         return String.format(Locale.US,
                 "minSilenceMs=%.1f maxJudgedSilenceMs=%.1f healthyRttFraction=%.2f requiredStreak=%d "
                         + "shortSilenceMinMs=%.1f shortStreakBonus=%d releaseBurstMinBlocks=%.2f "
-                        + "activityProofRequired=%b flushWindowMs=%.0f flushMinPackets=%d",
+                        + "activityProofRequired=%b catchUpTickClamp=%d burstSlop=%d activityGuardMs=%.0f",
                 minSilenceMs, maxJudgedSilenceMs, healthyRttFraction, requiredStreak,
                 shortSilenceMinMs, shortBlinkStreakBonus, releaseBurstMinBlocks,
-                activityProofRequired, flushWindowMs, flushMinPackets);
+                activityProofRequired, catchUpTickClamp, burstSlop, activityGuardMs);
     }
 
     /**
@@ -139,9 +161,9 @@ public final class BlinkCheck {
         if (last == 0L) return CheckResult.pass("Blink");
 
         // A queued-packet flush lands as a run of movement packets immediately after the silence,
-        // so it is counted here, on the packets that follow - before this packet is itself judged
+        // so it is judged here, on the packets that follow - before this packet is itself judged
         // as the start of a new silence.
-        CheckResult flush = accumulateFlushBurst(data, nowNanos);
+        CheckResult flush = checkBurstBudget(uuid, data, transactions);
         if (flush != null) return flush;
 
         double silenceMs = (nowNanos - last) / 1_000_000.0;
@@ -187,57 +209,106 @@ public final class BlinkCheck {
         int occurrences = data.recordBlinkOccurrence(nowNanos, windowNanos);
         int requiredForBand = shortBand ? (requiredStreak + shortBlinkStreakBonus) : requiredStreak;
 
-        // The silence is now a candidate either way: arm the flush counter so the packets that
-        // follow are measured, and stash the context a later confirmation will report.
+        // The silence is now a candidate either way: stash the context a later confirmation will
+        // report. The packets that follow are measured by checkBurstBudget against the client's
+        // own transaction answers, which needs no window to be armed.
         data.setPendingBlink(nowNanos, silenceMs, rtt, shortBand, occurrences);
-        data.startBlinkFlushWindow(nowNanos);
 
         // Discriminator 1: did anything that only the client's main loop can produce arrive while
         // the movement stream was silent? A freeze stops all of it; a blink does not.
-        boolean clientWasAlive = data.hadMainLoopActivityBetween(last, nowNanos);
+        //
+        // The window is narrowed by a guard band at BOTH edges, and that guard is what makes this
+        // test mean what it claims. A client resuming from a freeze runs its first tick as one
+        // unit: input handling (which emits the swing/attack for a click that was held or queued
+        // during the stall) runs before the movement send, so the swing lands a fraction of a
+        // millisecond BEFORE the packet that ends the silence - inside the raw window, and
+        // indistinguishable from a blink at that resolution. The mirror case exists at the start
+        // edge, where a swing emitted in the same tick as the last movement packet can arrive just
+        // after it and then the client freezes. Neither is evidence that the main loop ran DURING
+        // the silence; both used to read as proof that it did.
+        //
+        // A blink used in combat is unaffected: it swings throughout a silence of at least
+        // minSilenceMs, so activity lands in the middle, far from either edge.
+        long guardNanos = (long) (activityGuardMs * 1_000_000.0);
+        long activityFrom = last + guardNanos;
+        long activityTo = nowNanos - guardNanos;
+        boolean clientWasAlive = activityTo > activityFrom
+                && data.hadMainLoopActivityBetween(activityFrom, activityTo);
         if (clientWasAlive) {
             data.clearPendingBlink();
-            data.clearBlinkFlushWindow();
-            return buildFlag(data, silenceMs, rtt, occurrences, shortBand, Evidence.ACTIVITY, 0.0, 0);
+            return buildFlag(data, silenceMs, rtt, occurrences, shortBand, Evidence.ACTIVITY, 0.0, 0, 0);
         }
 
         if (!activityProofRequired && occurrences >= requiredForBand) {
             // Legacy behaviour, opt-in only: streak alone. Retained so an operator who accepts the
             // false-positive rate can still catch a blink used while completely idle.
             data.clearPendingBlink();
-            data.clearBlinkFlushWindow();
-            return buildFlag(data, silenceMs, rtt, occurrences, shortBand, Evidence.STREAK, 0.0, 0);
+            return buildFlag(data, silenceMs, rtt, occurrences, shortBand, Evidence.STREAK, 0.0, 0, 0);
         }
 
         return CheckResult.pass("Blink");
     }
 
     /**
-     * Counts movement packets arriving inside the post-silence window and flags once the run is
-     * longer than a recovering vanilla client could produce.
+     * Packet accounting against the transaction stream - the check that replaced a tuned packet
+     * count with an identity the client cannot argue with.
      *
-     * @return a flag once the burst clears the threshold, otherwise {@code null}
+     * <h3>Why the old wall-clock version could not work</h3>
+     * It counted movement packets inside a 300ms window measured on the server's receive clock.
+     * That clock is exactly what a bad connection distorts: packets held up by the network and
+     * then delivered together look identical to packets a module held back and flushed. Every
+     * threshold over that window is therefore a guess about someone's ISP, and the two previous
+     * attempts at picking one both landed under what an ordinary client produces by itself.
+     *
+     * <h3>What is measured instead</h3>
+     * Transaction answers and movement packets travel on the same ordered TCP stream, so their
+     * relative order survives any amount of jitter: delay moves both together. The server sends a
+     * transaction every tick and the client's netty thread answers on receipt, which gives a clock
+     * the client keeps for us. Between two consecutive answers, a client can only have run the
+     * ticks that fit in the real time separating them - plus, once, the catch-up burst its own
+     * clamp allows after a stall, the rest of that backlog being discarded rather than deferred.
+     *
+     * <p>So for movement packets arriving without the ack sequence advancing:
+     * <pre>packets &lt;= elapsedSinceThatAckWasSent / 50ms + catchUpTickClamp</pre>
+     * A client resuming from a freeze produces exactly its clamp and stops. A module replaying a
+     * queue produces one packet per withheld tick - 40 of them for a two-second blink - without
+     * the sequence moving at all, because it never received the transactions that would have
+     * advanced it. Nothing here is tuned to a playerbase: the only constant is the client's own
+     * clamp, and the elapsed term is measured from a timestamp the server wrote down before the
+     * packet was ever sent.
+     *
+     * <h3>What this does not do</h3>
+     * A module that withholds the transaction answers too is not caught here, and should not be:
+     * from the server's side that player genuinely is not acknowledging anything, which is the
+     * ordinary lag case handled by the pending-age test above.
+     *
+     * @return a flag once the burst exceeds what the client could have generated, otherwise {@code null}
      */
-    private CheckResult accumulateFlushBurst(UserData data, long nowNanos) {
-        if (!data.hasBlinkFlushWindow()) return null;
+    private CheckResult checkBurstBudget(UUID uuid, UserData data, TransactionManager transactions) {
+        long ackSequence = transactions.getAckSequence(uuid);
+        int packetsInBucket = data.recordMovementAgainstAck(ackSequence);
 
-        double ageMs = (nowNanos - data.getBlinkFlushWindowStartNanos()) / 1_000_000.0;
-        if (ageMs < 0 || ageMs > flushWindowMs) {
-            data.clearBlinkFlushWindow();
+        double sinceAckMs = transactions.getMsSinceLastAckSent(uuid);
+        if (sinceAckMs < 0) return null; // client has not answered a transaction yet
+
+        int budget = catchUpTickClamp + burstSlop + (int) (sinceAckMs / 50.0);
+        if (packetsInBucket <= budget) return null;
+
+        if (!data.hasPendingBlink()) {
+            // Nothing was withheld that this could be the release of. A burst on its own is worth
+            // knowing about but is not this check's verdict to give.
             return null;
         }
-
-        int count = data.incrementBlinkFlushPackets();
-        if (count < flushMinPackets) return null;
 
         double silenceMs = data.getPendingBlinkSilenceMs();
         double rtt = data.getPendingBlinkRttMs();
         boolean wasShort = data.isPendingBlinkShort();
         int occurrences = data.getPendingBlinkOccurrences();
         data.clearPendingBlink();
-        data.clearBlinkFlushWindow();
+        data.resetMovementAckBucket();
 
-        return buildFlag(data, silenceMs, rtt, occurrences, wasShort, Evidence.FLUSH, 0.0, count);
+        return buildFlag(data, silenceMs, rtt, occurrences, wasShort, Evidence.FLUSH, 0.0,
+                packetsInBucket, budget);
     }
 
     /**
@@ -280,16 +351,17 @@ public final class BlinkCheck {
         boolean wasShort = data.isPendingBlinkShort();
         int occurrences = data.getPendingBlinkOccurrences();
         data.clearPendingBlink();
-        data.clearBlinkFlushWindow();
+        data.resetMovementAckBucket();
 
-        return buildFlag(data, silenceMs, rtt, occurrences, wasShort, Evidence.DISPLACEMENT, displacement, 0);
+        return buildFlag(data, silenceMs, rtt, occurrences, wasShort, Evidence.DISPLACEMENT, displacement, 0, 0);
     }
 
     /** Which discriminator produced the verdict - reported in the alert details. */
     private enum Evidence { ACTIVITY, FLUSH, DISPLACEMENT, STREAK }
 
     private CheckResult buildFlag(UserData data, double silenceMs, double rtt, int occurrences,
-                                   boolean shortBand, Evidence evidence, double displacementAfter, int flushPackets) {
+                                   boolean shortBand, Evidence evidence, double displacementAfter,
+                                   int flushPackets, int flushBudget) {
         // Repetition is no longer a trigger on its own, but a candidate that has recurred inside
         // the window is still meaningfully more convincing than a first sighting.
         double streakBoost = Math.min(0.05, Math.max(0, occurrences - 1) * 0.02);
@@ -309,8 +381,9 @@ public final class BlinkCheck {
                 confidence = Math.min(0.98, 0.92 + streakBoost);
                 vl = Math.min(6.0, 3.0 + silenceMs / 500.0);
                 explanation = String.format(Locale.US,
-                        "Movement withheld for %.0fms then %d queued packets flushed at once (healthy RTT %.0fms)",
-                        silenceMs, flushPackets, rtt);
+                        "Movement withheld for %.0fms then %d queued packets replayed against a budget of %d "
+                                + "- the client answered no transaction between them, so it cannot have generated them (healthy RTT %.0fms)",
+                        silenceMs, flushPackets, flushBudget, rtt);
             }
             case DISPLACEMENT -> {
                 confidence = Math.min(0.97, 0.88 + Math.min(0.06, displacementAfter / 40.0) + streakBoost);
@@ -341,6 +414,7 @@ public final class BlinkCheck {
         }
         if (evidence == Evidence.FLUSH) {
             details.put("flushPackets", flushPackets);
+            details.put("flushBudget", flushBudget);
         }
         if (data != null) {
             details.put("playerState", describePlayerState(data.getEnvironment()));
