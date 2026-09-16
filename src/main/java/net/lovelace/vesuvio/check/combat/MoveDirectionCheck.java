@@ -1,6 +1,7 @@
 package net.lovelace.vesuvio.check.combat;
 
 import net.lovelace.vesuvio.check.CheckResult;
+import net.lovelace.vesuvio.data.DecayingEvidence;
 import net.lovelace.vesuvio.data.UserData;
 import org.bukkit.Location;
 import org.bukkit.entity.Entity;
@@ -43,12 +44,21 @@ public final class MoveDirectionCheck {
      */
     private static final double MAX_ANGLE_DEGREES = 100.0;
 
-    private static final int REQUIRED_STREAK = 3;
+    // A randomized aura defeats a "3 in a row" counter for free by correcting its own direction
+    // one hit out of several - see CLAUDE.md. DecayingEvidence instead: half-life short enough
+    // that evidence from a fight several minutes ago is gone, but long enough that a real fight's
+    // worth of hits accumulates within it.
+    private static final double EVIDENCE_HALF_LIFE_MS = 15_000.0;
+    private static final double EVIDENCE_CLEAN_RELIEF = 0.5;
+    private static final double EVIDENCE_THRESHOLD = 3.0;
+    private static final int EVIDENCE_MIN_EVENTS = 4;
 
     public CheckResult check(Player attacker, Entity target, UserData data) {
         if (attacker == null || target == null || data == null) return CheckResult.pass("MoveDirection");
+        long nowNanos = System.nanoTime();
+        DecayingEvidence evidence = data.getMoveDirectionEvidence();
+
         if (!attacker.isSprinting()) {
-            data.resetMoveDirectionStreak();
             return CheckResult.pass("MoveDirection");
         }
 
@@ -57,7 +67,6 @@ public final class MoveDirectionCheck {
         double moveSpeed = Math.hypot(moveX, moveZ);
 
         if (moveSpeed < MIN_MOVE_SPEED) {
-            data.resetMoveDirectionStreak();
             return CheckResult.pass("MoveDirection");
         }
 
@@ -75,26 +84,28 @@ public final class MoveDirectionCheck {
         double angleDegrees = angleBetween(moveX, moveZ, toTargetX, toTargetZ);
 
         if (angleDegrees <= MAX_ANGLE_DEGREES) {
-            data.resetMoveDirectionStreak();
+            evidence.relieve(EVIDENCE_CLEAN_RELIEF, nowNanos, EVIDENCE_HALF_LIFE_MS);
             return CheckResult.pass("MoveDirection");
         }
 
-        data.incrementMoveDirectionStreak();
-        if (data.getMoveDirectionStreak() < REQUIRED_STREAK) {
+        double score = evidence.reward(1.0, nowNanos, EVIDENCE_HALF_LIFE_MS);
+        if (score < EVIDENCE_THRESHOLD || evidence.events() < EVIDENCE_MIN_EVENTS) {
             return CheckResult.pass("MoveDirection");
         }
 
-        data.resetMoveDirectionStreak();
+        evidence.reset();
 
         Map<String, Object> details = new HashMap<>();
         details.put("angle", angleDegrees);
         details.put("moveSpeed", moveSpeed);
+        details.put("score", score);
+        details.put("threshold", EVIDENCE_THRESHOLD);
         details.put("target", target.getName() != null ? target.getName() : target.getType().name());
 
         return CheckResult.flag("MoveDirection", 0.88, 3.5,
                 String.format(Locale.US,
-                        "Attacked %.1f° off sprint direction while sprint was maintained (%.2fb/t)",
-                        angleDegrees, moveSpeed),
+                        "Attacked %.1f° off sprint direction while sprint was maintained (%.2fb/t, evidence %.1f/%.1f)",
+                        angleDegrees, moveSpeed, score, EVIDENCE_THRESHOLD),
                 details);
     }
 

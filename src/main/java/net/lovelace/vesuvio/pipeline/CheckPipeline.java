@@ -71,6 +71,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck;
     private final net.lovelace.vesuvio.check.movement.ElytraCheck elytraCheck = new net.lovelace.vesuvio.check.movement.ElytraCheck();
     private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck;
+    private final net.lovelace.vesuvio.check.statistical.SnapAimCheck snapAimCheck;
     private final net.lovelace.vesuvio.check.statistical.StrafeReversalCheck strafeReversalCheck;
     private net.lovelace.vesuvio.engine.AimTrackingService aimTrackingService;
     private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
@@ -110,6 +111,7 @@ public final class CheckPipeline {
         this.blinkCheck = net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(config);
         this.angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck(config, hitboxTracker, transactionManager);
         this.strafeReversalCheck = new net.lovelace.vesuvio.check.statistical.StrafeReversalCheck(config);
+        this.snapAimCheck = new net.lovelace.vesuvio.check.statistical.SnapAimCheck(config);
     }
 
     /**
@@ -405,6 +407,20 @@ public final class CheckPipeline {
      * Processes aim updates with delta rotations.
      */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch) {
+        processAim(player, data, deltaYaw, deltaPitch, deltaYaw);
+    }
+
+    /**
+     * @param signedDeltaYaw this packet's yaw change, signed and wrapped to (-180, 180] - see
+     *                       {@link net.lovelace.vesuvio.data.AimTrackingBuffer#wrapDegrees}. The
+     *                       3-arg overload above passes the unsigned magnitude instead, which only
+     *                       matters to {@link net.lovelace.vesuvio.check.statistical.SnapAimCheck}
+     *                       and only means that overload's caller (tests, mainly) cannot exercise
+     *                       the sign-reversal half of that check - production always goes through
+     *                       {@link net.lovelace.vesuvio.packet.AimPacketListener}, which has the
+     *                       real signed value.
+     */
+    public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch, float signedDeltaYaw) {
         // KillauraAngleCheck's ReactionTime sub-check needs to know when the attacker's camera
         // last made a "real" turn, not merely received a rotation packet - tracked here since this
         // is the one place every aim update (combat or not) passes through.
@@ -413,6 +429,20 @@ public final class CheckPipeline {
         double combinedRotation = Math.abs(deltaYaw) + Math.abs(deltaPitch);
         if (combinedRotation >= config.getKillauraReactionSignificantRotationDegrees()) {
             data.setLastSignificantRotationNanos(nowNanos);
+        }
+
+        // Angular-jerk ("snap-back") detector - see SnapAimCheck's javadoc. Deliberately not
+        // gated on combat: the revert half of a snap-back can land on the tick after the attack,
+        // by which point isInCombat() is still true, but there is no reason to make the check
+        // depend on that timing at all when the signature is meaningful on its own.
+        if (config.isSnapAimEnabled()) {
+            CheckResult snapResult = snapAimCheck.check(data, signedDeltaYaw, nowNanos);
+            if (snapResult.isFlag()) {
+                data.addVl(snapResult.vl() * config.getStatisticalWeight());
+                data.adjustRisk(snapResult.confidence() * 9.0);
+                data.setLastTriggeredCheck(snapResult.checkName());
+                handleFlag(player, data, snapResult);
+            }
         }
 
         // BadPackets Pitch Bounds Check

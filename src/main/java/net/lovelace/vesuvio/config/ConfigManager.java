@@ -373,6 +373,34 @@ public final class ConfigManager {
         return config.getDouble("mechanics.gcd-aim.min-rotation", 0.3);
     }
 
+    public boolean isSnapAimEnabled() {
+        return config.getBoolean("mechanics.snap-aim.enabled", true);
+    }
+
+    public double getSnapAimMinDegrees() {
+        return config.getDouble("mechanics.snap-aim.min-degrees", 45.0);
+    }
+
+    public double getSnapAimMaxGapMs() {
+        return config.getDouble("mechanics.snap-aim.max-gap-ms", 150.0);
+    }
+
+    public double getSnapAimMinMagnitudeRatio() {
+        return config.getDouble("mechanics.snap-aim.min-magnitude-ratio", 0.5);
+    }
+
+    public double getSnapAimEvidenceHalfLifeMs() {
+        return config.getDouble("mechanics.snap-aim.evidence.half-life-ms", 20_000.0);
+    }
+
+    public double getSnapAimEvidenceThreshold() {
+        return config.getDouble("mechanics.snap-aim.evidence.threshold", 3.0);
+    }
+
+    public int getSnapAimEvidenceMinEvents() {
+        return config.getInt("mechanics.snap-aim.evidence.min-events", 3);
+    }
+
     public boolean isBadPacketsEnabled() {
         return config.getBoolean("mechanics.bad-packets.enabled", true);
     }

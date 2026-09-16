@@ -74,13 +74,16 @@ public final class AimPacketListener extends PacketListenerAbstract {
             float rawDeltaYaw = Math.abs(yaw - prevYaw) % 360.0f;
             final float deltaYaw = (rawDeltaYaw > 180.0f) ? (360.0f - rawDeltaYaw) : rawDeltaYaw;
             final float deltaPitch = Math.abs(pitch - prevPitch);
+            // Signed version, for SnapAimCheck: it needs to know which way the camera turned to
+            // recognise a turn immediately reversed, not just that two big turns happened.
+            final float signedDeltaYaw = net.lovelace.vesuvio.data.AimTrackingBuffer.wrapDegrees(yaw, prevYaw);
 
             data.setLastYaw(yaw);
             data.setLastPitch(pitch);
 
             data.getAimBuffer().addRotation(yaw, pitch, now);
 
-            virtualExecutor.execute(() -> checkPipeline.processAim(player, data, deltaYaw, deltaPitch));
+            virtualExecutor.execute(() -> checkPipeline.processAim(player, data, deltaYaw, deltaPitch, signedDeltaYaw));
         }
     }
 }
