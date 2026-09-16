@@ -2,6 +2,7 @@ package net.lovelace.vesuvio.listener;
 
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.config.ConfigManager;
+import net.lovelace.vesuvio.data.DecayingEvidence;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
 import net.lovelace.vesuvio.pipeline.CheckPipeline;
@@ -64,7 +65,23 @@ public final class WorldInteractionListener implements Listener {
     private final CheckPipeline pipeline;
     private final ConfigManager config;
 
-    private final Map<UUID, Long> blockDamageTimes = new ConcurrentHashMap<>();
+    /**
+     * Start of the current dig, per player. Keyed by the block as well as the time: a player who
+     * starts on one block and finishes on another has not mined anything impossibly fast, and
+     * pairing those two events produced exactly that reading.
+     */
+    private record DigStart(String blockKey, long startedAtMillis) {}
+
+    private final Map<UUID, DigStart> blockDamageTimes = new ConcurrentHashMap<>();
+
+    /**
+     * Accumulated evidence of breaks faster than vanilla allows. A single break slightly under the
+     * model is not judged on its own - the model can be wrong at the margin, and network jitter
+     * can shorten the measured interval by delaying the start packet. A run of them cannot be
+     * explained that way, which is what this accumulates. See the class's detection doctrine in
+     * CLAUDE.md: no "N in a row" counters, a decaying accumulator instead.
+     */
+    private final Map<UUID, DecayingEvidence> fastBreakEvidence = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastBlockPlaceNanos = new ConcurrentHashMap<>();
     private final Map<UUID, AtomicInteger> fastPlaceStreak = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastTowerPlaceNanos = new ConcurrentHashMap<>();
@@ -338,6 +355,7 @@ public final class WorldInteractionListener implements Listener {
      */
     public void forgetPlayer(UUID uuid) {
         blockDamageTimes.remove(uuid);
+        fastBreakEvidence.remove(uuid);
         miningProfiles.remove(uuid);
         lastBlockPlaceNanos.remove(uuid);
         fastPlaceStreak.remove(uuid);
@@ -392,7 +410,7 @@ public final class WorldInteractionListener implements Listener {
         }
 
         if (config.isFastBreakEnabled()) {
-            blockDamageTimes.put(player.getUniqueId(), System.currentTimeMillis());
+            blockDamageTimes.put(player.getUniqueId(), new DigStart(blockKey(block), System.currentTimeMillis()));
         }
     }
 
@@ -424,27 +442,47 @@ public final class WorldInteractionListener implements Listener {
             return;
         }
 
-        // FastBreak: instant break on hard blocks (obsidian, ancient debris, ores)
-        Long startTime = blockDamageTimes.remove(player.getUniqueId());
-        if (hardness >= 3.0f) { // e.g. Obsidian (50.0), Ancient Debris (30.0), Iron/Gold Ore (3.0), Diamond Ore (3.0)
-            long elapsed = (startTime != null) ? (System.currentTimeMillis() - startTime) : 0L;
-            long minLegitMs = estimateMinLegitBreakMillis(player, block, hardness);
-            if (elapsed < minLegitMs) {
+        // FastBreak. Judged on EVERY breakable block, not just hard ones: the previous
+        // "hardness >= 3.0" gate meant stone, wood and dirt - what players actually mine, and what
+        // a fast-break module is actually used on - were never looked at. The vanilla dig model
+        // below is per-block anyway, so there is nothing a hardness bucket buys.
+        DigStart dig = blockDamageTimes.remove(player.getUniqueId());
+        UserData breakData = userDataManager.get(player.getUniqueId());
+        if (breakData != null && hardness > 0.0f && dig != null && dig.blockKey().equals(blockKey(block))) {
+            long elapsed = System.currentTimeMillis() - dig.startedAtMillis();
+            long vanillaMinMs = estimateMinLegitBreakMillis(player, block, hardness);
+            // Guard against a clock going backwards; a negative interval is not evidence.
+            double ratio = (vanillaMinMs <= 0) ? 1.0 : Math.max(0.0, (double) elapsed) / vanillaMinMs;
+
+            DecayingEvidence evidence = fastBreakEvidence.computeIfAbsent(
+                    player.getUniqueId(), k -> new DecayingEvidence());
+            long nowNanos = System.nanoTime();
+            double halfLife = config.getFastBreakEvidenceHalfLifeMs();
+
+            if (ratio < config.getFastBreakConclusiveRatio()) {
                 event.setCancelled(true);
-                UserData data = userDataManager.get(player.getUniqueId());
-                if (data != null) {
-                    CheckResult result = CheckResult.flag(
-                            "FastBreak",
-                            0.94,
-                            15.0,
-                            String.format(Locale.US, "Impossible mining speed on %s (%d ms, min legit ~%d ms)", block.getType().name(), elapsed, minLegitMs),
-                            Map.of("block", block.getType().name(), "elapsedMs", elapsed, "hardness", hardness, "minLegitMs", minLegitMs)
-                    );
-                    pipeline.handleFlag(player, data, result);
-                    data.addVl(result.vl());
-                    data.adjustRisk(20.0);
-                }
+                evidence.reset();
+                flagFastBreak(player, breakData, block, elapsed, vanillaMinMs, ratio, 0.97, 18.0,
+                        String.format(Locale.US,
+                                "Broke %s in %dms against a vanilla minimum of %dms for this tool and effects (%.0f%% of it)",
+                                block.getType().name(), elapsed, vanillaMinMs, ratio * 100.0));
                 return;
+            }
+
+            if (ratio < config.getFastBreakSuspiciousRatio()) {
+                double score = evidence.reward(1.0, nowNanos, halfLife);
+                if (score >= config.getFastBreakEvidenceThreshold()
+                        && evidence.events() >= config.getFastBreakEvidenceMinEvents()) {
+                    event.setCancelled(true);
+                    evidence.reset();
+                    flagFastBreak(player, breakData, block, elapsed, vanillaMinMs, ratio, 0.93, 15.0,
+                            String.format(Locale.US,
+                                    "Sustained mining faster than vanilla allows (%s in %dms vs %dms minimum, %.0f%% of it, score %.1f)",
+                                    block.getType().name(), elapsed, vanillaMinMs, ratio * 100.0, score));
+                    return;
+                }
+            } else {
+                evidence.relieve(0.5, nowNanos, halfLife);
             }
         }
 
@@ -467,20 +505,15 @@ public final class WorldInteractionListener implements Listener {
      * vanilla digging-speed formula (tool tier, Efficiency, Haste/Conduit Power, off-ground and
      * underwater penalties) rather than a flat cutoff.
      *
-     * A flat "150ms for any hardness >= 3.0" threshold (the previous behaviour, only excluding
-     * Haste) badly under-counted legitimate speed: a plain diamond pickaxe with Efficiency IV/V
-     * already produces enough digging speed to instant-break hardness-3 ore (iron/gold/diamond/
-     * emerald) in vanilla with no exploit involved - that combo is common end-game gear, not an
-     * edge case. Very hard blocks (obsidian 50.0, ancient debris 30.0) still can't be
-     * instant-broken even with the best legal loadout, so those stay tightly enforced.
-     *
-     * Returns milliseconds; a 50% safety margin below the theoretical vanilla minimum is applied
-     * by the caller multiplying elapsed against this floor, so an imperfect model still only
-     * flags breaks that are clearly, not marginally, faster than anything legitimate.
+     * Returns the vanilla minimum itself, in milliseconds - no safety margin is folded in here.
+     * The caller compares the measured interval against it as a ratio, so how much slack a break
+     * is given is one configured number (fastbreak.conclusive-ratio / suspicious-ratio) instead of
+     * being buried in this estimate. Everything uncertain in the model resolves towards a faster
+     * assumed dig, which lowers this floor and makes the check more forgiving, never less.
      */
     private long estimateMinLegitBreakMillis(Player player, Block block, float hardness) {
         ItemStack tool = player.getInventory().getItemInMainHand();
-        double speed = pickaxeSpeedMultiplier(tool.getType(), block.getType());
+        double speed = toolSpeedMultiplier(tool, block);
 
         int efficiencyLevel = tool.getEnchantmentLevel(Enchantment.EFFICIENCY);
         if (efficiencyLevel > 0) {
@@ -508,31 +541,85 @@ public final class WorldInteractionListener implements Listener {
             }
         }
 
-        double damagePerTick = speed / hardness;
+        return vanillaBreakMillis(speed, hardness);
+    }
+
+    /**
+     * The arithmetic half of the dig model, free of Bukkit so it can be pinned by a test.
+     *
+     * <p>Vanilla is {@code damage_per_tick = speed / hardness / 30} when the block is harvestable
+     * with the held tool, and {@code / 100} when it is not. <b>That divisor was missing here</b>,
+     * which made every computed floor thirty times too low and is why this check never caught
+     * anything: it put obsidian - 9400ms of real digging with a diamond pickaxe - at a 175ms floor,
+     * so no fast-break setting on earth could fall under it. The harvestable divisor (30) is used
+     * unconditionally because it is the smaller of the two and therefore always the more forgiving
+     * reading of what the player could have done.
+     *
+     * @return the vanilla minimum for this speed/hardness pair, in milliseconds
+     */
+    public static long vanillaBreakMillis(double speed, double hardness) {
+        if (hardness <= 0.0) return 0L;
+        double damagePerTick = speed / hardness / 30.0;
+
         // damagePerTick >= 1.0 means vanilla itself considers this an instant break (a single
         // client tick, ~50ms) - not a violation regardless of how fast the packets arrive.
         double vanillaTicks = Math.max(1.0, Math.ceil(1.0 / Math.max(damagePerTick, 0.0001)));
-        long vanillaMinMs = Math.round(vanillaTicks * 50.0);
-
-        // 50% safety margin: only flag a break that's less than half of the theoretical vanilla
-        // minimum for this exact loadout, so an imperfect model of the formula (or minor timing
-        // jitter) can't false-flag a legitimately fast, well-geared miner.
-        return Math.max(50L, vanillaMinMs / 2);
+        return Math.max(50L, Math.round(vanillaTicks * 50.0));
     }
 
-    private double pickaxeSpeedMultiplier(Material tool, Material block) {
-        // Only the hardness>=3.0 bucket reaches this (ores, obsidian, ancient debris, etc.) -
-        // in vanilla those are all pickaxe-mined, so a non-pickaxe (or bare hand) gets the
-        // "wrong tool" multiplier of 1.0, same as vanilla.
-        String name = tool.name();
-        if (!name.endsWith("_PICKAXE")) return 1.0;
-        if (name.startsWith("WOODEN") || name.startsWith("WOOD")) return 2.0;
-        if (name.startsWith("STONE")) return 4.0;
-        if (name.startsWith("IRON")) return 6.0;
-        if (name.startsWith("DIAMOND")) return 8.0;
-        if (name.startsWith("GOLDEN") || name.startsWith("GOLD")) return 12.0;
-        if (name.startsWith("NETHERITE")) return 9.0;
-        return 1.0;
+    /**
+     * Vanilla tool speed for this tool against this block. Tool correctness is asked of the server
+     * ({@link Block#isPreferredTool}) rather than hardcoded per material, so a block family this
+     * code has never heard of is still judged the way the server judges it.
+     *
+     * <p>Every uncertain case resolves upward. A faster assumed tool means a lower vanilla minimum,
+     * which means a more forgiving check - the direction a mis-modelled loadout has to fail in.
+     */
+    private double toolSpeedMultiplier(ItemStack tool, Block block) {
+        String name = tool.getType().name();
+
+        // Shears and swords have their own per-block speeds (shears on wool/leaves, a sword on
+        // cobweb or bamboo) that do not follow the tier table at all. They are given the largest
+        // of those values whenever they could apply, because over-estimating only relaxes the check.
+        if (name.equals("SHEARS")) return 15.0;
+        if (name.endsWith("_SWORD")) return 15.0;
+
+        if (!block.isPreferredTool(tool)) {
+            // Wrong tool (or bare hand): vanilla speed 1.0. Note the /30 divisor above is still the
+            // harvestable one, so this stays the lenient reading.
+            return 1.0;
+        }
+
+        if (name.startsWith("WOODEN_") || name.startsWith("WOOD_")) return 2.0;
+        if (name.startsWith("STONE_")) return 4.0;
+        if (name.startsWith("IRON_")) return 6.0;
+        if (name.startsWith("DIAMOND_")) return 8.0;
+        if (name.startsWith("NETHERITE_")) return 9.0;
+        if (name.startsWith("GOLDEN_") || name.startsWith("GOLD_")) return 12.0;
+
+        // Preferred tool of a kind this code does not recognise - assume the fastest vanilla tier.
+        return 12.0;
+    }
+
+    private static String blockKey(Block b) {
+        return b.getWorld().getUID() + ":" + b.getX() + ":" + b.getY() + ":" + b.getZ();
+    }
+
+    private void flagFastBreak(Player player, UserData data, Block block, long elapsed,
+                               long vanillaMinMs, double ratio, double confidence, double vl,
+                               String explanation) {
+        Map<String, Object> details = new HashMap<>();
+        details.put("block", block.getType().name());
+        details.put("elapsedMs", elapsed);
+        details.put("vanillaMinMs", vanillaMinMs);
+        details.put("ratioOfVanilla", ratio);
+        details.put("hardness", block.getType().getHardness());
+        details.put("tool", player.getInventory().getItemInMainHand().getType().name());
+
+        CheckResult result = CheckResult.flag("FastBreak", confidence, vl, explanation, details);
+        pipeline.handleFlag(player, data, result);
+        data.addVl(result.vl());
+        data.adjustRisk(20.0);
     }
 
     private static final class MiningProfile {

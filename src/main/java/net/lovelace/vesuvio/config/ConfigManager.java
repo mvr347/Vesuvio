@@ -800,6 +800,28 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.world.fastbreak.enabled", true);
     }
 
+    /** Break this much faster than the vanilla minimum and one block is already conclusive. */
+    public double getFastBreakConclusiveRatio() {
+        return config.getDouble("mechanics.world.fastbreak.conclusive-ratio", 0.5);
+    }
+
+    /** Below this fraction of the vanilla minimum a break is suspicious but not yet judged alone. */
+    public double getFastBreakSuspiciousRatio() {
+        return config.getDouble("mechanics.world.fastbreak.suspicious-ratio", 0.85);
+    }
+
+    public double getFastBreakEvidenceHalfLifeMs() {
+        return config.getDouble("mechanics.world.fastbreak.evidence.half-life-ms", 20000.0);
+    }
+
+    public double getFastBreakEvidenceThreshold() {
+        return config.getDouble("mechanics.world.fastbreak.evidence.threshold", 4.0);
+    }
+
+    public int getFastBreakEvidenceMinEvents() {
+        return config.getInt("mechanics.world.fastbreak.evidence.min-events", 6);
+    }
+
     public boolean isVehicleFlyEnabled() {
         return config.getBoolean("mechanics.world.vehiclefly.enabled", true);
     }
