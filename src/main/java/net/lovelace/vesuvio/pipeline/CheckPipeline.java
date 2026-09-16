@@ -611,7 +611,21 @@ public final class CheckPipeline {
         // survival rules - reach and angle math isn't meaningful against state we don't own.
         // Concretely reported case: finishing off a player mid-revive (temporarily invulnerable,
         // position still settling) false-flagged the finisher for Reach/Angle.
-        if (target == null || target.equals(player) || target.isInvulnerable()) return;
+        if (target == null || target.equals(player) || target.isInvulnerable()) {
+            // Reach and the whole killaura family live below this line, so when an operator reports
+            // that an attack "was not caught", the first thing that has to be answered is whether
+            // the attack reached them at all. Silence here and silence from a check that ran look
+            // identical in the log otherwise.
+            if (config.isDebug()) {
+                LOGGER.info(String.format(Locale.US,
+                        "[ATTACK] %s -> entityId=%d SKIPPED (%s) - no combat check ran for this attack",
+                        player.getName(), targetEntityId,
+                        target == null ? "target not among nearby entities"
+                                : target.equals(player) ? "target resolved to the attacker"
+                                : "target is invulnerable"));
+            }
+            return;
+        }
 
         if (config.isReachEnabled()) {
             CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator);
