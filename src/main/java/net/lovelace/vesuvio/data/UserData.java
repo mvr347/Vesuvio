@@ -355,6 +355,61 @@ public final class UserData {
         this.lastPitch = lastPitch;
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Rotation the attack packet was sent alongside, captured on the netty thread in true packet
+    // arrival order (see packet.ClickPacketListener). KillauraAngleCheck's world-check half runs a
+    // full tick later on the main thread (target resolution needs live entity lists); reading
+    // attacker.getLocation() there instead reads whatever rotation packets arrived DURING that
+    // extra tick - which is exactly the gap a rotation that is sent for one packet and reverted
+    // the next is built to hide in. This is a one-shot value: KillauraAngleCheck consumes and
+    // clears it for the attack it belongs to, so a skipped or exempted attack cannot leave it to
+    // be read by an unrelated later one.
+    //
+    // Known limitation: this is a single slot, not a per-attack queue. A client that sends more
+    // than one ATTACK packet inside the same tick (a "multi-target-per-tick" killaura mode, hitting
+    // several entities at once) only gets this treatment for whichever of those attacks a later
+    // one has not yet overwritten by the time its own world-check runs - the rest fall back to the
+    // live-location read this was written to improve on, not to something worse. Correctly
+    // attributing this per target would need keying by entity id; not done here for now.
+    // ---------------------------------------------------------------------------------------
+    private volatile float pendingAttackYaw;
+    private volatile float pendingAttackPitch;
+    private volatile boolean hasPendingAttackRotation;
+
+    public synchronized void setPendingAttackRotation(float yaw, float pitch) {
+        this.pendingAttackYaw = yaw;
+        this.pendingAttackPitch = pitch;
+        this.hasPendingAttackRotation = true;
+    }
+
+    /** Result of {@link #consumePendingAttackRotation()}: whether a value was present, and its yaw/pitch. */
+    public record PendingRotation(boolean present, float yaw, float pitch) {}
+
+    /** Reads and clears the pending attack rotation in one step, so it is used at most once. */
+    public synchronized PendingRotation consumePendingAttackRotation() {
+        PendingRotation result = new PendingRotation(hasPendingAttackRotation, pendingAttackYaw, pendingAttackPitch);
+        hasPendingAttackRotation = false;
+        return result;
+    }
+
+    // Previous rotation packet's SIGNED yaw delta (wrapped to (-180, 180]) and when it landed, used
+    // by check.statistical.SnapAimCheck to recognise a mechanical "snap there, snap back": a real
+    // hand cannot reverse a large turn with near-equal magnitude within a couple of ticks, because
+    // physical mouse motion has an acceleration/deceleration phase spread across several of them.
+    private volatile float prevSignedDeltaYaw = 0f;
+    private volatile long prevSignedDeltaYawNanos = 0L;
+
+    public float getPrevSignedDeltaYaw() { return prevSignedDeltaYaw; }
+    public long getPrevSignedDeltaYawNanos() { return prevSignedDeltaYawNanos; }
+
+    public void setPrevSignedDeltaYaw(float delta, long nowNanos) {
+        this.prevSignedDeltaYaw = delta;
+        this.prevSignedDeltaYawNanos = nowNanos;
+    }
+
+    private final DecayingEvidence snapAimEvidence = new DecayingEvidence();
+    public DecayingEvidence getSnapAimEvidence() { return snapAimEvidence; }
+
     // Rotation initialization and GCD Streak
     private volatile boolean initialRotation = false;
     private volatile int gcdSuspiciousStreak = 0;
@@ -497,12 +552,12 @@ public final class UserData {
     public void incrementBackTrackStreak() { this.backTrackStreak++; }
     public void resetBackTrackStreak() { this.backTrackStreak = 0; }
 
-    // Consecutive hits landing significantly off the attacker's own sprint/movement direction
-    // while sprint is maintained, tracked by check.combat.MoveDirectionCheck.
-    private volatile int moveDirectionStreak = 0;
-    public int getMoveDirectionStreak() { return moveDirectionStreak; }
-    public void incrementMoveDirectionStreak() { this.moveDirectionStreak++; }
-    public void resetMoveDirectionStreak() { this.moveDirectionStreak = 0; }
+    // Hits landing significantly off the attacker's own sprint/movement direction while sprint is
+    // maintained, tracked by check.combat.MoveDirectionCheck. DecayingEvidence rather than a
+    // consecutive streak - a killaura that occasionally corrects its own direction for one honest
+    // hit out of several used to reset a "3 in a row" counter for free.
+    private final DecayingEvidence moveDirectionEvidence = new DecayingEvidence();
+    public DecayingEvidence getMoveDirectionEvidence() { return moveDirectionEvidence; }
 
     // Consecutive movement ticks with sub-degree alignment between look yaw and travel direction,
     // tracked by check.statistical.BaritoneCheck.

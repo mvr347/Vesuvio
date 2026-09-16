@@ -66,7 +66,25 @@ public final class KillauraAngleCheck {
         double sensitivity = (config != null && config.isKillauraDynamicSensitivityEnabled())
                 ? data.getSensitivityMultiplier() : 1.0;
 
+        // The rotation this attack actually claims, captured on the netty thread at the instant
+        // the attack packet arrived - see UserData#consumePendingAttackRotation. This runs a full
+        // tick later than that capture (target resolution needs the live entity list, main-thread
+        // only), and in that tick MORE rotation packets can arrive - including a revert, for a
+        // module whose "aim assist" is exactly one packet wide. Reading attacker.getLocation()
+        // here instead would judge the attack against whichever of those arrived last, not
+        // against what the attack packet was actually sent alongside. Position is still read live:
+        // it does not move in single-tick jumps the way rotation can be made to.
+        UserData.PendingRotation pending = data.consumePendingAttackRotation();
         Location eyeLoc = attacker.getEyeLocation();
+        float currentYaw = pending.present() ? pending.yaw() : eyeLoc.getYaw();
+        float currentPitch = pending.present() ? pending.pitch() : eyeLoc.getPitch();
+        // Position from the live location, direction from the resolved (possibly attack-time)
+        // rotation - Location#getDirection() derives purely from yaw/pitch, so overwriting just
+        // those on a clone is enough without hand-rolling the trig ourselves.
+        Location judgedLoc = eyeLoc.clone();
+        judgedLoc.setYaw(currentYaw);
+        judgedLoc.setPitch(currentPitch);
+
         BoundingBox liveBox = target.getBoundingBox();
 
         Vector toCenter = liveBox.getCenter().subtract(eyeLoc.toVector());
@@ -77,7 +95,7 @@ public final class KillauraAngleCheck {
         }
 
         double distance = Math.sqrt(distSq);
-        Vector eyeDir = eyeLoc.getDirection().normalize();
+        Vector eyeDir = judgedLoc.getDirection().normalize();
 
         // -------------------------------------------------------------
         // 1. Multi-point angle sampling: the naive "angle to hitbox center" flags a perfectly
@@ -100,11 +118,14 @@ public final class KillauraAngleCheck {
         if (config != null && config.isDebug()) {
             LOGGER.info(String.format(Locale.US,
                     "[ATTACK] %s -> %s | effectiveAngle=%.1f centerAngle=%.1f fovLimit=%.1f "
-                            + "(base %.1f / sensitivity %.2f) distance=%.2f yaw=%.1f pitch=%.1f",
+                            + "(base %.1f / sensitivity %.2f) distance=%.2f yaw=%.1f pitch=%.1f "
+                            + "rotationSource=%s (liveYaw=%.1f livePitch=%.1f)",
                     attacker.getName(),
                     target.getName() != null ? target.getName() : target.getType().name(),
                     effectiveAngle, angleDegrees, fovLimit,
                     config.getKillauraFovLimitDegrees(), sensitivity, distance,
+                    currentYaw, currentPitch,
+                    pending.present() ? "attack-packet" : "live-location",
                     eyeLoc.getYaw(), eyeLoc.getPitch()));
         }
 
@@ -200,8 +221,10 @@ public final class KillauraAngleCheck {
         }
 
         long nowNanos = System.nanoTime();
-        float currentYaw = attacker.getLocation().getYaw();
-        float currentPitch = attacker.getLocation().getPitch();
+        // currentYaw/currentPitch were already resolved above (attack-time rotation when
+        // available) - reused here rather than re-reading attacker.getLocation(), which by this
+        // point in the method may already reflect a LATER rotation packet than the one this
+        // attack was actually sent with.
         float requiredYaw = requiredYaw(toCenter.getX(), toCenter.getZ());
         float requiredPitch = requiredPitch(toCenter.getX(), toCenter.getY(), toCenter.getZ());
 

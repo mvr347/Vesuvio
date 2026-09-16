@@ -97,6 +97,17 @@ public final class ClickPacketListener extends PacketListenerAbstract {
                 data.recordCombatAction();
                 data.getClickBuffer().addClick(now, true);
 
+                // Captured HERE, on this connection's netty thread, in true packet arrival order:
+                // any rotation packet the client sent before this attack in the same flush has
+                // already updated data's yaw/pitch (AimPacketListener runs on the same thread for
+                // the same connection), and nothing that arrives after this line can have. See
+                // UserData#consumePendingAttackRotation for why the world-check half of this
+                // attack - which runs a full tick later on the main thread - needs this instead of
+                // reading the attacker's live location at that point.
+                if (data.hasInitialRotation()) {
+                    data.setPendingAttackRotation(data.getLastYaw(), data.getLastPitch());
+                }
+
                 virtualExecutor.execute(() -> {
                     checkPipeline.processAttack(player, targetEntityId, data);
                     checkPipeline.processClick(player, data);
