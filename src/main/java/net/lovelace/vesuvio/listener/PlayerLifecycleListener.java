@@ -189,6 +189,22 @@ public final class PlayerLifecycleListener implements Listener {
         }
     }
 
+    /**
+     * The game mode a movement check sees comes from the once-per-tick EnvironmentSnapshot, so for
+     * up to one tick after a switch the checks still judge a creative/spectator flyer against the
+     * survival movement model. That tick is enough for SpeedCheck's debt to cross its threshold,
+     * which is how staff entering a spectate session flagged themselves for Speed. The switch
+     * itself is an event, so it is recorded the instant it happens and CheckPipeline#processMovement
+     * skips the packets that fall inside the gap.
+     */
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onGameModeChange(org.bukkit.event.player.PlayerGameModeChangeEvent event) {
+        UserData data = userDataManager.get(event.getPlayer().getUniqueId());
+        if (data != null) {
+            data.recordGameModeChange();
+        }
+    }
+
     @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
     public void onRespawn(org.bukkit.event.player.PlayerRespawnEvent event) {
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());

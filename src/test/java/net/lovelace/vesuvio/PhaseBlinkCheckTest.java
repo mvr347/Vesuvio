@@ -128,6 +128,65 @@ class PhaseBlinkCheckTest {
     }
 
     @Test
+    void idleClickingPlayerIsNotABlink() {
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        StubTransactions transactions = new StubTransactions(5.0, 0.0);
+        UserData data = new UserData(uuid, "AfkClicker");
+        data.setEnvironment(snapshot(false));
+
+        // Reported from production: a player standing perfectly still while clicking (killaura on
+        // a stationary account, but equally AFK fishing or holding attack at a mob farm) was
+        // flagged as a blink roughly once a second, with an RTT of 5ms.
+        //
+        // Both halves of the alert were real and neither was a cheat. A vanilla client sends NO
+        // movement packet while its position, rotation and onGround flag are all unchanged, except
+        // the forced one every 20 ticks - so ~1000ms of silence is the correct output of standing
+        // still. Meanwhile the clicks are genuine main-loop activity landing in the middle of that
+        // gap, so the activity discriminator confirmed a blink that never happened.
+        long now = 0L;
+        for (int i = 0; i < 40; i++) {
+            transactions.ack();
+            // A killaura on 1.9+ combat swings on the attack cooldown (~625ms for a sword), so a
+            // swing lands in the middle of the ~1000ms gap - well clear of the guard bands at both
+            // edges, which is exactly where the activity discriminator treats it as proof that the
+            // main loop ran while movement was withheld.
+            data.setLastSwingNanos(now + 450 * MS);
+            now += 996 * MS;
+            CheckResult result = check.check(uuid, data, transactions, now, true, false);
+            assertFalse(result.isFlag(),
+                    "an idle clicking player produces one movement packet per 20 ticks by protocol, "
+                            + "not because anything was withheld");
+        }
+    }
+
+    @Test
+    void withheldMovementIsStillCaughtWhenTheClientActuallyHadSomethingToReport() {
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        StubTransactions transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Blinker");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 10; i++) {
+            now += 50 * MS;
+            transactions.ack();
+            check.check(uuid, data, transactions, now, true, true);
+        }
+
+        // Same shape as the idle case above, except the packet ending the silence reports a state
+        // the client had not reported before - which is what a blink releasing queued movement
+        // necessarily does. The idle gate must not cost this detection.
+        data.setLastSwingNanos(now + 1500 * MS);
+        now += 2500 * MS;
+
+        CheckResult result = check.check(uuid, data, transactions, now, true, true);
+        assertTrue(result.isFlag(), "a silence that concealed real movement is still a blink");
+        assertEquals("activity", result.details().get("evidence"));
+    }
+
+    @Test
     void blinkIgnoresGenuineNetworkStall() {
         BlinkCheck check = new BlinkCheck();
         UUID uuid = UUID.randomUUID();

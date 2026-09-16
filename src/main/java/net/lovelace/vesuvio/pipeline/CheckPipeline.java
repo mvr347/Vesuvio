@@ -697,6 +697,15 @@ public final class CheckPipeline {
      * Processes player movement packets (Fly, Speed, NoFall, Timer).
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos) {
+        processMovement(player, data, x, y, z, onGround, hasPos, packetReceiptNanos, true);
+    }
+
+    /**
+     * @param clientHadSomethingToReport whether this packet reports state the client had not
+     *                                   already reported - computed in packet order on the netty
+     *                                   thread, see {@link UserData#noteReportedClientState}.
+     */
+    public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos, boolean clientHadSomethingToReport) {
         // A third-party plugin controlling this player's state (revive/downed mechanics,
         // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside normal
         // survival physics - e.g. a "downed" player briefly falling before their temporary
@@ -712,6 +721,29 @@ public final class CheckPipeline {
         // online player unconditionally), so a stale timestamp here really would look exactly like
         // a textbook blink.
         if (player.isInvulnerable()) {
+            data.resetAirTicks();
+            data.resetFlyStreak();
+            data.resetSpeedStreak();
+            data.setPrevHorizontalSpeed(0.0);
+            data.setSpeedPredictionDebt(0.0);
+            data.clearPendingVelocity();
+            data.resetPhaseTicks();
+            data.setLastAnyMovementNanos(packetReceiptNanos);
+            if (hasPos) {
+                data.setLastPosition(x, y, z, onGround);
+            }
+            return;
+        }
+
+        // A game mode change (staff entering /vesuvio spectate, an admin switching to creative and
+        // back) is applied instantly, but the game mode every movement check reads comes from the
+        // once-per-tick EnvironmentSnapshot. For up to one tick after the change the checks are
+        // therefore judging a spectator-speed flyer against the survival movement model, and
+        // SpeedCheck's debt accumulator needs only a single such packet to cross its flag
+        // threshold - which is exactly how staff opening a spectate session flagged themselves for
+        // Speed. Handled the same way as the invulnerability branch above: nothing carries across
+        // the transition, and the silence up to it is not Blink's to read either.
+        if (data.hasRecentGameModeChange()) {
             data.resetAirTicks();
             data.resetFlyStreak();
             data.resetSpeedStreak();
@@ -745,7 +777,8 @@ public final class CheckPipeline {
         // client sends position-less flying packets each tick, and it is the silence of that whole
         // stream (not of positions alone) that distinguishes a lag switch from standing still.
         if (config.isBlinkEnabled() && transactionManager != null) {
-            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager, packetReceiptNanos, hasPos);
+            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager,
+                    packetReceiptNanos, hasPos, clientHadSomethingToReport);
             if (blinkResult.isFlag()) {
                 data.addVl(blinkResult.vl());
                 data.adjustRisk(blinkResult.confidence() * 12.0);

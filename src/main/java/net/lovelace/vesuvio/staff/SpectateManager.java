@@ -7,6 +7,7 @@ import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
+import org.bukkit.Location;
 import org.bukkit.entity.Player;
 
 import java.util.Locale;
@@ -29,6 +30,8 @@ public final class SpectateManager {
     private final Map<UUID, UUID> activeSpectators = new ConcurrentHashMap<>();
     private final Map<UUID, BossBar> activeBossBars = new ConcurrentHashMap<>();
     private final Map<UUID, GameMode> originalGameModes = new ConcurrentHashMap<>();
+    /** Where the staff member stood before spectating, so ending a session puts them back. */
+    private final Map<UUID, Location> originalLocations = new ConcurrentHashMap<>();
 
     public SpectateManager(UserDataManager userDataManager) {
         this.userDataManager = userDataManager;
@@ -36,6 +39,7 @@ public final class SpectateManager {
 
     public void startSpectating(Player staff, Player target) {
         originalGameModes.put(staff.getUniqueId(), staff.getGameMode());
+        originalLocations.put(staff.getUniqueId(), staff.getLocation().clone());
         activeSpectators.put(staff.getUniqueId(), target.getUniqueId());
 
         staff.setGameMode(GameMode.SPECTATOR);
@@ -61,6 +65,16 @@ public final class SpectateManager {
         BossBar bossBar = activeBossBars.remove(staffId);
         if (bossBar != null) {
             staff.hideBossBar(bossBar);
+        }
+
+        // Order matters: put the staff member back on the ground BEFORE restoring their game mode.
+        // Ending a session used to leave them in survival wherever the suspect had led them -
+        // usually mid-air - so they took the fall damage and the fall itself was judged by the
+        // movement checks. The teleport is also what tells those checks not to read the
+        // transition as movement (PlayerLifecycleListener#onTeleport).
+        Location origin = originalLocations.remove(staffId);
+        if (origin != null && origin.getWorld() != null) {
+            staff.teleport(origin);
         }
 
         GameMode gm = originalGameModes.remove(staffId);

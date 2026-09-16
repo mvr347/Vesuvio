@@ -43,6 +43,9 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         double z = 0;
         boolean onGround = false;
         boolean hasPos = false;
+        float yaw = 0f;
+        float pitch = 0f;
+        boolean hasRot = false;
         String packetName = "UNKNOWN";
 
         try {
@@ -62,6 +65,9 @@ public final class MovementPacketListener extends PacketListenerAbstract {
                 x = pos.getX();
                 y = pos.getY();
                 z = pos.getZ();
+                yaw = wrapper.getYaw();
+                pitch = wrapper.getPitch();
+                hasRot = true;
                 onGround = wrapper.isOnGround();
                 hasPos = true;
             } else if (type == PacketType.Play.Client.PLAYER_FLYING) {
@@ -72,6 +78,9 @@ public final class MovementPacketListener extends PacketListenerAbstract {
             } else if (type == PacketType.Play.Client.PLAYER_ROTATION) {
                 packetName = "PLAYER_ROTATION";
                 WrapperPlayClientPlayerRotation wrapper = new WrapperPlayClientPlayerRotation(event);
+                yaw = wrapper.getYaw();
+                pitch = wrapper.getPitch();
+                hasRot = true;
                 onGround = wrapper.isOnGround();
                 hasPos = false;
             } else {
@@ -98,8 +107,15 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         final long packetReceiptNanos = System.nanoTime();
         final String finalPacketName = packetName;
 
+        // Deliberately evaluated here, on the netty thread, and not inside the virtual-thread task
+        // below: this is a comparison against the PREVIOUS packet's contents, so it is only correct
+        // while the packets are still in the order the client sent them. The check tasks are
+        // dispatched to virtual threads and can interleave; this cannot.
+        final boolean clientHadSomethingToReport =
+                data.noteReportedClientState(hasPos, x, y, z, hasRot, yaw, pitch, onGround);
+
         try {
-            virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos));
+            virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos, clientHadSomethingToReport));
         } catch (Exception e) {
             System.err.println("[Vesuvio] Failed to queue movement check for " + player.getName() + " (" + finalPacketName + "): " + e.getMessage());
             e.printStackTrace();
