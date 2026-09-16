@@ -867,6 +867,84 @@ public final class UserData {
     public void recordTeleport() { this.lastTeleportMillis = System.currentTimeMillis(); }
     public boolean hasRecentTeleport() { return (System.currentTimeMillis() - lastTeleportMillis) < 1500L; }
 
+    // Wall-clock time of the last game-mode change. A game mode is read from the once-per-tick
+    // EnvironmentSnapshot, so for up to one tick after the change the movement checks are still
+    // judging a creative/spectator flyer against the survival movement model - which is exactly
+    // how staff entering /vesuvio spectate flagged themselves for Speed. The change itself is an
+    // event, so it is recorded here the instant it happens and the movement checks skip the
+    // handful of packets that fall inside the gap. Unlike the teleport grace this cannot be
+    // triggered on demand (an ender pearl is not a game-mode change), so it opens no window a
+    // cheat could stand in.
+    private volatile long lastGameModeChangeMillis = 0L;
+    public void recordGameModeChange() { this.lastGameModeChangeMillis = System.currentTimeMillis(); }
+    public boolean hasRecentGameModeChange() {
+        return (System.currentTimeMillis() - lastGameModeChangeMillis) < 1200L;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Last state the client actually reported, used by BlinkCheck to tell "the vanilla client
+    // had nothing to send" apart from "the client withheld what it had".
+    //
+    // A vanilla client does not send a movement packet every tick. LocalPlayer#sendPosition only
+    // sends when the position moved past its own epsilon, the rotation changed, or the onGround
+    // flag flipped - otherwise it sends nothing at all, except one forced position packet every
+    // 20 ticks (the "position reminder"). A player standing perfectly still therefore produces
+    // ONE movement packet per ~1000ms as its normal, correct output, which lands squarely inside
+    // the silence bands Blink judges. That is not a detectable event, it is the protocol.
+    // ---------------------------------------------------------------------------------------
+    private double reportedX, reportedY, reportedZ;
+    private float reportedYaw, reportedPitch;
+    private boolean reportedOnGround;
+    private boolean hasReportedState;
+
+    /** Client's own send epsilon is 2.0E-4 per axis; a little headroom for float round-tripping. */
+    private static final double REPORTED_POSITION_EPSILON = 0.002;
+
+    /**
+     * Records what this movement packet reported and answers whether anything in it differs from
+     * what the client last reported - i.e. whether the client had something to send at all.
+     * Only the fields the packet actually carries are compared and stored, so a look-only or
+     * status-only packet does not clobber the known position.
+     *
+     * @return true if this packet carries a state the client had not already reported
+     */
+    public synchronized boolean noteReportedClientState(boolean hasPosition, double x, double y, double z,
+                                                        boolean hasRotation, float yaw, float pitch,
+                                                        boolean onGround) {
+        boolean changed = false;
+
+        if (!hasReportedState) {
+            hasReportedState = true;
+            changed = true;
+        }
+
+        if (hasPosition) {
+            if (Math.abs(x - reportedX) > REPORTED_POSITION_EPSILON
+                    || Math.abs(y - reportedY) > REPORTED_POSITION_EPSILON
+                    || Math.abs(z - reportedZ) > REPORTED_POSITION_EPSILON) {
+                changed = true;
+            }
+            reportedX = x;
+            reportedY = y;
+            reportedZ = z;
+        }
+
+        if (hasRotation) {
+            if (yaw != reportedYaw || pitch != reportedPitch) {
+                changed = true;
+            }
+            reportedYaw = yaw;
+            reportedPitch = pitch;
+        }
+
+        if (onGround != reportedOnGround) {
+            changed = true;
+            reportedOnGround = onGround;
+        }
+
+        return changed;
+    }
+
 
     public double getPrevHorizontalSpeed() { return prevHorizontalSpeed; }
     public void setPrevHorizontalSpeed(double v) { this.prevHorizontalSpeed = v; }

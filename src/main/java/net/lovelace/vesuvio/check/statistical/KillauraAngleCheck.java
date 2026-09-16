@@ -19,6 +19,7 @@ import org.bukkit.util.Vector;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.Logger;
 
 /**
  * Advanced Combat: Field-of-View (FOV), Line-of-Sight, and Crosshair Ray Analyzer.
@@ -46,6 +47,8 @@ import java.util.Map;
  * Author: Lovelace
  */
 public final class KillauraAngleCheck {
+
+    private static final Logger LOGGER = Logger.getLogger("Vesuvio");
 
     private final ConfigManager config;
     private final HitboxHistoryTracker hitboxTracker;
@@ -87,6 +90,23 @@ public final class KillauraAngleCheck {
         double angleDegrees = angleTo(eyeDir, toCenter.clone().normalize());
 
         double fovLimit = scaleThresholdUp(config != null ? config.getKillauraFovLimitDegrees() : 75.0, sensitivity);
+
+        // With settings.debug on, print the geometry of EVERY attack, not just the ones that flag.
+        // A report of "the anticheat did not catch this" is otherwise impossible to act on: the
+        // difference between a cheat the checks genuinely miss and one they correctly see as
+        // aiming at its target (a module that snaps the rotation for the attack and restores it,
+        // so the victim sees a back turned but the server never does) is a single number, and it
+        // is a number only the server can read.
+        if (config != null && config.isDebug()) {
+            LOGGER.info(String.format(Locale.US,
+                    "[ATTACK] %s -> %s | effectiveAngle=%.1f centerAngle=%.1f fovLimit=%.1f "
+                            + "(base %.1f / sensitivity %.2f) distance=%.2f yaw=%.1f pitch=%.1f",
+                    attacker.getName(),
+                    target.getName() != null ? target.getName() : target.getType().name(),
+                    effectiveAngle, angleDegrees, fovLimit,
+                    config.getKillauraFovLimitDegrees(), sensitivity, distance,
+                    eyeLoc.getYaw(), eyeLoc.getPitch()));
+        }
 
         // -------------------------------------------------------------
         // 2. Line-of-Sight / WallHit Check (GrimAC / Vulcan technique)

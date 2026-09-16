@@ -151,6 +151,17 @@ public final class BlinkCheck {
      */
     public CheckResult check(UUID uuid, UserData data, TransactionManager transactions, long nowNanos,
                               boolean positionCarrying) {
+        return check(uuid, data, transactions, nowNanos, positionCarrying, true);
+    }
+
+    /**
+     * @param clientHadSomethingToReport whether the packet that ended the silence reports a state
+     *                                   the client had not already reported - see
+     *                                   {@link UserData#noteReportedClientState} and the idle-client
+     *                                   gate below for why a silence means nothing without it.
+     */
+    public CheckResult check(UUID uuid, UserData data, TransactionManager transactions, long nowNanos,
+                              boolean positionCarrying, boolean clientHadSomethingToReport) {
         if (uuid == null || data == null || transactions == null) return CheckResult.pass("Blink");
 
         long last = data.getLastAnyMovementNanos();
@@ -176,6 +187,28 @@ public final class BlinkCheck {
             if (data.hasPendingBlink() && (nowNanos - data.getPendingBlinkNanos()) / 1_000_000.0 > releaseBurstWindowMs) {
                 data.clearPendingBlink();
             }
+            return CheckResult.pass("Blink");
+        }
+
+        // The silence only means something if the client was actually holding something back.
+        //
+        // A vanilla client does not send a movement packet per tick: LocalPlayer#sendPosition
+        // sends only when the position moved past its own epsilon, the rotation changed, or the
+        // onGround flag flipped, plus one forced position packet every 20 ticks. So a player
+        // standing perfectly still emits exactly one movement packet per ~1000ms - right in the
+        // middle of the short band this check judges - and if they are also clicking (killaura,
+        // but equally AFK fishing, an auto-clicker at a mob farm, or simply holding attack while
+        // mining) the main-loop-activity discriminator sees swings throughout that gap and calls
+        // it a blink. That was a guaranteed false positive on every idle, clicking player, and it
+        // is a protocol fact, not a threshold to tune: this is what the client is supposed to do.
+        //
+        // The state comparison is also the correct test on its own terms. A blink exists to hide
+        // real movement; if the state the client reports when the silence ends is the state the
+        // server already had, nothing was hidden, and there is nothing to punish. A blink that
+        // conceals actual movement necessarily reports a changed position when it releases, so no
+        // real detection is given up here.
+        if (!clientHadSomethingToReport) {
+            data.clearPendingBlink();
             return CheckResult.pass("Blink");
         }
 
