@@ -159,6 +159,11 @@ public class TransactionManager {
             state.emaRttMs = state.emaRttMs < 0 ? rttMs : state.emaRttMs + EMA_ALPHA * (rttMs - state.emaRttMs);
             state.acknowledgedSequence = match.eventSequence;
             state.lastResponseNanos = now;
+            // Packet accounting (see BlinkCheck): the sequence counts answered transactions, and
+            // the send time is the SERVER's, so the span between two acks is a quantity the client
+            // cannot influence at all - not by lagging, not by jitter, not by holding packets.
+            state.ackSequence++;
+            state.lastAckSentNanos = match.sentNanos;
         }
         return true;
     }
@@ -205,6 +210,40 @@ public class TransactionManager {
         }
     }
 
+    /**
+     * How many transactions this client has answered, ever. Monotonic.
+     *
+     * <p>This is the clock the Blink packet accounting runs on. Its value on its own means nothing;
+     * what matters is that it advances once per answered transaction, and that the answer travels
+     * on the same ordered TCP stream as the player's movement packets. Two movement packets that
+     * arrive without this number changing between them were sent by the client without it having
+     * received a new transaction - so the client cannot have advanced its own clock between them.
+     */
+    public long getAckSequence(UUID uuid) {
+        PlayerTransactions state = players.get(uuid);
+        if (state == null) return 0L;
+        synchronized (state) {
+            return state.ackSequence;
+        }
+    }
+
+    /**
+     * Milliseconds since the server SENT the transaction this client most recently answered, or -1
+     * when it has answered none.
+     *
+     * <p>Deliberately measured from the send, not the response: it bounds how much real time the
+     * client can possibly have experienced since that point, and a client cannot inflate a
+     * timestamp the server wrote down before the packet ever left.
+     */
+    public double getMsSinceLastAckSent(UUID uuid) {
+        PlayerTransactions state = players.get(uuid);
+        if (state == null) return -1;
+        synchronized (state) {
+            if (state.lastAckSentNanos == 0L) return -1;
+            return (System.nanoTime() - state.lastAckSentNanos) / 1_000_000.0;
+        }
+    }
+
     /** Number of transactions the client has not answered yet. */
     public int getPendingCount(UUID uuid) {
         PlayerTransactions state = players.get(uuid);
@@ -239,6 +278,8 @@ public class TransactionManager {
         long lastResponseNanos = 0;
         long eventSequence = 0;
         long acknowledgedSequence = 0;
+        long ackSequence = 0;
+        long lastAckSentNanos = 0L;
 
         int nextId() {
             lastId--;

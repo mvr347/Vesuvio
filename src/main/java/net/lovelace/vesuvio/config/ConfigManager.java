@@ -516,9 +516,12 @@ public final class ConfigManager {
         return config.getInt("mechanics.movement.blink.catch-up-tick-clamp", 10);
     }
 
-    /** Headroom above the packet count a legitimate client can reach on its own. */
-    public int getBlinkFlushSafetyMargin() {
-        return config.getInt("mechanics.movement.blink.flush-safety-margin", 6);
+    /**
+     * Slack on the packet-accounting budget, for packet-order slop. Not a detection threshold: the
+     * budget itself is derived from the client's catch-up clamp and the time it has acknowledged.
+     */
+    public int getBlinkBurstSlop() {
+        return config.getInt("mechanics.movement.blink.burst-slop", 2);
     }
 
     /**
