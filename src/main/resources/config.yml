@@ -411,6 +411,23 @@ mechanics:
         max-error-degrees: 1.2         # абсолютный потолок ошибки прицеливания
         min-jitter-degrees: 0.15       # минимальный "пол" естественного дрожания руки
         streak: 8
+      # 2026-09-17: сигнал против ХОРОШО humanized continuous killaura, а не только против snap.
+      # Модуль с джиттером/рандомным офсетом проходит GCD, статистику и AimConsistency (у него
+      # человеческий jerk и угол на момент атаки формально верный), но не может подделать ДВЕ вещи
+      # разом на длинном окне: (1) ошибка прицеливания человека растёт вместе со скоростью цели
+      # (не успевает довернуть) - у пересчитываемого на лету угла эта корреляция около нуля;
+      # (2) человек держит небольшое СМЕЩЁННОЕ (не центрированное) отклонение из-за особенностей
+      # своей руки - у пересчитываемого угла средняя ошибка садится в ноль. Оба условия проверяются
+      # по накопленному окну AimTrackingBuffer, а не по одной атаке - так короткий честный отрезок
+      # боя не может случайно попасть под порог.
+      tracking-lag:
+        enabled: true
+        min-samples: 24                # минимум точек в окне трекинга перед тем как судить
+        min-target-speed-degrees: 3.0  # цель должна реально двигаться - иначе сигнал неразличим
+        max-correlation: 0.15          # порог "не растёт вместе со скоростью цели"
+        max-bias-degrees: 1.0          # порог "слишком центрировано для руки человека"
+        min-tight-fraction: 0.55       # доля тиков с ошибкой <1° - держит прицел туго и стабильно
+        streak: 5
       # Общее поведение накопителя улик для всех аим-подпроверок выше (2026-09-15).
       # Раньше каждая из них считала "N попаданий ПОДРЯД" и обнулялась от одного чистого удара —
       # рандомизированной ауре достаточно вести себя по-человечески один удар из пяти, чтобы
@@ -565,6 +582,7 @@ mechanics:
     reactiontime: false      # KillauraAngleCheck's implausible reaction-time sub-flag
     targetswitch: false      # KillauraAngleCheck's multi-target switch sub-flag
     aimconsistency: false    # KillauraAngleCheck's per-player jitter-floor sub-flag
+    trackinglag: false       # KillauraAngleCheck's speed/error-correlation + bias sub-flag
     temporalconsistency: false
     banevasion: false        # Recommend keeping this visible - staff should see evasion attempts immediately
     brand-detection: true   # Анализ бренда клиента бесшумен (только снижает Trust)

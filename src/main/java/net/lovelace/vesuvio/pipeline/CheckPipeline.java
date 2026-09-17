@@ -107,7 +107,7 @@ public final class CheckPipeline {
         this.banEvasionManager = banEvasionManager;
         this.transactionManager = transactionManager;
         this.npcTrapManager = npcTrapManager;
-        this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach());
+        this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach(), transactionManager);
         this.blinkCheck = net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(config);
         this.angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck(config, hitboxTracker, transactionManager);
         this.strafeReversalCheck = new net.lovelace.vesuvio.check.statistical.StrafeReversalCheck(config);
