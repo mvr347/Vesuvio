@@ -625,7 +625,11 @@ public final class UserData {
     private volatile boolean velocityPending = false;
     private volatile int velocityTicksTracked = 0;
     private volatile double velocityObservedHorizontal = 0.0;
-    private volatile int velocityViolationStreak = 0;
+    // DecayingEvidence rather than a "3 in a row" streak - an anti-knockback that occasionally lets
+    // one hit through honestly (randomized, or simply the player forgetting to hold the counter
+    // key) used to reset a bare streak for free. See CLAUDE.md's standing rule on this.
+    private final DecayingEvidence velocityEvidence = new DecayingEvidence();
+    public DecayingEvidence getVelocityEvidence() { return velocityEvidence; }
     /**
      * Whether the client has acknowledged the pending knockback yet. The tick counter is reset at
      * that moment so the measurement window is always the same length regardless of latency -
@@ -670,9 +674,6 @@ public final class UserData {
     public void incrementVelocityTicksTracked() { this.velocityTicksTracked++; }
     public double getVelocityObservedHorizontal() { return velocityObservedHorizontal; }
     public void addVelocityObservedHorizontal(double d) { this.velocityObservedHorizontal += d; }
-    public int getVelocityViolationStreak() { return velocityViolationStreak; }
-    public void incrementVelocityViolationStreak() { this.velocityViolationStreak++; }
-    public void decrementVelocityViolationStreak() { this.velocityViolationStreak = Math.max(0, this.velocityViolationStreak - 1); }
 
     // -------------------------------------------------------------
     // Most recent tick's horizontal movement vector, used by check.combat.MoveDirectionCheck to

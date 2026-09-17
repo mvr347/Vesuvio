@@ -1,6 +1,7 @@
 package net.lovelace.vesuvio.check.movement;
 
 import net.lovelace.vesuvio.check.CheckResult;
+import net.lovelace.vesuvio.data.DecayingEvidence;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.engine.EnvironmentSnapshot;
 import net.lovelace.vesuvio.engine.TransactionManager;
@@ -52,8 +53,14 @@ public final class VelocityCheck {
      */
     private static final double MIN_EXPECTED_RATIO = 0.33;
 
-    /** Separate knockback events showing the pattern before a flag is raised. */
-    private static final int REQUIRED_STREAK = 3;
+    /**
+     * Score an evidence accumulator needs to reach before flagging - see {@link DecayingEvidence}.
+     * One suspicious knockback is still worth 1.0, so this reuses the old streak's meaning.
+     */
+    private static final double EVIDENCE_THRESHOLD = 3.0;
+    private static final int EVIDENCE_MIN_EVENTS = 3;
+    private static final double EVIDENCE_HALF_LIFE_MS = 20_000.0;
+    private static final double EVIDENCE_CLEAN_RELIEF = 0.6;
 
     /**
      * Give up on a knockback the client never acknowledges within this many ticks. The stall
@@ -113,8 +120,11 @@ public final class VelocityCheck {
         double ratio = expected <= 0 ? 1.0 : observed / expected;
         data.clearPendingVelocity();
 
+        DecayingEvidence evidence = data.getVelocityEvidence();
+        long nowNanos = System.nanoTime();
+
         if (ratio >= MIN_EXPECTED_RATIO) {
-            data.decrementVelocityViolationStreak();
+            evidence.relieve(EVIDENCE_CLEAN_RELIEF, nowNanos, EVIDENCE_HALF_LIFE_MS);
             return CheckResult.pass("Velocity");
         }
 
@@ -122,17 +132,20 @@ public final class VelocityCheck {
         // travel long before any anti-knockback client would need to - vanilla collision resolves
         // the X and Z components of that motion independently against the world every tick, same
         // as it does for ordinary walking. This reading proves nothing either way, so it must not
-        // build toward the streak: a player who gets hit into corners often (very ordinary PvP
-        // behaviour - 1v1 arenas, cornering an opponent) would otherwise accumulate a false streak
-        // purely from geometry, never from anything their client actually did.
+        // touch the accumulator at all (neither reward nor relieve): a player who gets hit into
+        // corners often (very ordinary PvP behaviour - 1v1 arenas, cornering an opponent) would
+        // otherwise accumulate false evidence purely from geometry, never from anything their
+        // client actually did.
         if (env.isHorizontallyBlocked(velX, velZ)) {
             return CheckResult.pass("Velocity");
         }
 
-        data.incrementVelocityViolationStreak();
-        if (data.getVelocityViolationStreak() < REQUIRED_STREAK) {
+        double score = evidence.reward(1.0, nowNanos, EVIDENCE_HALF_LIFE_MS);
+        if (score < EVIDENCE_THRESHOLD || evidence.events() < EVIDENCE_MIN_EVENTS) {
             return CheckResult.pass("Velocity");
         }
+
+        evidence.reset();
 
         double percent = ratio * 100.0;
         double confidence = Math.min(0.98, 0.80 + (MIN_EXPECTED_RATIO - ratio) * 0.5);
@@ -143,12 +156,13 @@ public final class VelocityCheck {
         details.put("expectedTravel", expected);
         details.put("observedTravel", observed);
         details.put("ratio", ratio);
-        details.put("streak", data.getVelocityViolationStreak());
+        details.put("score", score);
+        details.put("threshold", EVIDENCE_THRESHOLD);
 
         return CheckResult.flag("Velocity", confidence, vl,
                 String.format(Locale.US,
-                        "Absorbed server knockback (took %.0f%% of a %.2fb/t impulse over %d ticks)",
-                        percent, impulse, MEASURE_TICKS),
+                        "Absorbed server knockback (took %.0f%% of a %.2fb/t impulse over %d ticks, evidence %.1f/%.1f)",
+                        percent, impulse, MEASURE_TICKS, score, EVIDENCE_THRESHOLD),
                 details);
     }
 
