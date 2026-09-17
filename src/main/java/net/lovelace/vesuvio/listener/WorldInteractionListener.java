@@ -387,24 +387,14 @@ public final class WorldInteractionListener implements Listener {
         Block block = event.getBlock();
         UserData data = userDataManager.get(player.getUniqueId());
 
-        // BedrockBreaker exploit attempt
-        if (config.isFastBreakEnabled() && block.getType().getHardness() < 0) {
-            event.setCancelled(true);
-            if (data != null) {
-                CheckResult result = CheckResult.flag(
-                        "BedrockBreaker",
-                        0.99,
-                        25.0,
-                        "Attempted to damage unbreakable block " + block.getType().name(),
-                        Map.of("block", block.getType().name())
-                );
-                pipeline.handleFlag(player, data, result);
-                data.addVl(result.vl());
-                data.adjustRisk(30.0);
-            }
-            return;
-        }
-
+        // NOT a BedrockBreaker check: BlockDamageEvent fires the instant a survival player
+        // left-clicks ANY block, including one they cannot possibly break (bedrock, barrier -
+        // hardness < 0). Vanilla's own digging-progress math never completes for such a block, so
+        // ordinary curiosity - clicking bedrock once to see what happens - produced this event on
+        // every single click from every legitimate player, and used to be flagged here as a 0.99
+        // confidence exploit attempt. Reaching an actual BlockBreakEvent on a hardness < 0 material
+        // is what is actually impossible without a bypass; that is judged in onBlockBreak below,
+        // which is the only place this ever needs to be judged.
         if (data != null) {
             checkBlockReachAndGhostHand(player, data, block, "break");
         }
