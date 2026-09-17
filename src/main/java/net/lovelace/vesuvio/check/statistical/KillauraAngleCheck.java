@@ -304,6 +304,24 @@ public final class KillauraAngleCheck {
         }
 
         // -------------------------------------------------------------
+        // 8b. Tracking Lag: everything above this line is defeated by a well-humanized continuous
+        // killaura - jitter/random-offset passes GCD and PerfectAimLock, and the angle at the exact
+        // attack tick is genuinely correct so FOV/SilentAim never trip. But over a WINDOW of many
+        // ticks (not one attack) two things stay true regardless of humanization: a human's aiming
+        // error grows when the target's required angle moves faster (they physically lag behind a
+        // fast manoeuvre), and a human's error sits off-centre by a small, personal bias rather than
+        // averaging to zero. A recalculated angle keeps the error flat no matter how fast the target
+        // moves, and centres on zero because there is no hand behind it to bias one way. See
+        // AimFeatureExtractor features 11 (speed/error correlation) and 14 (signed mean error).
+        // -------------------------------------------------------------
+        CheckResult trackingLagResult = checkTrackingLag(data, nowNanos);
+        if (trackingLagResult != null) {
+            data.setLastAttackTarget(target.getEntityId(), nowNanos);
+            data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
+            return trackingLagResult;
+        }
+
+        // -------------------------------------------------------------
         // 9. Hit-Rotation Consistency ("StaticAimTracking"): a real-world gap discovered while
         // testing a killaura that never had to turn at all, because both players stood still -
         // none of the rotation-delta checks above (or GCDAim/StatisticalAim) can see anything
@@ -489,6 +507,70 @@ public final class KillauraAngleCheck {
 
                 evidence.reset();
                 return CheckResult.flag("AimConsistency", confidenceFor(0.86, score, threshold), 1.8, explanation, details);
+            }
+        } else {
+            evidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
+        }
+        return null;
+    }
+
+    /**
+     * Compares aim quality against target manoeuvring over the whole {@code AimTrackingBuffer}
+     * window rather than a single attack - see the call site's comment for why this is the one
+     * signal a humanized continuous killaura cannot cheaply defeat.
+     *
+     * @return {@code null} when there is not enough tracking data or the target was not moving
+     *         enough to be informative, a {@link CheckResult} (pass or flag) otherwise
+     */
+    private CheckResult checkTrackingLag(UserData data, long nowNanos) {
+        if (config == null || !config.isKillauraTrackingLagEnabled()) return null;
+
+        int trackedSamples = data.getAimTrackingBuffer().getCount();
+        int minSamples = config.getKillauraTrackingLagMinSamples();
+        if (trackedSamples < minSamples) return null;
+
+        float[] features = AimFeatureExtractor.extract(data.getAimBuffer(), data.getAimTrackingBuffer());
+        double correlation = features[11];
+        double meanTargetSpeed = features[12];
+        double tightFraction = features[13];
+        double signedBias = features[14];
+
+        double minTargetSpeed = config.getKillauraTrackingLagMinTargetSpeedDegrees();
+        if (meanTargetSpeed < minTargetSpeed) {
+            // The target barely moved - a human and a recalculated angle look identical when
+            // there is nothing to lag behind, so this window carries no information either way.
+            return null;
+        }
+
+        double maxCorrelation = config.getKillauraTrackingLagMaxCorrelation();
+        double maxBias = config.getKillauraTrackingLagMaxBiasDegrees();
+        double minTightFraction = config.getKillauraTrackingLagMinTightFraction();
+
+        DecayingEvidence evidence = data.getTrackingLagEvidence();
+        boolean suspicious = correlation < maxCorrelation
+                && Math.abs(signedBias) < maxBias
+                && tightFraction > minTightFraction;
+
+        if (suspicious) {
+            double threshold = config.getKillauraTrackingLagStreak();
+            double score = evidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
+            if (score >= threshold && evidence.events() >= evidenceMinEvents()) {
+                Map<String, Object> details = new HashMap<>();
+                details.put("correlation", correlation);
+                details.put("signedBiasDegrees", signedBias);
+                details.put("tightFraction", tightFraction);
+                details.put("meanTargetSpeedDegrees", meanTargetSpeed);
+                details.put("samples", trackedSamples);
+                details.put("score", score);
+                details.put("threshold", threshold);
+
+                String explanation = String.format(Locale.US,
+                        "Aim stays tight (%.0f%% of ticks <1°) and centred (bias %.2f°) regardless of "
+                                + "target speed (corr %.2f, target moving %.1f°/t) - evidence %.1f/%.1f",
+                        tightFraction * 100.0, signedBias, correlation, meanTargetSpeed, score, threshold);
+
+                evidence.reset();
+                return CheckResult.flag("TrackingLag", confidenceFor(0.85, score, threshold), 1.8, explanation, details);
             }
         } else {
             evidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());

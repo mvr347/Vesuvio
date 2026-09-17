@@ -719,6 +719,34 @@ public final class ConfigManager {
         return config.getInt("mechanics.combat.killaura.aim-consistency.streak", 8);
     }
 
+    public boolean isKillauraTrackingLagEnabled() {
+        return config.getBoolean("mechanics.combat.killaura.tracking-lag.enabled", true);
+    }
+
+    public int getKillauraTrackingLagMinSamples() {
+        return config.getInt("mechanics.combat.killaura.tracking-lag.min-samples", 24);
+    }
+
+    public double getKillauraTrackingLagMinTargetSpeedDegrees() {
+        return config.getDouble("mechanics.combat.killaura.tracking-lag.min-target-speed-degrees", 3.0);
+    }
+
+    public double getKillauraTrackingLagMaxCorrelation() {
+        return config.getDouble("mechanics.combat.killaura.tracking-lag.max-correlation", 0.15);
+    }
+
+    public double getKillauraTrackingLagMaxBiasDegrees() {
+        return config.getDouble("mechanics.combat.killaura.tracking-lag.max-bias-degrees", 1.0);
+    }
+
+    public double getKillauraTrackingLagMinTightFraction() {
+        return config.getDouble("mechanics.combat.killaura.tracking-lag.min-tight-fraction", 0.55);
+    }
+
+    public int getKillauraTrackingLagStreak() {
+        return config.getInt("mechanics.combat.killaura.tracking-lag.streak", 5);
+    }
+
     // -------------------------------------------------------------
     // Shared evidence-accumulator behaviour for the aim sub-checks (perfect-aim, static-tracking,
     // reaction, target-switch, aim-consistency). Each sub-check's existing `streak` value is reused

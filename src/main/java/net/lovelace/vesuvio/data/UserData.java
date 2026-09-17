@@ -1103,6 +1103,12 @@ public final class UserData {
     public int getAimConsistencyStreak() { return (int) Math.round(aimConsistencyEvidence.peek()); }
     public void resetAimConsistencyStreak() { aimConsistencyEvidence.reset(); }
 
+    // Tracking-lag evidence: does this player's aim error correlate with target speed and sit off
+    // a consistent human bias, or hold tight to a recalculated angle regardless - see
+    // KillauraAngleCheck#checkTrackingLag.
+    private final DecayingEvidence trackingLagEvidence = new DecayingEvidence();
+    public DecayingEvidence getTrackingLagEvidence() { return trackingLagEvidence; }
+
     // -------------------------------------------------------------
     // Target-relative aim tracking (see engine.AimTrackingService and
     // check.statistical.StrafeReversalCheck). Filled once per tick on the main thread while the
