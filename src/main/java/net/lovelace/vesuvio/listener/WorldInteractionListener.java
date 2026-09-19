@@ -5,6 +5,7 @@ import net.lovelace.vesuvio.config.ConfigManager;
 import net.lovelace.vesuvio.data.DecayingEvidence;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
+import net.lovelace.vesuvio.engine.EnvironmentSnapshotService;
 import net.lovelace.vesuvio.pipeline.CheckPipeline;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.GameMode;
@@ -319,7 +320,7 @@ public final class WorldInteractionListener implements Listener {
             RayTraceResult hit = player.getWorld().rayTraceBlocks(eye, direction, distance - 0.2, FluidCollisionMode.NEVER, true);
             if (hit != null && hit.getHitBlock() != null && !hit.getHitBlock().equals(block)) {
                 Block obstruction = hit.getHitBlock();
-                if (obstruction.getType().isOccluding() && !obstruction.isPassable()
+                if (EnvironmentSnapshotService.isGenuinelySolid(obstruction)
                         && !isAdjacent(obstruction, block)) {
                     CheckResult result = CheckResult.flag(
                             "GhostHand",
@@ -765,8 +766,8 @@ public final class WorldInteractionListener implements Listener {
 
         Block atBlock = to.getBlock();
         Block aboveBlock = to.clone().add(0, 1, 0).getBlock();
-        boolean insideSolid = (atBlock.getType().isOccluding() && !atBlock.isPassable())
-                || (aboveBlock.getType().isOccluding() && !aboveBlock.isPassable());
+        boolean insideSolid = EnvironmentSnapshotService.isGenuinelySolid(atBlock)
+                || EnvironmentSnapshotService.isGenuinelySolid(aboveBlock);
 
         if (!insideSolid || horizontal < VEHICLE_CLIP_MIN_HORIZONTAL) {
             data.decrementVehicleClipTicks();
