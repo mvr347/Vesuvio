@@ -9,6 +9,7 @@ import net.lovelace.vesuvio.engine.TransactionManager;
 import net.lovelace.vesuvio.feature.AimFeatureExtractor;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -146,7 +147,15 @@ public final class KillauraAngleCheck {
                 // real collision shape - so any non-null hit here already accounts for slabs,
                 // stairs, and other partial blocks correctly. isOccluding() only excluded exactly
                 // the solid-but-non-occluding case a real attacker also cannot swing through.
-                if (!b.isPassable()) {
+                //
+                // Mangrove roots (and its muddy variant) are the one material where isPassable()
+                // itself is misleading rather than merely incomplete - see
+                // EnvironmentSnapshotService#isGenuinelySolid for the concrete Phase/GhostHand false
+                // positive this same mismatch produced against a player simply chopping a mangrove
+                // tree. Combat through the same root clutter would misfire on the identical mismatch.
+                Material bType = b.getType();
+                boolean mangroveRoots = bType == Material.MANGROVE_ROOTS || bType == Material.MUDDY_MANGROVE_ROOTS;
+                if (!mangroveRoots && !b.isPassable()) {
                     double distToBlock = blockHit.getHitPosition().distance(eyeLoc.toVector());
                     if (distToBlock < distance - wallhitTolerance) {
                         Map<String, Object> details = new HashMap<>();
