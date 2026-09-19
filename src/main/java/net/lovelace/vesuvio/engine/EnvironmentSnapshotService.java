@@ -233,9 +233,9 @@ public final class EnvironmentSnapshotService {
         // isOccluding() excludes slabs, stairs, doors, trapdoors, fences, carpets and every other
         // partial or passable shape a player can legitimately stand inside, so only genuinely
         // impossible positions qualify. isPassable() is checked too because a few occluding-looking
-        // blocks are walkable, and a player standing in one is not clipping.
-        cache.insideSolidBlock = (feet.isOccluding() && !feetBlock.isPassable())
-                || (head.isOccluding() && !headBlock.isPassable());
+        // blocks are walkable, and a player standing in one is not clipping. See isGenuinelySolid
+        // for the further special-cased materials that pass this test but still are not real walls.
+        cache.insideSolidBlock = isGenuinelySolid(feetBlock) || isGenuinelySolid(headBlock);
 
         // 3x3 column around the feet: is there anything that legitimately breaks a fall, and is
         // there anything the player could legitimately be climbing or bouncing on?
@@ -268,8 +268,32 @@ public final class EnvironmentSnapshotService {
 
     /** Same "genuinely solid, not just occluding-looking" test used for {@code insideSolidBlock}. */
     private static boolean isWallBlocking(World world, int x, int y, int z) {
-        org.bukkit.block.Block block = world.getBlockAt(x, y, z);
-        return block.getType().isOccluding() && !block.isPassable();
+        return isGenuinelySolid(world.getBlockAt(x, y, z));
+    }
+
+    /**
+     * The one "is this block a real, solid obstruction" test shared by Phase/Clip, the wall-
+     * pressure detection above, {@code VehicleClip} and {@code GhostHand} (see their call sites).
+     *
+     * <p>{@code isOccluding()} is a purely visual/lighting property, and {@code isPassable()} alone
+     * still misses a real gap: a handful of materials have a partial or hollow true collision shape
+     * that Bukkit's simplified per-material flags do not model, and are reported as "occluding and
+     * not passable" even though vanilla itself lets a player stand inside, walk through, or see/
+     * reach past them.
+     *
+     * <p>Concretely: {@link Material#MANGROVE_ROOTS} (and its muddy variant) flagged an ordinary
+     * player chopping a mangrove tree for BOTH Phase (standing "inside" root clutter vanilla itself
+     * lets them occupy while working at the base of the tree) and GhostHand (a root block 2+ blocks
+     * away from the log actually being broken, which is completely normal given how densely
+     * mangrove roots cluster around a trunk, misread as a wall between the player and their axe's
+     * actual target).
+     */
+    public static boolean isGenuinelySolid(org.bukkit.block.Block block) {
+        Material type = block.getType();
+        if (type == Material.MANGROVE_ROOTS || type == Material.MUDDY_MANGROVE_ROOTS) {
+            return false;
+        }
+        return type.isOccluding() && !block.isPassable();
     }
 
     /** Blocks that make a claimed on-ground state or a survived fall plausible. */
