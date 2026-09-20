@@ -109,6 +109,13 @@
   сервера** — вызов вне контекста Paper/Spigot падает с `ExceptionInInitializerError`/
   `NoClassDefFoundError` на `org.bukkit.Registry`. В этом репо для них нет и не будет юнит-тестов —
   проверять такие правки только на живом сервере.
+- **PacketEvents shaded/relocated (`net.lovelace.vesuvio.libs.packetevents`) ломает его же
+  update-checker.** Тот пытается собрать консольное сообщение через Adventure-классы, а
+  relocation их не подхватывает - на старте всегда `NoClassDefFoundError:
+  net/kyori/adventure/util/Buildable$Builder` в фоновом потоке `packetevents-update-check-thread`.
+  Безобидно (просто не проверяет обновления), но чистый шум в логе на пустом месте, раз версии
+  зависимостей у нас и так запиноены. Гасить `PacketEvents.getAPI().getSettings()
+  .checkForUpdates(false)` СРАЗУ после `setAPI(...)`, до `.load()`.
 - WallHit: проверять `!block.isPassable()`, а НЕ `isOccluding()` — забор, решётка и стекло
   не occluding, но удар через них не проходит.
 
