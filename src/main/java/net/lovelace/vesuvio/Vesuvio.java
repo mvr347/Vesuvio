@@ -60,6 +60,16 @@ public final class Vesuvio extends JavaPlugin {
     public void onLoad() {
         // Initialize PacketEvents Spigot / Paper platform
         PacketEvents.setAPI(SpigotPacketEventsBuilder.build(this));
+
+        // PacketEvents is shaded and relocated into net.lovelace.vesuvio.libs.packetevents, and its
+        // own update checker's console message needs Adventure classes (net.kyori.adventure) that
+        // are not part of that relocation - only Paper's own copy is on the classpath, under the
+        // real net.kyori.adventure package. The checker's background thread throws
+        // NoClassDefFoundError on every startup trying to build that message. It is harmless (a
+        // background thread failing to print an update notice) but pure noise: this plugin ships
+        // pinned dependency versions, so a PacketEvents update notice for server owners was never
+        // actionable here anyway.
+        PacketEvents.getAPI().getSettings().checkForUpdates(false);
         PacketEvents.getAPI().load();
     }
 
