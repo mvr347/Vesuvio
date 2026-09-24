@@ -9,6 +9,7 @@ import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPong;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientWindowConfirmation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
+import net.lovelace.vesuvio.config.ConfigManager;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
 import net.lovelace.vesuvio.engine.TransactionManager;
@@ -38,15 +39,25 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
 
     private final UserDataManager userDataManager;
     private final TransactionManager transactionManager;
+    private final ConfigManager config;
 
-    public TransactionPacketListener(UserDataManager userDataManager, TransactionManager transactionManager) {
+    public TransactionPacketListener(UserDataManager userDataManager, TransactionManager transactionManager, ConfigManager config) {
         super(PacketListenerPriority.LOWEST);
         this.userDataManager = userDataManager;
         this.transactionManager = transactionManager;
+        this.config = config;
     }
 
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
+        // Kill-switch: with detection off, a foreign (non-ours) transaction id already falls
+        // through uncancelled below - this just makes that the unconditional behaviour instead of
+        // consuming/cancelling our own probes' replies. TransactionManager.tick() (main-thread,
+        // not a packet-listener entry point) keeps sending pings regardless - other systems such as
+        // /vesuvio debug and /vesuvio spectate latency readouts depend on it, and it does no
+        // detection or punishment work itself.
+        if (!config.isAnticheatEnabled()) return;
+
         var type = event.getPacketType();
         if (type != PacketType.Play.Client.PONG && type != PacketType.Play.Client.WINDOW_CONFIRMATION) {
             return;
@@ -71,6 +82,7 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
 
     @Override
     public void onPacketSend(PacketSendEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         if (event.getPacketType() != PacketType.Play.Server.ENTITY_VELOCITY) return;
 
         Object playerObj = event.getPlayer();

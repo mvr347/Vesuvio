@@ -23,9 +23,33 @@ public final class ConfigManager {
     private final Set<String> suspiciousBrands = new HashSet<>();
     private final Map<String, Boolean> silentChecks = new HashMap<>();
 
+    /**
+     * Global runtime kill-switch (/vesuvio toggle). Deliberately NOT read from config.yml and NOT
+     * touched by {@link #reload()} - this is a live operational toggle (staff pausing detection for
+     * an event, or to rule the anticheat itself out while chasing a false positive), not a
+     * persisted setting. It always starts {@code true} on plugin enable: a kill switch that could
+     * silently stay disabled across a restart is a security hole, not a feature. Packet listeners
+     * and {@link net.lovelace.vesuvio.pipeline.CheckPipeline}'s dispatch entry points check this
+     * before doing any packet-derived feature extraction, statistical/ONNX inference, or
+     * punishment - see the class docs on those for the exact gating points. volatile: flipped from
+     * the command-executing thread (main thread for a player sender), read from netty threads and
+     * virtual-thread checks.
+     */
+    private volatile boolean anticheatEnabled = true;
+
     public ConfigManager(Plugin plugin) {
         this.plugin = plugin;
         reload();
+    }
+
+    public boolean isAnticheatEnabled() {
+        return anticheatEnabled;
+    }
+
+    /** @return the new state, so callers (the command) can report what actually happened. */
+    public boolean setAnticheatEnabled(boolean enabled) {
+        this.anticheatEnabled = enabled;
+        return enabled;
     }
 
     public void reload() {

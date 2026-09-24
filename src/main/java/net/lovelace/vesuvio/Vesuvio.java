@@ -177,7 +177,7 @@ public final class Vesuvio extends JavaPlugin {
                 new net.lovelace.vesuvio.packet.MovementPacketListener(userDataManager, checkPipeline, virtualExecutor)
         );
         PacketEvents.getAPI().getEventManager().registerListener(
-                new net.lovelace.vesuvio.packet.TransactionPacketListener(userDataManager, transactionManager)
+                new net.lovelace.vesuvio.packet.TransactionPacketListener(userDataManager, transactionManager, configManager)
         );
         PacketEvents.getAPI().getEventManager().registerListener(brandListener);
 
