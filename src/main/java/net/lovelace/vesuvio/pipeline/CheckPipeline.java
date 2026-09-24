@@ -156,6 +156,16 @@ public final class CheckPipeline {
                         liveThreshold, shadowThreshold));
     }
 
+    /**
+     * The global kill-switch (/vesuvio toggle) - see {@link ConfigManager#isAnticheatEnabled()}.
+     * Exposed so packet listeners that only hold a reference to this pipeline (not to
+     * {@link ConfigManager} directly) can gate before doing any per-packet work at all, rather
+     * than dispatching to a virtual thread just to have this pipeline no-op there.
+     */
+    public boolean isAnticheatEnabled() {
+        return config.isAnticheatEnabled();
+    }
+
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
         return banEvasionManager;
     }
@@ -168,6 +178,8 @@ public final class CheckPipeline {
      * Processes click events from a player. Runs asynchronously.
      */
     public void processClick(Player player, UserData data) {
+        if (!config.isAnticheatEnabled()) return;
+
         // -------------------------------------------------------------
         // Layer 1: Statistical Engine (Fast, Heuristic)
         // -------------------------------------------------------------
@@ -421,6 +433,8 @@ public final class CheckPipeline {
      *                       real signed value.
      */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch, float signedDeltaYaw) {
+        if (!config.isAnticheatEnabled()) return;
+
         // KillauraAngleCheck's ReactionTime sub-check needs to know when the attacker's camera
         // last made a "real" turn, not merely received a rotation packet - tracked here since this
         // is the one place every aim update (combat or not) passes through.
@@ -545,6 +559,8 @@ public final class CheckPipeline {
      * Evaluates attack interactions: NoSwing, InventoryAttack, and Latency-Compensated Reach.
      */
     public void processAttack(Player player, int targetEntityId, UserData data) {
+        if (!config.isAnticheatEnabled()) return;
+
         // A downed/invulnerable attacker or target means a third-party plugin (revive/downed-
         // state mechanics, admin god-mode, spawn protection, etc.) is actively controlling that
         // entity's position/hitbox/state outside of normal survival rules - our combat math
@@ -719,6 +735,8 @@ public final class CheckPipeline {
      * every other combat check relies on.
      */
     public void handleNpcTrapHit(Player player, UserData data) {
+        if (!config.isAnticheatEnabled()) return;
+
         if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
 
         // The one label in the system that is not self-confirming: a legitimate client cannot see
@@ -750,6 +768,8 @@ public final class CheckPipeline {
      *                                   thread, see {@link UserData#noteReportedClientState}.
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos, boolean clientHadSomethingToReport) {
+        if (!config.isAnticheatEnabled()) return;
+
         // A third-party plugin controlling this player's state (revive/downed mechanics,
         // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside normal
         // survival physics - e.g. a "downed" player briefly falling before their temporary

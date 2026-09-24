@@ -53,6 +53,9 @@ public final class BrandPacketListener extends PacketListenerAbstract {
     }
 
     public void processBrand(Player player, String brand) {
+        // Gated here rather than only in onPacketReceive: PlayerLifecycleListener also calls this
+        // directly from PlayerJoinEvent, and the kill-switch must cover both entry paths.
+        if (!config.isAnticheatEnabled()) return;
         if (brand == null || brand.isBlank()) return;
 
         // Sanitize before storing: brand is fully attacker-controlled and later gets interpolated

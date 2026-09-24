@@ -34,6 +34,8 @@ public final class AimPacketListener extends PacketListenerAbstract {
 
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
+        if (!checkPipeline.isAnticheatEnabled()) return;
+
         var type = event.getPacketType();
 
         float yaw = 0f;

@@ -53,6 +53,8 @@ public final class ClickPacketListener extends PacketListenerAbstract {
 
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
+        if (!checkPipeline.isAnticheatEnabled()) return;
+
         var type = event.getPacketType();
 
         if (type == PacketType.Play.Client.ANIMATION) {

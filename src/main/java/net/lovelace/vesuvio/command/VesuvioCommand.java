@@ -98,6 +98,44 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                         enabled ? "<green><b>ENABLED</b></green>" : "<red><b>DISABLED</b></red>")));
             }
 
+            case "toggle" -> {
+                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.admin).</red>"));
+                    return true;
+                }
+                boolean nowEnabled = config.setAnticheatEnabled(!config.isAnticheatEnabled());
+
+                String actorName = (sender instanceof Player p) ? p.getName() : "CONSOLE";
+                String loudMessage = String.format(
+                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <white><b>ANTICHEAT %s</b></white> "
+                        + "<gray>by <gold>%s</gold></gray>",
+                        nowEnabled ? "<green>ENABLED</green>" : "<red><b>COMPLETELY DISABLED</b></red>",
+                        actorName);
+
+                // This must never be silent: a forgotten disabled anticheat is a security hole, not
+                // an operational convenience. Broadcast to every staff member who would normally see
+                // detection alerts, and unconditionally log to console at WARNING/SEVERE so it shows
+                // up even if no staff with vesuvio.alerts is online right now.
+                for (Player staff : Bukkit.getOnlinePlayers()) {
+                    if (staff.hasPermission("vesuvio.alerts") || staff.hasPermission("vesuvio.admin") || staff.isOp()) {
+                        staff.sendMessage(mm.deserialize(loudMessage));
+                    }
+                }
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage(mm.deserialize(loudMessage));
+                }
+
+                if (nowEnabled) {
+                    plugin.getLogger().warning(String.format(
+                            "[Vesuvio] Anticheat detection RE-ENABLED by %s.", actorName));
+                } else {
+                    plugin.getLogger().severe(String.format(
+                            "[Vesuvio] Anticheat detection COMPLETELY DISABLED by %s. "
+                            + "Zero packet checks, ML inference or punishments will run until /vesuvio toggle "
+                            + "is run again or the server restarts.", actorName));
+                }
+            }
+
             case "spectate" -> {
                 if (!sender.hasPermission("vesuvio.spectate") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
                     sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.spectate).</red>"));
@@ -278,6 +316,11 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "reload" -> {
+                // Deliberately does NOT touch the /vesuvio toggle kill-switch (see
+                // ConfigManager#isAnticheatEnabled): reload re-reads config.yml, an unrelated
+                // concern from a live operational pause a staff member chose on purpose. An admin
+                // who disabled detection to chase a false positive should not have a routine
+                // "tweak a threshold and reload" action silently switch it back on mid-investigation.
                 config.reload();
                 Path modelsDir = plugin.getDataFolder().toPath().resolve("models");
                 mlManager.hotReload("click_model", modelsDir.resolve("click_model.onnx"));
@@ -524,6 +567,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(mm.deserialize(
                 "<gradient:#ff4500:#ff8c00><b>================ VESUVIO 26.2 ================</b></gradient><newline>"
+                + "<gold>/vesuvio toggle</gold> <gray>- <red><b>Полностью</b></red> включить/выключить детект (kill-switch, не переживает рестарт)</gray><newline>"
                 + "<gold>/vesuvio alerts</gold> <gray>- Переключить умные оповещения в чате</gray><newline>"
                 + "<gold>/vesuvio spectate <игрок></gold> <gray>- Наблюдение в реальном времени с оверлеем</gray><newline>"
                 + "<gold>/vesuvio debug <игрок></gold> <gray>- Живая ActionBar телеметрия чеков (CPS/StdDev/AirTicks/VL...)</gray><newline>"
@@ -544,7 +588,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(List.of("alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset", "model"), args[0]);
+            return filter(List.of("toggle", "alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset", "model"), args[0]);
         }
         if (args.length == 2) {
             if ("spectate".equalsIgnoreCase(args[0]) || "debug".equalsIgnoreCase(args[0]) || "info".equalsIgnoreCase(args[0]) || "reset".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0]) || "suspect".equalsIgnoreCase(args[0])) {
