@@ -521,6 +521,14 @@ public final class WorldInteractionListener implements Listener {
             speed *= 1.0 + (hasteAmplifier + 1) * 0.2;
         }
 
+        // Server-granted dig-speed bonuses (e.g. LoveClans' Mining direction) arrive as the
+        // BLOCK_BREAK_SPEED attribute, 1.0 by default. Without it an honest player with such a bonus
+        // breaks blocks faster than the vanilla minimum computed here and collects FastBreak evidence.
+        var breakSpeed = player.getAttribute(Attribute.BLOCK_BREAK_SPEED);
+        if (breakSpeed != null && breakSpeed.getValue() > 0.0) {
+            speed *= breakSpeed.getValue();
+        }
+
         if (!player.isOnGround()) {
             speed /= 5.0;
         }
