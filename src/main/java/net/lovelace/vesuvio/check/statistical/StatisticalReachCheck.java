@@ -74,6 +74,12 @@ public final class StatisticalReachCheck {
                              UserData attackerData,
                              HitboxHistoryTracker hitboxTracker,
                              LagCompensator lagCompensator) {
+        return check(attacker, target, attackerData, hitboxTracker, lagCompensator, null);
+    }
+
+    public CheckResult check(Player attacker, org.bukkit.entity.Entity target, UserData attackerData,
+                             HitboxHistoryTracker hitboxTracker, LagCompensator lagCompensator,
+                             net.lovelace.vesuvio.engine.AttackSnapshot attack) {
         if (attacker == null || target == null) {
             return CheckResult.pass("Reach");
         }
@@ -87,32 +93,40 @@ public final class StatisticalReachCheck {
                 ? transactionManager.getTransactionPing(attacker.getUniqueId()) : -1;
         int ping = resolveEffectivePing(transactionRtt, attacker.getPing());
 
-        // Rewind target hitbox if player, or use bounding box for mobs/entities
-        HitboxHistoryTracker.BoxSnapshot targetBox;
+        // No trustworthy latency or post-teleport history means insufficient evidence.
+        if (transactionRtt < 0 || ping > 1000 || (attackerData != null && attackerData.hasRecentTeleport())) return CheckResult.pass("Reach");
+        long received = attack == null ? System.nanoTime() : attack.receivedNanos();
+        if (System.nanoTime() - received > 500_000_000L) return CheckResult.pass("Reach");
+        java.util.List<HitboxHistoryTracker.BoxSnapshot> boxes;
         if (target instanceof Player targetPlayer && hitboxTracker != null) {
-            targetBox = hitboxTracker.getRewoundBox(targetPlayer, ping);
+            boxes = hitboxTracker.attackCandidates(targetPlayer, ping, received);
         } else {
             var bb = target.getBoundingBox();
-            targetBox = new HitboxHistoryTracker.BoxSnapshot(
-                    bb.getMinX(), bb.getMinY(), bb.getMinZ(),
-                    bb.getMaxX(), bb.getMaxY(), bb.getMaxZ(),
-                    System.nanoTime()
-            );
+            boxes = java.util.List.of(new HitboxHistoryTracker.BoxSnapshot(bb.getMinX(), bb.getMinY(), bb.getMinZ(),
+                    bb.getMaxX(), bb.getMaxY(), bb.getMaxZ(), received));
         }
-
-        // Attacker eye vector
-        Location eyeLoc = attacker.getEyeLocation();
-        double distance = targetBox.distanceTo(eyeLoc.getX(), eyeLoc.getY(), eyeLoc.getZ());
-
-        // Lag and network spike compensation
-        double lagTolerance = (lagCompensator != null) ? lagCompensator.getLagToleranceMultiplier(attacker) : 1.0;
-        double pingBuffer = (ping > 150) ? 0.10 : 0.0;
-        double allowedReach = (maxBaseReach + pingBuffer) * lagTolerance;
-
-        // Dynamic sensitivity scaling based on player Trust and Risk
-        double sensitivity = (attackerData != null) ? attackerData.getSensitivityMultiplier() : 1.0;
-        if (sensitivity > 1.2) {
-            allowedReach -= 0.05; // Slightly stricter for high-risk / low-trust players
+        if (boxes.isEmpty()) return CheckResult.pass("Reach");
+        Location eyeLoc = attack == null ? attacker.getEyeLocation() : attack.eyeLocation(attacker);
+        var direction = eyeLoc.getDirection();
+        double distance = Double.POSITIVE_INFINITY;
+        for (var box : boxes) {
+            distance = Math.min(distance, box.rayDistance(eyeLoc.getX(), eyeLoc.getY(), eyeLoc.getZ(),
+                    direction.getX(), direction.getY(), direction.getZ(), 0.03));
+        }
+        // A complete ray miss is the Hitbox/KillAura check's evidence, not infinite reach.
+        if (!Double.isFinite(distance)) return CheckResult.pass("Reach");
+        var attribute = attacker.getAttribute(org.bukkit.attribute.Attribute.ENTITY_INTERACTION_RANGE);
+        double allowedReach = Math.max(maxBaseReach, attribute == null ? 3.0 : attribute.getValue()) + 0.03;
+        double lagTolerance = 1.0; // Latency selects historical frames; it does not multiply legal range.
+        long now = System.nanoTime();
+        if (distance <= allowedReach) {
+            if (attackerData != null) attackerData.reachEvidence().relieve(0.25, now, 4000);
+            return CheckResult.pass("Reach");
+        }
+        if (attackerData != null) {
+            double score = attackerData.reachEvidence().reward(Math.min(2, 0.5 + distance - allowedReach), now, 4000);
+            if (score < 3 || attackerData.reachEvidence().events() < 3) return CheckResult.pass("Reach");
+            attackerData.reachEvidence().reset();
         }
 
         if (distance > allowedReach) {
@@ -130,7 +144,7 @@ public final class StatisticalReachCheck {
             details.put("lagMultiplier", lagTolerance);
 
             String explanation = String.format(Locale.US,
-                    "Reach distance exceeded (Distance: %.2fm, Max: %.2fm, Ping: %dms, Excess: +%.2fm)",
+                    "Превышена дальность удара (расстояние: %.2f м, максимум: %.2f м, пинг: %d мс, превышение: +%.2f м)",
                     distance, allowedReach, ping, excess);
 
             return CheckResult.flag("Reach", confidence, vl, explanation, details);

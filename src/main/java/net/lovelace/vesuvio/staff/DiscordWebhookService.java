@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio.staff;
 
+import net.lovelace.vesuvio.i18n.Russian;
+
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.config.ConfigManager;
 import net.lovelace.vesuvio.data.UserData;
@@ -45,12 +47,12 @@ public final class DiscordWebhookService {
             return;
         }
 
-        // Only send if Risk Index or Confidence exceeds threshold
+        // Only send if Индекс риска or Confidence exceeds threshold
         if (data.getRiskIndex() < config.getDiscordMinRisk() && result.confidence() < 0.85) {
             return;
         }
 
-        virtualExecutor.execute(() -> {
+        net.lovelace.vesuvio.engine.AsyncTasks.run(() -> {
             try {
                 String payload = buildJsonPayload(player, data, result);
                 HttpRequest request = HttpRequest.newBuilder()
@@ -62,11 +64,14 @@ public final class DiscordWebhookService {
 
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() >= 400) {
-                    LOGGER.warning("[Vesuvio] Discord Webhook rejected alert: HTTP " + response.statusCode());
+                    LOGGER.warning("[Vesuvio] Discord отклонил оповещение: HTTP " + response.statusCode());
                 }
             } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Failed to send Discord webhook alert", e);
+                LOGGER.log(Level.WARNING, "Не удалось отправить оповещение в Discord", e);
             }
+        }, virtualExecutor).exceptionally(failure -> {
+            LOGGER.log(Level.FINE, "Оповещение Discord пропущено: очередь занята или остановлена", failure);
+            return null;
         });
     }
 
@@ -80,23 +85,23 @@ public final class DiscordWebhookService {
 
         return String.format(Locale.US, """
             {
-              "username": "Vesuvio 26.2 AntiCheat",
+              "username": "Античит Vesuvio 26.2",
               "avatar_url": "https://i.imgur.com/8QZ8GqQ.png",
               "embeds": [
                 {
-                  "title": "🌋 Detection Alert: %s",
+                  "title": "🌋 Обнаружено нарушение: %s",
                   "color": %d,
                   "thumbnail": { "url": "%s" },
                   "fields": [
-                    { "name": "Check", "value": "`%s`", "inline": true },
-                    { "name": "Risk Index", "value": "`%.0f / 100`", "inline": true },
-                    { "name": "Trust Score", "value": "`%.0f / 100`", "inline": true },
-                    { "name": "VL Added", "value": "`+%.1f` (Total: `%.0f`)", "inline": true },
-                    { "name": "ML Confidence", "value": "`%.1f%%`", "inline": true },
-                    { "name": "Client Brand", "value": "`%s`", "inline": true },
-                    { "name": "Diagnostics", "value": "%s", "inline": false }
+                    { "name": "Проверка", "value": "`%s`", "inline": true },
+                    { "name": "Индекс риска", "value": "`%.0f / 100`", "inline": true },
+                    { "name": "Уровень доверия", "value": "`%.0f / 100`", "inline": true },
+                    { "name": "Баллы нарушения", "value": "`+%.1f` (Всего: `%.0f`)", "inline": true },
+                    { "name": "Уверенность модели", "value": "`%.1f%%`", "inline": true },
+                    { "name": "Клиент", "value": "`%s`", "inline": true },
+                    { "name": "Диагностика", "value": "%s", "inline": false }
                   ],
-                  "footer": { "text": "Vesuvio 26.2 • Operations Console" },
+                  "footer": { "text": "Vesuvio 26.2 • Панель управления" },
                   "timestamp": "%s"
                 }
               ]
@@ -105,7 +110,7 @@ public final class DiscordWebhookService {
                 escapeJson(player.getName()),
                 embedColor,
                 avatarUrl,
-                escapeJson(result.checkName()),
+                escapeJson(Russian.label(result.checkName())),
                 data.getRiskIndex(),
                 data.getTrustScore(),
                 result.vl(),

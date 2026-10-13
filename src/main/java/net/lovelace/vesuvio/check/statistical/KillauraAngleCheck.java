@@ -62,26 +62,22 @@ public final class KillauraAngleCheck {
     }
 
     public CheckResult check(Player attacker, Entity target, UserData data) {
+        return check(attacker, target, data, null);
+    }
+
+    public CheckResult check(Player attacker, Entity target, UserData data,
+                             net.lovelace.vesuvio.engine.AttackSnapshot attack) {
         if (attacker == null || target == null || data == null) return CheckResult.pass("KillauraAngle");
 
         double sensitivity = (config != null && config.isKillauraDynamicSensitivityEnabled())
                 ? data.getSensitivityMultiplier() : 1.0;
 
-        // The rotation this attack actually claims, captured on the netty thread at the instant
-        // the attack packet arrived - see UserData#consumePendingAttackRotation. This runs a full
-        // tick later than that capture (target resolution needs the live entity list, main-thread
-        // only), and in that tick MORE rotation packets can arrive - including a revert, for a
-        // module whose "aim assist" is exactly one packet wide. Reading attacker.getLocation()
-        // here instead would judge the attack against whichever of those arrived last, not
-        // against what the attack packet was actually sent alongside. Position is still read live:
-        // it does not move in single-tick jumps the way rotation can be made to.
-        UserData.PendingRotation pending = data.consumePendingAttackRotation();
-        Location eyeLoc = attacker.getEyeLocation();
+        // Each attack carries its own immutable position/rotation through both scheduler hops.
+        UserData.PendingRotation pending = attack == null ? data.consumePendingAttackRotation()
+                : new UserData.PendingRotation(attack.rotationKnown(), attack.yaw(), attack.pitch());
+        Location eyeLoc = attack == null ? attacker.getEyeLocation() : attack.eyeLocation(attacker);
         float currentYaw = pending.present() ? pending.yaw() : eyeLoc.getYaw();
         float currentPitch = pending.present() ? pending.pitch() : eyeLoc.getPitch();
-        // Position from the live location, direction from the resolved (possibly attack-time)
-        // rotation - Location#getDirection() derives purely from yaw/pitch, so overwriting just
-        // those on a clone is enough without hand-rolling the trig ourselves.
         Location judgedLoc = eyeLoc.clone();
         judgedLoc.setYaw(currentYaw);
         judgedLoc.setPitch(currentPitch);
@@ -106,6 +102,19 @@ public final class KillauraAngleCheck {
         // a cheat that is actually aiming somewhere else entirely still fails every sample point.
         // -------------------------------------------------------------
         double effectiveAngle = minAngleToBox(eyeLoc, eyeDir, liveBox);
+        long received = attack == null ? System.nanoTime() : attack.receivedNanos();
+        if (data.hasRecentTeleport() || System.nanoTime() - received > 500_000_000L) return CheckResult.pass("KillauraAngle");
+        double rtt = transactionManager == null ? -1 : transactionManager.getTransactionPing(attacker.getUniqueId());
+        java.util.List<HitboxHistoryTracker.BoxSnapshot> candidates = java.util.List.of();
+        if (target instanceof Player p && hitboxTracker != null) {
+            if (rtt < 0 || rtt > 1000) return CheckResult.pass("KillauraAngle");
+            candidates = hitboxTracker.attackCandidates(p, (int) Math.round(rtt), received);
+            if (candidates.isEmpty()) return CheckResult.pass("KillauraAngle");
+            for (var box : candidates) {
+                effectiveAngle = Math.min(effectiveAngle, minAngleToBox(eyeLoc, eyeDir,
+                        new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())));
+            }
+        }
         double angleDegrees = angleTo(eyeDir, toCenter.clone().normalize());
 
         double fovLimit = scaleThresholdUp(config != null ? config.getKillauraFovLimitDegrees() : 75.0, sensitivity);
@@ -118,15 +127,15 @@ public final class KillauraAngleCheck {
         // is a number only the server can read.
         if (config != null && config.isDebug()) {
             LOGGER.info(String.format(Locale.US,
-                    "[ATTACK] %s -> %s | effectiveAngle=%.1f centerAngle=%.1f fovLimit=%.1f "
-                            + "(base %.1f / sensitivity %.2f) distance=%.2f yaw=%.1f pitch=%.1f "
-                            + "rotationSource=%s (liveYaw=%.1f livePitch=%.1f)",
+                    "[Атака] %s -> %s | угол=%.1f угол_к_центру=%.1f предел_обзора=%.1f "
+                            + "(база %.1f / чувствительность %.2f) расстояние=%.2f поворот=%.1f наклон=%.1f "
+                            + "источник_поворота=%s (текущий_поворот=%.1f текущий_наклон=%.1f)",
                     attacker.getName(),
                     target.getName() != null ? target.getName() : target.getType().name(),
                     effectiveAngle, angleDegrees, fovLimit,
                     config.getKillauraFovLimitDegrees(), sensitivity, distance,
                     currentYaw, currentPitch,
-                    pending.present() ? "attack-packet" : "live-location",
+                    pending.present() ? "пакет атаки" : "текущая позиция",
                     eyeLoc.getYaw(), eyeLoc.getPitch()));
         }
 
@@ -134,10 +143,18 @@ public final class KillauraAngleCheck {
         // 2. Line-of-Sight / WallHit Check (GrimAC / Vulcan technique)
         // -------------------------------------------------------------
         double wallhitTolerance = config != null ? config.getKillauraWallhitTolerance() : 0.35;
-        if (distance > 0.8) {
-            Vector toCenterNorm = toCenter.clone().normalize();
+        var liveIntersection = liveBox.clone().expand(0.03).rayTrace(eyeLoc.toVector(), eyeDir, 6.0);
+        double sightDistance = liveIntersection == null ? Double.POSITIVE_INFINITY
+                : liveIntersection.getHitPosition().distance(eyeLoc.toVector());
+        for (var candidate : candidates) {
+            sightDistance = Math.min(sightDistance, candidate.rayDistance(eyeLoc.getX(), eyeLoc.getY(), eyeLoc.getZ(),
+                    eyeDir.getX(), eyeDir.getY(), eyeDir.getZ(), 0.03));
+        }
+        if (Double.isFinite(sightDistance) && sightDistance > 0.8) {
+            // Trace to the actual attack ray/box intersection. A blocked centre point does
+            // not imply the target's visible shoulder is blocked.
             RayTraceResult blockHit = attacker.getWorld().rayTraceBlocks(
-                    eyeLoc, toCenterNorm, distance, FluidCollisionMode.NEVER, true
+                    eyeLoc, eyeDir, sightDistance, FluidCollisionMode.NEVER, true
             );
             if (blockHit != null && blockHit.getHitBlock() != null) {
                 Block b = blockHit.getHitBlock();
@@ -157,14 +174,14 @@ public final class KillauraAngleCheck {
                 boolean mangroveRoots = bType == Material.MANGROVE_ROOTS || bType == Material.MUDDY_MANGROVE_ROOTS;
                 if (!mangroveRoots && !b.isPassable()) {
                     double distToBlock = blockHit.getHitPosition().distance(eyeLoc.toVector());
-                    if (distToBlock < distance - wallhitTolerance) {
+                    if (distToBlock < sightDistance - wallhitTolerance) {
                         Map<String, Object> details = new HashMap<>();
                         details.put("block", b.getType().name());
                         details.put("distToBlock", distToBlock);
                         details.put("distToTarget", distance);
 
                         String explanation = String.format(Locale.US,
-                                "Attack through solid obstacle %s (Block: %.2fm, Target: %.2fm)",
+                                "Атака сквозь сплошное препятствие %s (блок: %.2f м, цель: %.2f м)",
                                 b.getType().name(), distToBlock, distance);
 
                         return CheckResult.flag("WallHit", 0.98, 3.5, explanation, details);
@@ -194,6 +211,23 @@ public final class KillauraAngleCheck {
         }
         BoundingBox targetBox = rewoundBox.clone().expand(hitboxExpand + pingBuffer);
         RayTraceResult crosshairHit = targetBox.rayTrace(eyeLoc.toVector(), eyeDir, 6.0);
+        for (var box : candidates) {
+            BoundingBox candidate = new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())
+                    .expand(hitboxExpand + pingBuffer);
+            RayTraceResult hit = candidate.rayTrace(eyeLoc.toVector(), eyeDir, 6.0);
+            if (hit != null) { crosshairHit = hit; break; }
+        }
+        if (crosshairHit == null && rtt >= 0 && rtt < 500) {
+            double score = data.hitboxEvidence().reward(1, received, 3000);
+            if (score >= 4 && data.hitboxEvidence().events() >= 4) {
+                data.hitboxEvidence().reset();
+                return CheckResult.flag("Hitbox", 0.92, 2.5,
+                        "Повторные атаки мимо всех хитбоксов с учётом задержки",
+                        Map.of("angle", effectiveAngle, "ping", rtt, "candidates", candidates.size()));
+            }
+        } else {
+            data.hitboxEvidence().relieve(0.25, received, 3000);
+        }
 
         double silentAimAngle = scaleThresholdUp(config != null ? config.getKillauraSilentAimAngleDegrees() : 45.0, sensitivity);
         if (crosshairHit == null && effectiveAngle > silentAimAngle) {
@@ -204,7 +238,7 @@ public final class KillauraAngleCheck {
             details.put("transactionRttMs", transactionRtt);
 
             String explanation = String.format(Locale.US,
-                    "Crosshair completely off rewound target hitbox (Angle: %.1f°, Ping: %dms)",
+                    "Прицел полностью вне хитбокса цели с учётом задержки (угол: %.1f°, пинг: %d мс)",
                     effectiveAngle, effectivePing);
 
             return CheckResult.flag("SilentAim", 0.94, 2.5, explanation, details);
@@ -222,7 +256,7 @@ public final class KillauraAngleCheck {
             details.put("fovLimit", fovLimit);
 
             String explanation = String.format(Locale.US,
-                    "Attack outside field of view (Angle: %.1f°, Max: %.1f°)", effectiveAngle, fovLimit);
+                    "Атака вне поля зрения (угол: %.1f°, максимум: %.1f°)", effectiveAngle, fovLimit);
 
             data.resetPerfectAimStreak();
             data.resetAimConsistencyStreak();
@@ -285,7 +319,7 @@ public final class KillauraAngleCheck {
                 details.put("target", target.getName() != null ? target.getName() : target.getType().name());
 
                 String explanation = String.format(Locale.US,
-                        "Inhuman aim-lock precision: %.1f evidence over %d hits (threshold %.1f, Angle: %.3f°)",
+                        "Неестественная точность удержания прицела: %.1f свидетельств за %d ударов (порог %.1f, угол: %.3f°)",
                         score, perfectAimEvidence.events(), perfectAimThreshold, effectiveAngle);
 
                 perfectAimEvidence.reset();
@@ -368,7 +402,7 @@ public final class KillauraAngleCheck {
                     details.put("hitsEvaluated", staticEvidence.events());
 
                     String explanation = String.format(Locale.US,
-                            "Tracked a moving target (Δ%.1f°) with a frozen camera (Δ%.2f°) while still hitting (Angle: %.1f°, evidence %.1f/%.1f)",
+                            "Слежение за движущейся целью (Δ%.1f°) без поворота камеры (Δ%.2f°) с попаданиями (угол: %.1f°, свидетельства %.1f/%.1f)",
                             targetAngularDelta, playerAngularDelta, effectiveAngle, score, staticThreshold);
 
                     staticEvidence.reset();
@@ -424,7 +458,7 @@ public final class KillauraAngleCheck {
                 details.put("sinceLastAttackMs", sinceLastAttackMs);
 
                 String explanation = String.format(Locale.US,
-                        "Switched attack target (required Δ%.1f°) with almost no look movement (Δ%.2f°) within %.0fms, evidence %.1f/%.1f",
+                        "Смена цели атаки (нужен поворот Δ%.1f°) почти без движения камеры (Δ%.2f°) за %.0f мс, свидетельства %.1f/%.1f",
                         requiredDelta, lookDelta, sinceLastAttackMs, score, threshold);
 
                 evidence.reset();
@@ -467,7 +501,7 @@ public final class KillauraAngleCheck {
                 details.put("attacksEvaluated", evidence.events());
 
                 String explanation = String.format(Locale.US,
-                        "Attack landed %.0fms after last meaningful turn (min human ~%.0fms), evidence %.1f/%.1f over %d attacks",
+                        "Атака через %.0f мс после последнего заметного поворота (минимум человека около %.0f мс), свидетельства %.1f/%.1f за %d атак",
                         reactionMs, minReactionMs, score, threshold, evidence.events());
 
                 evidence.reset();
@@ -511,7 +545,7 @@ public final class KillauraAngleCheck {
                 details.put("target", target.getName() != null ? target.getName() : target.getType().name());
 
                 String explanation = String.format(Locale.US,
-                        "Aim error (%.2f°) keeps landing under this player's own mouse-jitter floor (%.2f°): evidence %.1f/%.1f over %d hits",
+                        "Ошибка прицеливания (%.2f°) стабильно ниже собственного дрожания мыши игрока (%.2f°): свидетельства %.1f/%.1f за %d ударов",
                         effectiveAngle, jitterFloor, score, threshold, evidence.events());
 
                 evidence.reset();
@@ -574,8 +608,8 @@ public final class KillauraAngleCheck {
                 details.put("threshold", threshold);
 
                 String explanation = String.format(Locale.US,
-                        "Aim stays tight (%.0f%% of ticks <1°) and centred (bias %.2f°) regardless of "
-                                + "target speed (corr %.2f, target moving %.1f°/t) - evidence %.1f/%.1f",
+                        "Прицел остаётся точным (%.0f%% тактов с ошибкой <1°) и центрированным (смещение %.2f°) независимо от "
+                                + "скорости цели (корреляция %.2f, движение %.1f°/такт) — свидетельства %.1f/%.1f",
                         tightFraction * 100.0, signedBias, correlation, meanTargetSpeed, score, threshold);
 
                 evidence.reset();

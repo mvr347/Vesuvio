@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio.staff;
 
+import net.lovelace.vesuvio.i18n.Russian;
+
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.lovelace.vesuvio.check.CheckResult;
@@ -51,13 +53,13 @@ public final class SmartAlertService {
 
         // Build feature hover tooltip in Russian
         StringBuilder hover = new StringBuilder("<gold><b>Диагностика нарушения</b></gold><newline>");
-        hover.append("<gray>Проверка:</gray> <white>").append(result.checkName()).append("</white><newline>");
+        hover.append("<gray>Проверка:</gray> <white>").append(Russian.label(result.checkName())).append("</white><newline>");
         hover.append("<gray>Уверенность:</gray> <yellow>").append(String.format(Locale.US, "%.1f%%", result.confidence() * 100)).append("</yellow><newline>");
         hover.append("<gray>Причина:</gray> <white>").append(result.explanation()).append("</white><newline>");
         hover.append("<dark_gray>--------------------</dark_gray><newline>");
 
         for (Map.Entry<String, Object> entry : result.details().entrySet()) {
-            hover.append("<gray>").append(entry.getKey()).append(":</gray> <yellow>").append(entry.getValue()).append("</yellow><newline>");
+            hover.append("<gray>").append(Russian.label(entry.getKey())).append(":</gray> <yellow>").append(Russian.value(entry.getValue())).append("</yellow><newline>");
         }
         hover.append("<dark_gray>--------------------</dark_gray><newline>");
         hover.append("<gray>Клиент:</gray> <aqua>").append(data.getClientBrand()).append("</aqua><newline>");
@@ -70,7 +72,7 @@ public final class SmartAlertService {
                 + "<click:run_command:'/vesuvio spectate %s'><hover:show_text:'%s'>"
                 + "<white><bold>%s</bold></white> <gray>провалил</gray> <gold>%s</gold> "
                 + "<dark_gray>(</dark_gray><yellow>%s</yellow><dark_gray>)</dark_gray> "
-                + "<red><bold>[VL: %.0f]</bold></red> "
+                + "<red><bold>[Нарушения: %.0f]</bold></red> "
                 + "<dark_red><bold>[Риск: %.0f]</bold></dark_red></hover></click> "
                 + "<dark_gray>|</dark_gray> "
                 + "<aqua>[<click:run_command:'/vesuvio spectate %s'><hover:show_text:'<aqua>Следить в реальном времени</aqua>'>👁</click>]</aqua> "
@@ -79,7 +81,7 @@ public final class SmartAlertService {
                 player.getName(),
                 hover.toString().replace("'", "\\'"),
                 player.getName(),
-                result.checkName(),
+                Russian.label(result.checkName()),
                 result.explanation(),
                 data.getVl(),
                 data.getRiskIndex(),

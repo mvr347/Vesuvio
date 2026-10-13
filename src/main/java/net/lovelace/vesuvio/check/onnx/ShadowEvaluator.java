@@ -117,12 +117,12 @@ public final class ShadowEvaluator {
     public String describe(String modelName) {
         Stats stats = statsByModel.get(modelName);
         if (stats == null || stats.samples() == 0) {
-            return modelName + ": no paired inferences recorded yet";
+            return modelName + ": парных вычислений пока нет";
         }
         long minutes = Math.max(1L, (System.currentTimeMillis() - stats.startedAtMillis()) / 60_000L);
         return String.format(Locale.US,
-                "%s: %d paired inferences over %dm | agreement %.1f%% | live flags %d, candidate flags %d "
-                        + "(ratio %.2fx) | candidate-only %d, live-only %d | mean |Δp| %.3f",
+                "%s: %d парных вычислений за %d мин | совпадение %.1f%% | срабатываний действующей модели %d, кандидата %d "
+                        + "(отношение %.2fx) | только у кандидата %d, только у действующей %d | среднее |Δp| %.3f",
                 modelName, stats.samples(), minutes, stats.agreementRate() * 100,
                 stats.liveFlags(), stats.shadowFlags(), stats.flagRateRatio(),
                 stats.shadowOnlyFlags(), stats.liveOnlyFlags(), stats.meanAbsoluteDelta());

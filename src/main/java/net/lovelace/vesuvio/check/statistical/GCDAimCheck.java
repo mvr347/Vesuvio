@@ -66,7 +66,7 @@ public final class GCDAimCheck {
                 details.put("streak", data.getGcdSuspiciousStreak());
 
                 String explanation = String.format(Locale.US,
-                        "Invalid mouse quantization streak: %d (ΔYaw: %.2f°, ΔPitch: %.2f°, GCD: %.6f)",
+                        "Серия некорректной дискретизации мыши: %d (поворот: %.2f°, наклон: %.2f°, НОД: %.6f)",
                         data.getGcdSuspiciousStreak(), deltaYaw, deltaPitch, gcd);
 
                 // Reset streak so we don't spam 20 alerts per second

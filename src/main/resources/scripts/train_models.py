@@ -84,7 +84,7 @@ DOMAIN_FEATURE_COUNT = {
 
 
 def fail(message: str) -> None:
-    print(f"ERROR: {message}", file=sys.stderr)
+    print(f"ОШИБКА: {message}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -94,7 +94,7 @@ def load_dependencies():
     try:
         import numpy as np  # noqa: F401
     except ImportError:
-        fail("numpy is not installed. Run: pip install -r requirements.txt")
+        fail("numpy не установлен. Выполните: pip install -r requirements.txt")
     try:
         from sklearn.linear_model import LogisticRegression  # noqa: F401
         from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: F401
@@ -108,12 +108,12 @@ def load_dependencies():
         )
         from sklearn.calibration import CalibratedClassifierCV  # noqa: F401
     except ImportError:
-        fail("scikit-learn is not installed. Run: pip install -r requirements.txt")
+        fail("scikit-learn не установлен. Выполните: pip install -r requirements.txt")
     try:
         from skl2onnx import convert_sklearn  # noqa: F401
         from skl2onnx.common.data_types import FloatTensorType  # noqa: F401
     except ImportError:
-        fail("skl2onnx is not installed. Run: pip install -r requirements.txt")
+        fail("skl2onnx не установлен. Выполните: pip install -r requirements.txt")
 
     import numpy as np
     from sklearn.linear_model import LogisticRegression
@@ -169,7 +169,7 @@ def build_model(model_type: str, deps, calibrate: bool = False):
             )
         except TypeError:
             # class_weight landed in scikit-learn 1.2; older versions still work, just unbalanced.
-            print("[warn] this scikit-learn is too old for HistGB class_weight - training unbalanced")
+            print("[Внимание] Версия scikit-learn не поддерживает class_weight для HistGB — обучение без балансировки")
             classifier = HistGradientBoostingClassifier(
                 max_iter=150, max_depth=6, learning_rate=0.08,
                 l2_regularization=0.1, random_state=42,
@@ -187,7 +187,7 @@ def build_model(model_type: str, deps, calibrate: bool = False):
         LogisticRegression = deps["LogisticRegression"]
         classifier = LogisticRegression(class_weight="balanced", max_iter=2000)
     else:
-        fail(f"unknown --model-type '{model_type}' (expected logistic, histgb, or mlp)")
+        fail(f"неизвестный --model-type '{model_type}' (ожидается logistic, histgb или mlp)")
         return None  # unreachable, keeps type checkers happy
 
     if calibrate:
@@ -246,8 +246,8 @@ def load_dataset(dataset_path: Path, domain: str, feature_count: int):
                         if len(c) > 1 and c[0] == "f" and c[1:].isdigit())
         usable = min(available, feature_count)
         if available and available < feature_count:
-            print(f"[{domain}] dataset carries {available} feature columns, model expects "
-                  f"{feature_count} - padding the missing ones with zeros")
+            print(f"[{domain}] набор данных содержит {available} столбцов признаков, модель ожидает "
+                  f"{feature_count} — недостающие столбцы заполнены нулями")
 
         for row in reader:
             if row.get("domain") != domain:
@@ -461,8 +461,8 @@ def fit_model(model, X, y, weights):
         model.fit(X, y, classifier__sample_weight=weights)
         return True
     except (TypeError, ValueError) as exc:
-        print(f"[warn] {type(final_step).__name__} rejected per-sample weights "
-              f"({type(exc).__name__}) - training unweighted, age decay not applied")
+        print(f"[Внимание] {type(final_step).__name__} отклонил веса образцов "
+              f"({type(exc).__name__}) — обучение без весов и затухания по возрасту")
         model.fit(X, y)
         return False
 
@@ -479,11 +479,11 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: 
     n_cheat = sum(1 for l in labels if l == 1)
     n_legit = sum(1 for l in labels if l == 0)
     n_external = sum(1 for s in sources if s in EXTERNAL_SOURCES)
-    print(f"[{domain}] loaded {len(features)} samples ({n_cheat} cheat, {n_legit} legit, "
-          f"{n_external} externally labelled)")
+    print(f"[{domain}] загружено {len(features)} образцов (чит: {n_cheat}, честная игра: {n_legit}, "
+          f"размечено извне: {n_external})")
 
     if n_cheat < 5 or n_legit < 5:
-        print(f"[{domain}] not enough samples of both classes to train a meaningful model, skipping")
+        print(f"[{domain}] недостаточно образцов обоих классов для обучения, пропуск")
         return False
 
     X = np.array(features, dtype=np.float32)
@@ -491,8 +491,8 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: 
 
     weights = age_weights(timestamps, half_life_days, deps)
     model = build_model(model_type, deps, calibrate)
-    print(f"[{domain}] training model-type={model_type}"
-          f"{' (sigmoid-calibrated)' if calibrate else ''}")
+    print(f"[{domain}] обучение модели типа {model_type}"
+          f"{' (с сигмоидальной калибровкой)' if calibrate else ''}")
 
     report = {
         "domain": domain,
@@ -510,7 +510,7 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: 
     if split is None:
         # Not enough distinct players to hold any out. Train on everything, but say plainly that
         # the model is unvalidated - the Java side refuses to publish on that basis.
-        print(f"[{domain}] WARNING: too few distinct players to hold any out - model is UNVALIDATED")
+        print(f"[{domain}] ВНИМАНИЕ: слишком мало разных игроков для отдельной проверочной выборки — модель НЕ ПРОШЛА ВАЛИДАЦИЮ")
         weighted = fit_model(model, X, y, weights)
         report["validated"] = False
         report["age_weighted"] = weighted
@@ -530,19 +530,19 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: 
                                      operating["threshold"], deps)
         report["calibration"] = calibration
         report["ping_slices"] = ping_slices
-        print(f"[{domain}] calibration: brier={calibration['brier']:.4f} ece={calibration['ece']:.4f}")
+        print(f"[{domain}] калибровка: оценка Брайера={calibration['brier']:.4f} ошибка калибровки={calibration['ece']:.4f}")
         for sl in ping_slices:
-            precision = "n/a" if sl["precision"] is None else f"{sl['precision']:.3f}"
-            recall = "n/a" if sl["recall"] is None else f"{sl['recall']:.3f}"
-            print(f"[{domain}]   ping {sl['band']}: n={sl['samples']} ({sl['cheat_samples']} cheat) "
-                  f"precision={precision} recall={recall} fp={sl['false_positives']}")
+            precision = "нет данных" if sl["precision"] is None else f"{sl['precision']:.3f}"
+            recall = "нет данных" if sl["recall"] is None else f"{sl['recall']:.3f}"
+            print(f"[{domain}]   пинг {sl['band']}: n={sl['samples']} (чит: {sl['cheat_samples']}) "
+                  f"точность={precision} полнота={recall} ложных срабатываний={sl['false_positives']}")
 
         n_train_players = len(set(np.array(groups)[train_idx].tolist()))
         n_test_players = len(set(np.array(groups)[test_idx].tolist()))
-        print(f"[{domain}] group holdout: {n_train_players} train players / {n_test_players} test players")
-        print(f"[{domain}] PR-AUC={pr_auc:.3f} | at FPR<={max_fpr:.4f}: "
-              f"recall={operating['recall']:.3f} precision={operating['precision']:.3f} "
-              f"threshold={operating['threshold']:.3f}")
+        print(f"[{domain}] разделение по игрокам: {n_train_players} для обучения / {n_test_players} для проверки")
+        print(f"[{domain}] PR-AUC={pr_auc:.3f} | при доле ложных срабатываний <={max_fpr:.4f}: "
+              f"полнота={operating['recall']:.3f} точность={operating['precision']:.3f} "
+              f"порог={operating['threshold']:.3f}")
 
         report["validated"] = True
         report["pr_auc"] = pr_auc
@@ -579,9 +579,9 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: 
         detail = " ".join(str(exc).split())
         if len(detail) > 300:
             detail = detail[:300] + " ..."
-        print(f"[{domain}] ERROR: model type '{model_type}' could not be exported to ONNX with the "
-              f"installed skl2onnx/scikit-learn: {type(exc).__name__}: {detail}", file=sys.stderr)
-        print(f"[{domain}] Use --model-type logistic (or mlp), or upgrade skl2onnx, then retry.",
+        print(f"[{domain}] ОШИБКА: модель типа '{model_type}' не удалось экспортировать в ONNX с "
+              f"установленными skl2onnx/scikit-learn: {type(exc).__name__}: {detail}", file=sys.stderr)
+        print(f"[{domain}] Укажите --model-type logistic (или mlp), либо обновите skl2onnx и повторите.",
               file=sys.stderr)
         return False
 
@@ -594,39 +594,39 @@ def train_domain(domain: str, dataset_path: Path, output_dir: Path, model_type: 
     with report_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
-    print(f"[{domain}] wrote {output_path} and {report_path.name}")
+    print(f"[{domain}] записаны {output_path} и {report_path.name}")
     return True
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Vesuvio ONNX models from the auto-collected dataset.")
-    parser.add_argument("--dataset", required=True, type=Path, help="Path to the dataset CSV.")
-    parser.add_argument("--output-dir", required=True, type=Path, help="Directory to write <domain>_model.onnx into.")
-    parser.add_argument("--domains", required=True, help="Comma-separated domains to train (click,aim).")
+    parser = argparse.ArgumentParser(description="Обучение моделей ONNX Vesuvio на автоматически собранных образцах.")
+    parser.add_argument("--dataset", required=True, type=Path, help="Путь к набору данных CSV.")
+    parser.add_argument("--output-dir", required=True, type=Path, help="Каталог для записи <domain>_model.onnx.")
+    parser.add_argument("--domains", required=True, help="Типы моделей для обучения через запятую (click,aim).")
     parser.add_argument("--model-type", default="logistic", choices=["logistic", "histgb", "mlp"],
-                         help="Classifier type (default: logistic, backward compatible).")
+                         help="Тип классификатора (по умолчанию logistic).")
     parser.add_argument("--max-fpr", default=0.001, type=float,
-                         help="False-positive budget the operating threshold is chosen against "
-                              "(default: 0.001, i.e. 1 in 1000 clean windows).")
+                         help="Допустимая доля ложных срабатываний для выбора порога "
+                              "(по умолчанию 0.001, то есть 1 из 1000 окон честной игры).")
     parser.add_argument("--half-life-days", default=30.0, type=float,
-                         help="Age at which a sample counts half as much during training. The cheat "
-                              "landscape turns over, so old rows should not outvote recent ones. "
-                              "0 disables age weighting entirely (default: 30).")
+                         help="Возраст, при котором вес образца уменьшается вдвое. Старые образцы "
+                              "не должны перевешивать новые, поскольку поведение читов меняется. "
+                              "0 отключает затухание (по умолчанию 30 дней).")
     parser.add_argument("--calibrate", action="store_true",
-                         help="Wrap the classifier in sigmoid (Platt) calibration so its output "
-                              "probability can be read at face value - a reported 0.9 really means "
-                              "~90%% of such windows are cheats. Recommended with --model-type histgb "
-                              "or mlp, whose raw scores are pushed toward 0/1.")
+                         help="Сигмоидальная калибровка Платта для интерпретации результата "
+                              "как вероятности: значение 0.9 должно соответствовать "
+                              "~90%% читерских окон. Рекомендуется с --model-type histgb "
+                              "или mlp, чьи исходные оценки смещены к 0/1.")
     args = parser.parse_args()
 
     if not args.dataset.exists():
-        fail(f"dataset file not found: {args.dataset}")
+        fail(f"файл набора данных не найден: {args.dataset}")
 
     deps = load_dependencies()
 
     domains = [d.strip() for d in args.domains.split(",") if d.strip()]
     if not domains:
-        fail("--domains produced an empty list")
+        fail("--domains задаёт пустой список")
 
     any_trained = False
     for domain in domains:
@@ -635,8 +635,8 @@ def main() -> None:
             any_trained = True
 
     if not any_trained:
-        fail("no domain produced a model - see the per-domain messages above "
-             "(not enough data, or ONNX export failed)")
+        fail("не создано ни одной модели — проверьте сообщения выше "
+             "(недостаточно данных или ошибка экспорта ONNX)")
 
 
 if __name__ == "__main__":

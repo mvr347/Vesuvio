@@ -7,13 +7,18 @@
 settings:
   prefix: "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> "
   debug: false
+  # Настройки потоков применяются после перезапуска сервера.
   virtual-threads: true
+  # Максимум принятых фоновых задач; при перегрузке новые задачи пропускаются.
+  max-background-tasks: 2048
+  # Одновременные вычисления ONNX. Если ключ отсутствует — половина ядер, максимум 4.
+  inference-parallelism: 2
 
 # ------------------------------------------------------------------------------
 # 1. УРОВНИ ОБНАРУЖЕНИЯ (Гибридный 3-уровневый движок)
 # ------------------------------------------------------------------------------
 layers:
-  # Уровень 1: Быстрые статистические эвристики (Zero-Allocation, Netty/Worker)
+  # Уровень 1: Быстрые статистические эвристики (без лишних выделений памяти, сетевой/фоновый поток)
   statistical:
     enabled: true
     weight: 1.0
@@ -37,20 +42,16 @@ layers:
         threshold: 0.80
         weight: 1.4
         input-name: "float_input"
-      # No reach_model / scaffold_model here on purpose: nobody has trained those yet, and a
-      # config entry with no matching .onnx file and no code path is just a lie about what the
-      # plugin does. Reach and Scaffold are covered today by the statistical layer instead
-      # (mechanics.reach, WorldInteractionListener's Scaffold heuristic). Add a real entry back
-      # here once an actual trained model exists.
+      # Моделей reach_model и scaffold_model пока нет: дальность удара и строительство
+      # проверяются статистическими эвристиками. Добавляйте модель только вместе
+      # с обученным файлом ONNX и кодом её вызова.
 
-    # Fully automatic retraining of click_model.onnx / aim_model.onnx from the live,
-    # continuously-collected dataset (see check.selflearning.AutoDatasetCollector and
-    # check.onnx.ModelAutoTrainer). Runs a bundled Python script (scripts/train_models.py,
-    # extracted to the plugin folder on startup) on a schedule and hot-reloads the result -
-    # no manual export/train/import steps. Needs Python 3 + scikit-learn + skl2onnx installed
-    # on the server host (see scripts/requirements.txt); if missing, this logs clear setup
-    # instructions once and the rest of the plugin (including the always-on, pure-Java
-    # OnlineClassifier self-learning layer) keeps working unaffected.
+    # Автоматическое обучение моделей кликов и прицеливания на собранных образцах.
+    # Встроенный scripts/train_models.py извлекается в каталог плагина, запускается
+    # по расписанию, а полученные модели перезагружаются без остановки сервера.
+    # Требуются Python 3, scikit-learn и skl2onnx (см. scripts/requirements.txt).
+    # При отсутствии зависимостей в журнал выводится инструкция установки.
+    # Встроенный самообучающийся классификатор Java продолжает работать.
     auto-retrain:
       enabled: true
       interval-hours: 24
@@ -668,10 +669,10 @@ punishments:
       command: ""
     60:
       action: "kick"
-      command: "kick %player% <red>[Vesuvio] Обнаружена подозрительная боевая активность (VL: %vl%).</red>"
+      command: "kick %player% <red>[Vesuvio] Обнаружена подозрительная боевая активность (нарушения: %vl%).</red>"
     100:
       action: "ban"
-      command: "ban %player% 14d <red>[Vesuvio] Использование стороннего ПО в PvP (ML: %ml% | Риск: %risk%). Апелляция: discord.gg/example</red>"
+      command: "ban %player% 14d <red>[Vesuvio] Использование стороннего ПО в PvP (модель: %ml% | риск: %risk%). Апелляция: discord.gg/example</red>"
 
 # ------------------------------------------------------------------------------
 # 6. ВЕБ-ПАНЕЛЬ УПРАВЛЕНИЯ И REST API

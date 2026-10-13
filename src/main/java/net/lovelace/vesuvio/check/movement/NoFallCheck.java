@@ -47,7 +47,7 @@ public final class NoFallCheck {
                 details.put("streak", data.getNoFallStreak());
 
                 return CheckResult.flag("NoFall", 0.96, 3.0,
-                        String.format("Spoofed ground state while falling (ΔY: %.2f)", deltaY),
+                        String.format("Подмена состояния земли во время падения (ΔY: %.2f)", deltaY),
                         details);
             }
         } else {

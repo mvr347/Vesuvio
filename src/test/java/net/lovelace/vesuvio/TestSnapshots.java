@@ -34,6 +34,8 @@ final class TestSnapshots {
         private boolean sprinting = true;
         private boolean jumpBoost = false;
         private double jumpStrength = 0.42; // vanilla Attribute.JUMP_STRENGTH default
+        private double movementSpeed = 0.1;
+        Builder movementSpeed(double value) { movementSpeed = value; return this; }
         private boolean gliding = false;
         private boolean blockedPosX = false;
         private boolean blockedNegX = false;
@@ -72,7 +74,7 @@ final class TestSnapshots {
                     // depthStrider, soulSpeed
                     0, 0,
                     // jumpStrength
-                    jumpStrength,
+                    movementSpeed, jumpStrength,
                     // containerOpen, openInventoryType
                     false, "CRAFTING");
         }

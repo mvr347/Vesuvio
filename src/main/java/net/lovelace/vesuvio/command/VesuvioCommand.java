@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio.command;
 
+import net.lovelace.vesuvio.i18n.Russian;
+
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.lovelace.vesuvio.check.onnx.MLManager;
@@ -41,6 +43,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     private final net.lovelace.vesuvio.config.PresetManager presetManager;
     private final net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
     private final net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
+    private final net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics;
     private final MiniMessage mm = MiniMessage.miniMessage();
 
     public VesuvioCommand(Plugin plugin,
@@ -54,7 +57,9 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                           net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
                           net.lovelace.vesuvio.config.PresetManager presetManager,
                           net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager,
-                          net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer) {
+                          net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer,
+                          net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics) {
+        this.diagnostics = diagnostics;
         this.plugin = plugin;
         this.config = config;
         this.userDataManager = userDataManager;
@@ -73,7 +78,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
             if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                sender.sendMessage(mm.deserialize("<red>You do not have permission to execute this command.</red>"));
+                sender.sendMessage(mm.deserialize("<red>У вас нет права выполнять эту команду.</red>"));
                 return true;
             }
             sendHelp(sender);
@@ -83,66 +88,98 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
         String sub = args[0].toLowerCase();
 
         switch (sub) {
+            case "log" -> {
+                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                    sender.sendMessage(Component.text("Нужно право vesuvio.admin."));
+                    return true;
+                }
+                String action = args.length == 2 ? args[1].toLowerCase(Locale.ROOT) : "status";
+                if (args.length > 2 || !List.of("on", "off", "status").contains(action)) {
+                    sender.sendMessage(Component.text("Использование: /vesuvio log [on|off|status]"));
+                    return true;
+                }
+                if (action.equals("on")) {
+                    try {
+                        Path path = diagnostics.start();
+                        sender.sendMessage(Component.text("[Vesuvio] Запись срабатываний включена для всех игроков. Файл: " + path
+                                + "\nДля теста без наказаний: /vesuvio punishment off. Завершить запись: /vesuvio log off."));
+                    } catch (java.io.IOException failure) {
+                        sender.sendMessage(Component.text("[Vesuvio] Не удалось включить журнал: " + failure.getMessage()));
+                    }
+                } else if (action.equals("off")) {
+                    diagnostics.stop();
+                    sender.sendMessage(Component.text("[Vesuvio] Приём новых записей остановлен. Оставшиеся записи сохраняются; проверьте /vesuvio log status перед отправкой файла."));
+                }
+                var status = diagnostics.status();
+                sender.sendMessage(Component.text("[Vesuvio] Журнал: " + (status.enabled() ? "ВКЛ" : status.finished() ? "сохранён / выключен" : "сохраняется")
+                        + " | записей: " + status.written() + " | пропущено: " + status.dropped()
+                        + "\nФайл: " + (status.path() == null ? "ещё не создан" : status.path())
+                        + (status.error().isEmpty() ? "" : "\n" + status.error())));
+            }
+
             case "alerts" -> {
                 if (!sender.hasPermission("vesuvio.alerts") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.alerts).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.alerts).</red>"));
                     return true;
                 }
                 if (!(sender instanceof Player player)) {
-                    sender.sendMessage("This command can only be run by a player.");
+                    sender.sendMessage("Эта команда доступна только игрокам.");
                     return true;
                 }
                 boolean enabled = alertService.toggleAlerts(player.getUniqueId());
                 player.sendMessage(mm.deserialize(String.format(
-                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Alerts are now %s</gray>",
-                        enabled ? "<green><b>ENABLED</b></green>" : "<red><b>DISABLED</b></red>")));
+                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Оповещения %s</gray>",
+                        enabled ? "<green><b>ВКЛЮЧЕНЫ</b></green>" : "<red><b>ОТКЛЮЧЕНЫ</b></red>")));
             }
 
-            case "toggle" -> {
+            case "toggle", "punishment", "status" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.admin).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Нужно право vesuvio.admin.</red>"));
                     return true;
                 }
-                boolean nowEnabled = config.setAnticheatEnabled(!config.isAnticheatEnabled());
-
-                String actorName = (sender instanceof Player p) ? p.getName() : "CONSOLE";
-                String loudMessage = String.format(
-                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <white><b>ANTICHEAT %s</b></white> "
-                        + "<gray>by <gold>%s</gold></gray>",
-                        nowEnabled ? "<green>ENABLED</green>" : "<red><b>COMPLETELY DISABLED</b></red>",
-                        actorName);
-
-                // This must never be silent: a forgotten disabled anticheat is a security hole, not
-                // an operational convenience. Broadcast to every staff member who would normally see
-                // detection alerts, and unconditionally log to console at WARNING/SEVERE so it shows
-                // up even if no staff with vesuvio.alerts is online right now.
-                for (Player staff : Bukkit.getOnlinePlayers()) {
-                    if (staff.hasPermission("vesuvio.alerts") || staff.hasPermission("vesuvio.admin") || staff.isOp()) {
-                        staff.sendMessage(mm.deserialize(loudMessage));
+                if ("status".equals(sub) || ("punishment".equals(sub) && args.length == 1)) {
+                    sendStatus(sender);
+                    return true;
+                }
+                boolean punishment = "punishment".equals(sub);
+                String action = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "toggle";
+                if (!List.of("toggle", "on", "off", "status").contains(action) || args.length > 2) {
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio " + sub + " [toggle|on|off|status]</red>"));
+                    return true;
+                }
+                if ("status".equals(action)) { sendStatus(sender); return true; }
+                boolean old = punishment ? config.isPunishmentEnabled() : config.isAnticheatEnabled();
+                boolean enabled = "toggle".equals(action) ? !old : "on".equals(action);
+                if (punishment) config.setPunishmentEnabled(enabled);
+                else config.setAnticheatEnabled(enabled);
+                if (enabled != old) {
+                    // Never execute bans accumulated before an operator paused enforcement.
+                    waveManager.clearQueue();
+                    if (!punishment) {
+                        for (UserData data : userDataManager.getAllUsers()) {
+                            data.recordTeleport();
+                            data.clientWorld().reset(enabled ? "WAIT_CHUNKS" : "OFF");
+                        }
                     }
                 }
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage(mm.deserialize(loudMessage));
+                String message = "[Vesuvio] " + (punishment ? "Наказания" : "Античит")
+                        + (enabled ? " включены" : " выключены") + ": " + sender.getName();
+                var component = net.kyori.adventure.text.Component.text(message);
+                for (Player staff : Bukkit.getOnlinePlayers()) {
+                    if (staff.hasPermission("vesuvio.alerts") || staff.hasPermission("vesuvio.admin") || staff.isOp()) staff.sendMessage(component);
                 }
-
-                if (nowEnabled) {
-                    plugin.getLogger().warning(String.format(
-                            "[Vesuvio] Anticheat detection RE-ENABLED by %s.", actorName));
-                } else {
-                    plugin.getLogger().severe(String.format(
-                            "[Vesuvio] Anticheat detection COMPLETELY DISABLED by %s. "
-                            + "Zero packet checks, ML inference or punishments will run until /vesuvio toggle "
-                            + "is run again or the server restarts.", actorName));
-                }
+                if (!(sender instanceof Player)) sender.sendMessage(component);
+                plugin.getLogger().warning(message);
+                sendStatus(sender);
             }
 
             case "spectate" -> {
                 if (!sender.hasPermission("vesuvio.spectate") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.spectate).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.spectate).</red>"));
                     return true;
                 }
                 if (!(sender instanceof Player player)) {
-                    sender.sendMessage("This command can only be run by a player.");
+                    sender.sendMessage("Эта команда доступна только игрокам.");
                     return true;
                 }
                 if (spectateManager.isSpectating(player.getUniqueId())) {
@@ -150,12 +187,12 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 if (args.length < 2) {
-                    player.sendMessage(mm.deserialize("<red>Usage: /vesuvio spectate <player></red>"));
+                    player.sendMessage(mm.deserialize("<red>Использование: /vesuvio spectate <игрок></red>"));
                     return true;
                 }
                 Player target = Bukkit.getPlayer(args[1]);
                 if (target == null) {
-                    player.sendMessage(mm.deserialize("<red>Player not found.</red>"));
+                    player.sendMessage(mm.deserialize("<red>Игрок не найден.</red>"));
                     return true;
                 }
                 spectateManager.startSpectating(player, target);
@@ -163,12 +200,12 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "review" -> {
                 if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.review).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.review).</red>"));
                     return true;
                 }
                 // /vesuvio review <sampleId> <legit|cheat>
                 if (args.length < 3) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio review <sampleId> <legit|cheat></red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio review <образец> <legit|cheat></red>"));
                     return true;
                 }
                 String sampleId = args[1];
@@ -186,32 +223,32 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
                 if (success) {
                     sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Verdict <gold>%s</gold> recorded for sample <yellow>%s</yellow>. Model weights updated.</green>",
-                            verdict.toUpperCase(), sampleId)));
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Вердикт <gold>%s</gold> записан для образца <yellow>%s</yellow>. Веса модели обновлены.</green>",
+                            Russian.label(verdict), sampleId)));
                 } else {
-                    sender.sendMessage(mm.deserialize("<red>Sample not found or has expired.</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Образец не найден или устарел.</red>"));
                 }
             }
 
             case "info" -> {
                 if (args.length < 2) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio info <player></red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio info <игрок></red>"));
                     return true;
                 }
                 Player target = Bukkit.getPlayer(args[1]);
                 if (target == null) {
-                    sender.sendMessage(mm.deserialize("<red>Player not found.</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Игрок не найден.</red>"));
                     return true;
                 }
                 UserData data = userDataManager.getOrCreate(target);
                 String sigHex = ClickSignature.toHexString(data.getClickBuffer().getSignature());
 
                 sender.sendMessage(mm.deserialize(String.format(Locale.US,
-                        "<gradient:#ff4500:#ff8c00><b>--- Vesuvio Biometrics: %s ---</b></gradient><newline>"
-                        + "<gray>VL:</gray> <yellow>%.1f</yellow> <gray>| Risk:</gray> <red>%.1f</red> <gray>| Trust:</gray> <green>%.1f</green><newline>"
-                        + "<gray>Brand:</gray> <aqua>%s</aqua> <gray>| Sensitivity:</gray> <yellow>%.2fx</yellow><newline>"
-                        + "<gray>Last CPS:</gray> <white>%.1f</white> <gray>| ONNX:</gray> <yellow>%.1f%%</yellow> <gray>| Self-Learn:</gray> <yellow>%.1f%%</yellow> <gray>(%d samples)</gray><newline>"
-                        + "<gray>Click Signature:</gray> <dark_gray>%s</dark_gray>",
+                        "<gradient:#ff4500:#ff8c00><b>--- Vesuvio: показатели %s ---</b></gradient><newline>"
+                        + "<gray>Нарушения:</gray> <yellow>%.1f</yellow> <gray>| Риск:</gray> <red>%.1f</red> <gray>| Доверие:</gray> <green>%.1f</green><newline>"
+                        + "<gray>Клиент:</gray> <aqua>%s</aqua> <gray>| Чувствительность:</gray> <yellow>%.2fx</yellow><newline>"
+                        + "<gray>Кликов/с:</gray> <white>%.1f</white> <gray>| ONNX:</gray> <yellow>%.1f%%</yellow> <gray>| Самообучение:</gray> <yellow>%.1f%%</yellow> <gray>(%d образцов)</gray><newline>"
+                        + "<gray>Профиль кликов:</gray> <dark_gray>%s</dark_gray>",
                         target.getName(), data.getVl(), data.getRiskIndex(), data.getTrustScore(),
                         data.getClientBrand(), data.getSensitivityMultiplier(),
                         data.getLastCalculatedCPS(), data.getLastMLProbability() * 100,
@@ -219,38 +256,83 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                         sigHex.substring(0, Math.min(32, sigHex.length())) + "...")));
             }
 
+            case "physics" -> {
+                if (!sender.hasPermission("vesuvio.admin")) {
+                    sender.sendMessage(Component.text("Требуется vesuvio.admin."));
+                    return true;
+                }
+                String action = args.length == 3 ? args[2].toLowerCase(Locale.ROOT) : "status";
+                if (args.length < 2 || args.length > 3 || !List.of("on", "off", "status").contains(action)) {
+                    sender.sendMessage(Component.text("/vesuvio physics <игрок> [on|off|status]"));
+                    return true;
+                }
+                Player target = Bukkit.getPlayerExact(args[1]);
+                if (target == null) {
+                    sender.sendMessage(Component.text("Игрок не найден."));
+                    return true;
+                }
+                UserData data = userDataManager.getOrCreate(target);
+                if ("on".equals(action)) {
+                    long observed = userDataManager.getAllUsers().stream().filter(UserData::isPhysicsObserved).count();
+                    if (!data.isPhysicsObserved() && observed >= 4) {
+                        sender.sendMessage(Component.text("Лимит диагностики: 4 игрока. Сначала выключите её для другого игрока."));
+                        return true;
+                    }
+                    data.setPhysicsObserved(true);
+                } else if ("off".equals(action)) {
+                    data.setPhysicsObserved(false);
+                }
+                var report = data.physicsSession().report();
+                var world = data.clientWorld().stats();
+                String residual = Double.isFinite(report.residual()) ? String.format(Locale.US, "%.5f", report.residual()) : "—";
+                sender.sendMessage(Component.text(String.format(Locale.US,
+                        "[Vesuvio] Физика %s: %s | проверка пакетов: %s\n"
+                        + "Только диагностика, без начисления нарушений и наказаний. Состояние: %s\n"
+                        + "Сравнений: %d | расхождений: %d | пропусков: %d\n"
+                        + "Ошибка: %s блока | максимум: %.5f | кандидатов: %d\n%s",
+                        target.getName(), data.isPhysicsObserved() ? "ВКЛ" : "ВЫКЛ", config.isAnticheatEnabled() ? "ВКЛ" : "ВЫКЛ",
+                        Russian.label(report.status()), report.compared(), report.mismatched(), report.skipped(), residual,
+                        report.maximumResidual(), report.candidates(), report.input())));
+                sender.sendMessage(Component.text(String.format(Locale.US,
+                        "Копия мира: %s | чанков: %d | изменений в очереди: %d | запросов подтверждения: %d | подтверждений: %d | данные: %.2f МиБ | действий клиента в ожидании: %d",
+                        Russian.label(world.state()), world.chunks(), world.pendingChanges(), world.pendingFences(), world.acknowledgedBatches(),
+                        world.payloadBytes() / (1024.0 * 1024.0), world.clientPredictions())));
+                if ("on".equals(action)) sender.sendMessage(Component.text(
+                        "Копия заполняется новыми пакетами чанков. Для первого прогона перейдите в новую область или выполните RTP после включения диагностики."));
+            }
+
             case "debug" -> {
                 if (!sender.hasPermission("vesuvio.debug") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.debug).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.debug).</red>"));
                     return true;
                 }
                 if (!(sender instanceof Player staff)) {
-                    sender.sendMessage("This command can only be run by a player.");
+                    sender.sendMessage("Эта команда доступна только игрокам.");
                     return true;
                 }
                 if (args.length < 2) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio debug <player></red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio debug <игрок></red>"));
                     return true;
                 }
                 Player target = Bukkit.getPlayer(args[1]);
                 if (target == null) {
-                    sender.sendMessage(mm.deserialize("<red>Player not found.</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Игрок не найден.</red>"));
                     return true;
                 }
                 boolean enabled = debugOverlayManager.toggle(staff, target);
                 staff.sendMessage(mm.deserialize(String.format(
-                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Live debug telemetry for <gold>%s</gold> is now %s</gray>",
-                        target.getName(), enabled ? "<green><b>ENABLED</b></green>" : "<red><b>DISABLED</b></red>")));
+                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Показатели отладки игрока <gold>%s</gold>: %s</gray>",
+                        target.getName(), enabled ? "<green><b>ВКЛЮЧЕНЫ</b></green>" : "<red><b>ОТКЛЮЧЕНЫ</b></red>")));
             }
 
             case "reset" -> {
                 if (args.length < 2) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio reset <player></red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio reset <игрок></red>"));
                     return true;
                 }
                 Player target = Bukkit.getPlayer(args[1]);
                 if (target == null) {
-                    sender.sendMessage(mm.deserialize("<red>Player not found.</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Игрок не найден.</red>"));
                     return true;
                 }
                 UserData data = userDataManager.get(target.getUniqueId());
@@ -260,7 +342,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     data.setManualSuspect(false);
                 }
                 databaseManager.setManualSuspect(target.getUniqueId(), false);
-                sender.sendMessage(mm.deserialize("<green>Reset VL and reduced threat risk for " + target.getName() + ".</green>"));
+                sender.sendMessage(mm.deserialize("<green>Сброшены нарушения и снижен риск для " + target.getName() + ".</green>"));
             }
 
             case "suspect" -> {
@@ -325,27 +407,27 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 Path modelsDir = plugin.getDataFolder().toPath().resolve("models");
                 mlManager.hotReload("click_model", modelsDir.resolve("click_model.onnx"));
                 mlManager.hotReload("aim_model", modelsDir.resolve("aim_model.onnx"));
-                sender.sendMessage(mm.deserialize("<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Configuration reloaded and ONNX model hot-reload dispatched asynchronously.</green>"));
+                sender.sendMessage(mm.deserialize("<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Конфигурация перезагружена, фоновая перезагрузка моделей ONNX запущена. Настройки потоков применятся после перезапуска сервера.</green>"));
             }
 
             case "retrain" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.admin).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.admin).</red>"));
                     return true;
                 }
                 modelAutoTrainer.triggerNow();
                 sender.sendMessage(mm.deserialize(
-                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Manual ONNX retrain triggered - watch the console for progress "
-                        + "(<yellow>Vesuvio-AutoTrain</yellow> logger). Models hot-reload automatically on success.</green>"));
+                        "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Запущено обучение ONNX — следите за ходом в консоли "
+                        + "(<yellow>Vesuvio-AutoTrain</yellow>). После успешного обучения модели перезагрузятся автоматически.</green>"));
             }
 
             case "model" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>You do not have permission (vesuvio.admin).</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.admin).</red>"));
                     return true;
                 }
                 if (args.length < 2) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio model [shadow|promote <domain>|discard <domain>]</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio model [shadow|promote <click|aim>|discard <click|aim>]</red>"));
                     return true;
                 }
                 String action = args[1].toLowerCase();
@@ -353,7 +435,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 if ("shadow".equals(action)) {
                     var evaluator = modelAutoTrainer.getShadowEvaluator();
                     sender.sendMessage(mm.deserialize(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gold>Shadow candidates</gold>"));
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gold>Кандидаты в теневом режиме</gold>"));
                     boolean any = false;
                     for (String domain : net.lovelace.vesuvio.check.onnx.ModelAutoTrainer.domains()) {
                         String modelName = domain + "_model";
@@ -363,18 +445,18 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     }
                     if (!any) {
                         sender.sendMessage(mm.deserialize(
-                                "<gray>No candidate is currently being shadowed. Enable "
-                                + "<yellow>layers.onnx.auto-retrain.shadow-mode</yellow> and wait for the next retrain.</gray>"));
+                                "<gray>Кандидатов в теневом режиме пока нет. Включите "
+                                + "<yellow>layers.onnx.auto-retrain.shadow-mode</yellow> и дождитесь следующего обучения.</gray>"));
                     } else {
                         // The ratio is what an operator actually decides on: it translates straight
                         // into how much more (or less) work the candidate would create for staff.
                         sender.sendMessage(mm.deserialize(
-                                "<gray>A ratio near <yellow>1.00x</yellow> means the candidate flags about as often as the "
-                                + "live model. Promote with <yellow>/vesuvio model promote <domain></yellow>.</gray>"));
+                                "<gray>Отношение около <yellow>1.00x</yellow> означает, что кандидат срабатывает примерно так же часто, как "
+                                + "действующая модель. Для публикации: <yellow>/vesuvio model promote <click|aim></yellow>.</gray>"));
                     }
                 } else if ("promote".equals(action) || "discard".equals(action)) {
                     if (args.length < 3) {
-                        sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio model " + action + " <click|aim></red>"));
+                        sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio model " + action + " <click|aim></red>"));
                         return true;
                     }
                     String domain = args[2].toLowerCase();
@@ -384,13 +466,13 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage(mm.deserialize("<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>"
                             + result.replace("<", "&lt;") + "</green>"));
                 } else {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio model [shadow|promote <domain>|discard <domain>]</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio model [shadow|promote <click|aim>|discard <click|aim>]</red>"));
                 }
             }
 
             case "dataset" -> {
                 if (args.length < 2) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio dataset [export|import|stats]</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio dataset [export|import|stats]</red>"));
                     return true;
                 }
                 String action = args[1].toLowerCase();
@@ -399,35 +481,40 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 if ("export".equals(action)) {
                     boolean ok = selfLearning.getDatasetManager().exportToCsv(dest);
                     if (ok) {
-                        sender.sendMessage(mm.deserialize("<green>Exported " + selfLearning.getDatasetManager().getDatasetSize() + " samples to " + dest + "</green>"));
+                        sender.sendMessage(mm.deserialize("<green>Экспортировано " + selfLearning.getDatasetManager().getDatasetSize() + " образцов в " + dest + "</green>"));
                     } else {
-                        sender.sendMessage(mm.deserialize("<red>Export failed. Check logs.</red>"));
+                        sender.sendMessage(mm.deserialize("<red>Не удалось экспортировать. Подробности в журнале.</red>"));
                     }
                 } else if ("import".equals(action)) {
                     int count = selfLearning.getDatasetManager().importFromCsv(dest);
-                    sender.sendMessage(mm.deserialize("<green>Imported " + count + " samples into dataset.</green>"));
+                    sender.sendMessage(mm.deserialize("<green>Импортировано " + count + " образцов в набор данных.</green>"));
                 } else {
                     sender.sendMessage(mm.deserialize(String.format(
-                            "<gray>Dataset size: <yellow>%d</yellow> samples | Online classifier trained samples: <yellow>%d</yellow></gray>",
+                            "<gray>Набор данных: <yellow>%d</yellow> образцов | Образцов обучения классификатора: <yellow>%d</yellow></gray>",
                             selfLearning.getDatasetManager().getDatasetSize(),
                             selfLearning.getOnlineClassifier().getTrainedSamplesCount())));
                 }
             }
 
             case "wave" -> {
+                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                    sender.sendMessage(mm.deserialize("<red>Нужно право vesuvio.admin.</red>"));
+                    return true;
+                }
                 if (args.length < 2) {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio wave [trigger|list|clear]</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio wave [trigger|list|clear]</red>"));
                     return true;
                 }
                 String action = args[1].toLowerCase();
                 if ("trigger".equals(action)) {
+                    if (!config.mayPunish()) { sendStatus(sender); return true; }
                     int count = waveManager.executeWave();
                     sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Lava Wave executed! Banned <red><b>%d</b></red> queued cheaters.</green>", count)));
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Волна наказаний запланирована: <red><b>%d</b></red> игроков в очереди.</green>", count)));
                 } else if ("list".equals(action)) {
                     var queued = waveManager.getQueued();
                     sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Lava Wave Queue (<yellow>%d</yellow> players pending):</gray>", queued.size())));
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <gray>Очередь волны наказаний: <yellow>%d</yellow> игроков:</gray>", queued.size())));
                     for (var p : queued) {
                         sender.sendMessage(mm.deserialize(String.format(
                                 "<gray> - <white>%s</white> <dark_gray>(%s)</dark_gray> » <yellow>%s</yellow></gray>",
@@ -435,9 +522,9 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     }
                 } else if ("clear".equals(action)) {
                     waveManager.clearQueue();
-                    sender.sendMessage(mm.deserialize("<green>Lava Wave queue has been cleared.</green>"));
+                    sender.sendMessage(mm.deserialize("<green>Очередь волны наказаний очищена.</green>"));
                 } else {
-                    sender.sendMessage(mm.deserialize("<red>Usage: /vesuvio wave [trigger|list|clear]</red>"));
+                    sender.sendMessage(mm.deserialize("<red>Использование: /vesuvio wave [trigger|list|clear]</red>"));
                 }
             }
 
@@ -486,7 +573,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     data.setManualSuspect(false);
                     databaseManager.setManualSuspect(data.getUuid(), false);
                     sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio ML]</b></gradient> <green>Образец игрока <gold>%s</gold> помечен как <white><b>ЧИСТО (LEGIT)</b></white>. Веса модели адаптированы (SGD), подозрительность снята.</green>",
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio: обучение]</b></gradient> <green>Образец игрока <gold>%s</gold> помечен как <white><b>ЧЕСТНАЯ ИГРА</b></white>. Веса модели адаптированы (SGD), подозрительность снята.</green>",
                             data.getUsername())));
                 } else {
                     data.adjustRisk(30.0);
@@ -502,7 +589,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                             true
                     );
                     sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio ML]</b></gradient> <red>Образец игрока <gold>%s</gold> помечен как <white><b>ЧИТ (CHEAT)</b></white>. Модель обучена, Risk Index повышен до %.0f, статус сохранен в БД.</red>",
+                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio: обучение]</b></gradient> <red>Образец игрока <gold>%s</gold> помечен как <white><b>ЧИТ</b></white>. Модель обучена, Индекс риска повышен до %.0f, статус сохранен в БД.</red>",
                             data.getUsername(), data.getRiskIndex())));
                 }
             }
@@ -564,20 +651,32 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private void sendStatus(CommandSender sender) {
+        sender.sendMessage(net.kyori.adventure.text.Component.text(
+                "[Vesuvio] Проверки: " + (config.isAnticheatEnabled() ? "ВКЛ" : "ВЫКЛ")
+                + " | Наказания: " + (config.isPunishmentEnabled() ? "ВКЛ" : "ВЫКЛ")
+                + " | Применение наказаний: " + (config.mayPunish() ? "ВКЛ" : "ВЫКЛ")
+                + " | Очередь банов: " + waveManager.getQueueSize()));
+    }
+
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(mm.deserialize(
                 "<gradient:#ff4500:#ff8c00><b>================ VESUVIO 26.2 ================</b></gradient><newline>"
-                + "<gold>/vesuvio toggle</gold> <gray>- <red><b>Полностью</b></red> включить/выключить детект (kill-switch, не переживает рестарт)</gray><newline>"
+                + "<gold>/vesuvio toggle</gold> <gray>- <red><b>Полностью</b></red> включить/выключить детект (после перезапуска снова включён)</gray><newline>"
+                + "<gold>/vesuvio punishment [toggle|on|off]</gold> <gray>- Наказания при работающих проверках</gray><newline>"
+                + "<gold>/vesuvio status</gold> <gray>- Статус проверок и наказаний</gray><newline>"
+                + "<gold>/vesuvio physics игрок [on|off|status]</gold> <gray>- Диагностика новой физики без наказаний</gray><newline>"
+                + "<gold>/vesuvio log [on|off|status]</gold> <gray>- Подробный журнал срабатываний в файл</gray><newline>"
                 + "<gold>/vesuvio alerts</gold> <gray>- Переключить умные оповещения в чате</gray><newline>"
                 + "<gold>/vesuvio spectate <игрок></gold> <gray>- Наблюдение в реальном времени с оверлеем</gray><newline>"
-                + "<gold>/vesuvio debug <игрок></gold> <gray>- Живая ActionBar телеметрия чеков (CPS/StdDev/AirTicks/VL...)</gray><newline>"
+                + "<gold>/vesuvio debug <игрок></gold> <gray>- Текущие показатели проверок над панелью предметов</gray><newline>"
                 + "<gold>/vesuvio learn <игрок> <legit|cheat></gold> <gray>- Обучить модель на текущем поведении</gray><newline>"
                 + "<gold>/vesuvio suspect <игрок> [add|remove|check]</gold> <gray>- Установка/снятие подозрения с сохранением в БД</gray><newline>"
                 + "<gold>/vesuvio preset [list|название|save]</gold> <gray>- Управление профилями (balanced, strict, lenient, anarchy)</gray><newline>"
-                + "<gold>/vesuvio review <id> <legit|cheat></gold> <gray>- Вердикт для Active Learning</gray><newline>"
+                + "<gold>/vesuvio review <id> <legit|cheat></gold> <gray>- Вердикт для проверки обучающих образцов</gray><newline>"
                 + "<gold>/vesuvio info <игрок></gold> <gray>- Биометрический профиль угрозы</gray><newline>"
-                + "<gold>/vesuvio reset <игрок></gold> <gray>- Сбросить уровень нарушений (VL/Risk)</gray><newline>"
-                + "<gold>/vesuvio wave [trigger|list|clear]</gold> <gray>- Управление волной банов Lava Wave</gray><newline>"
+                + "<gold>/vesuvio reset <игрок></gold> <gray>- Сбросить уровень нарушений (нарушения/риск)</gray><newline>"
+                + "<gold>/vesuvio wave [trigger|list|clear]</gold> <gray>- Управление волной банов волны наказаний</gray><newline>"
                 + "<gold>/vesuvio reload</gold> <gray>- Перезагрузить конфиг и модели ONNX</gray><newline>"
                 + "<gold>/vesuvio retrain</gold> <gray>- Запустить переобучение ONNX-моделей на текущем датасете вручную</gray><newline>"
                 + "<gold>/vesuvio dataset [export|import|stats]</gold> <gray>- Управление датасетом обучения</gray><newline>"
@@ -588,9 +687,17 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            return filter(List.of("toggle", "alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset", "model"), args[0]);
+            return filter(List.of("toggle", "punishment", "status", "physics", "log", "alerts", "spectate", "debug", "review", "learn", "suspect", "preset", "info", "reset", "wave", "reload", "retrain", "dataset", "model"), args[0]);
         }
         if (args.length == 2) {
+            if ("log".equalsIgnoreCase(args[0]) && sender.hasPermission("vesuvio.admin"))
+                return filter(List.of("on", "off", "status"), args[1]);
+            if ("physics".equalsIgnoreCase(args[0]) && sender.hasPermission("vesuvio.admin")) {
+                return filter(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList(), args[1]);
+            }
+            if ("punishment".equalsIgnoreCase(args[0]) || "toggle".equalsIgnoreCase(args[0])) {
+                return filter(List.of("toggle", "on", "off", "status"), args[1]);
+            }
             if ("spectate".equalsIgnoreCase(args[0]) || "debug".equalsIgnoreCase(args[0]) || "info".equalsIgnoreCase(args[0]) || "reset".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0]) || "suspect".equalsIgnoreCase(args[0])) {
                 List<String> names = new ArrayList<>();
                 for (Player p : Bukkit.getOnlinePlayers()) names.add(p.getName());
@@ -613,6 +720,9 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
         }
         if (args.length == 3) {
+            if ("physics".equalsIgnoreCase(args[0]) && sender.hasPermission("vesuvio.admin")) {
+                return filter(List.of("on", "off", "status"), args[2]);
+            }
             if ("review".equalsIgnoreCase(args[0]) || "learn".equalsIgnoreCase(args[0])) {
                 return filter(List.of("legit", "cheat"), args[2]);
             }

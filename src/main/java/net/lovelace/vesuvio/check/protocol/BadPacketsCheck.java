@@ -24,7 +24,7 @@ public final class BadPacketsCheck {
             Map<String, Object> details = new HashMap<>();
             details.put("lastSwingDeltaMs", delta / 1_000_000.0);
             return CheckResult.flag("BadPackets", 0.99, 3.0,
-                    String.format("Attacked without arm animation (NoSwing, Δ: %.1fms)", delta / 1_000_000.0), details);
+                    String.format("Атака без анимации руки (задержка: %.1f мс)", delta / 1_000_000.0), details);
         }
         return CheckResult.pass("BadPackets");
     }
@@ -33,7 +33,7 @@ public final class BadPacketsCheck {
         if (Math.abs(pitch) > 90.05f) {
             Map<String, Object> details = Collections.singletonMap("pitch", pitch);
             return CheckResult.flag("BadPackets", 1.0, 4.0,
-                    String.format("Impossible pitch angle exceeding limits (Pitch: %.2f°)", pitch), details);
+                    String.format("Недопустимый угол наклона камеры (%.2f°)", pitch), details);
         }
         return CheckResult.pass("BadPackets");
     }
@@ -52,7 +52,7 @@ public final class BadPacketsCheck {
         if (env.containerOpen()) {
             Map<String, Object> details = Collections.singletonMap("containerType", env.openInventoryType());
             return CheckResult.flag("BadPackets", 0.95, 2.5,
-                    "Attacked entity while container/inventory was open", details);
+                    "Атака сущности при открытом контейнере или инвентаре", details);
         }
 
         return CheckResult.pass("BadPackets");

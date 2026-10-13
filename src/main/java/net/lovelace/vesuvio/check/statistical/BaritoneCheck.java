@@ -82,7 +82,7 @@ public final class BaritoneCheck {
 
         return CheckResult.flag("Baritone", 0.85, 4.0,
                 String.format(Locale.US,
-                        "Travel heading held within %.2f° of exact path-facing for %d ticks (pathfinder-precision alignment)",
+                        "Направление движения удерживается в пределах %.2f° от точного маршрута %d тактов (точность автопрокладки пути)",
                         error, REQUIRED_STREAK),
                 details);
     }

@@ -60,10 +60,15 @@ public final class ModelAutoTrainer {
     private final ShadowEvaluator shadowEvaluator = new ShadowEvaluator();
 
     private ScheduledExecutorService scheduler;
+    private final java.util.concurrent.ExecutorService trainingExecutor;
+    private volatile boolean stopped;
+    private volatile Process activeProcess;
 
     public ModelAutoTrainer(ConfigManager config, DatasetManager datasetManager,
                              MLManager mlManager, Path pluginFolder, java.util.function.Function<String, InputStream> resourceLoader) {
         this.config = config;
+        this.trainingExecutor = new net.lovelace.vesuvio.engine.ManagedExecutor(
+                "Vesuvio-AutoTrain-", config.useVirtualThreads(), 1, 1, getClass().getClassLoader());
         this.datasetManager = datasetManager;
         this.mlManager = mlManager;
         this.pluginFolder = pluginFolder;
@@ -81,7 +86,7 @@ public final class ModelAutoTrainer {
         extractScriptResources();
 
         if (!config.isAutoRetrainEnabled()) {
-            LOGGER.info("[Vesuvio] Automatic ONNX retraining is disabled (layers.onnx.auto-retrain.enabled: false).");
+            LOGGER.info("[Vesuvio] Автоматическое обучение ONNX отключено (layers.onnx.auto-retrain.enabled: false).");
             return;
         }
 
@@ -93,35 +98,46 @@ public final class ModelAutoTrainer {
             t.setDaemon(true);
             return t;
         });
-        scheduler.scheduleAtFixedRate(this::runRetrainCycleSafely,
+        scheduler.scheduleAtFixedRate(this::triggerNow,
                 initialDelayHours, intervalHours, TimeUnit.HOURS);
 
         LOGGER.info(String.format(Locale.US,
-                "[Vesuvio] Automatic ONNX retraining scheduled: every %dh (first run in %dh).",
+                "[Vesuvio] Автоматическое обучение ONNX: каждые %d ч (первый запуск через %d ч).",
                 intervalHours, initialDelayHours));
     }
 
     public void stop() {
-        if (scheduler != null) {
-            scheduler.shutdownNow();
+        stopped = true;
+        if (scheduler != null) scheduler.shutdownNow();
+        Process process = activeProcess;
+        if (process != null) process.destroyForcibly();
+        trainingExecutor.shutdownNow();
+        net.lovelace.vesuvio.engine.ManagedExecutor.stop(trainingExecutor);
+    }
+
+    /** One owned task for both manual and scheduled training, with no waiting training queue. */
+    public void triggerNow() {
+        if (stopped) return;
+        try { trainingExecutor.execute(this::runRetrainCycleSafely); }
+        catch (java.util.concurrent.RejectedExecutionException busy) {
+            if (!stopped) LOGGER.info("[Vesuvio] Обучение уже выполняется, повторный запуск пропущен.");
         }
     }
 
-    /** Triggers a retrain cycle immediately, off the calling thread. Used by /vesuvio retrain. */
-    public void triggerNow() {
-        Thread.ofVirtual().name("Vesuvio-AutoTrain-Manual").start(this::runRetrainCycleSafely);
-    }
-
     private void runRetrainCycleSafely() {
+        if (stopped || !config.isAnticheatEnabled()) return;
         if (!trainingInProgress.compareAndSet(false, true)) {
-            LOGGER.info("[Vesuvio] Skipping retrain cycle - a previous run is still in progress.");
+            LOGGER.info("[Vesuvio] Обучение пропущено — предыдущий запуск ещё выполняется.");
             return;
         }
         try {
             runRetrainCycle();
         } catch (Throwable t) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Unexpected error during automatic retrain cycle", t);
+            LOGGER.log(Level.WARNING, "[Vesuvio] Непредвиденная ошибка автоматического обучения", t);
         } finally {
+            Process process = activeProcess;
+            activeProcess = null;
+            if (process != null && process.isAlive()) process.destroyForcibly();
             trainingInProgress.set(false);
         }
     }
@@ -137,7 +153,7 @@ public final class ModelAutoTrainer {
                 readyDomains.add(domain);
             } else {
                 LOGGER.info(String.format(Locale.US,
-                        "[Vesuvio] Auto-retrain: not enough '%s' samples yet (cheat=%d, legit=%d, need >= %d each) - skipping this domain.",
+                        "[Vesuvio] Автообучение: недостаточно образцов «%s» (чит: %d, честная игра: %d, нужно не менее %d каждого типа) — пропуск.",
                         domain, cheat, legit, minSamples));
             }
         }
@@ -148,7 +164,7 @@ public final class ModelAutoTrainer {
         String pythonExe = config.getAutoRetrainPythonExecutable();
         Path scriptPath = scriptsDir.resolve("train_models.py");
         if (!Files.exists(scriptPath)) {
-            LOGGER.warning("[Vesuvio] Auto-retrain: training script missing at " + scriptPath + " - extraction may have failed.");
+            LOGGER.warning("[Vesuvio] Автообучение: скрипт отсутствует по пути " + scriptPath + " — возможно, не удалось извлечь ресурс.");
             return;
         }
 
@@ -156,7 +172,7 @@ public final class ModelAutoTrainer {
         try {
             Files.createDirectories(stagingDir);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to create staging directory", e);
+            LOGGER.log(Level.WARNING, "[Vesuvio] Автообучение: не удалось создать временный каталог", e);
             return;
         }
 
@@ -179,38 +195,34 @@ public final class ModelAutoTrainer {
             command.add("--calibrate");
         }
 
-        LOGGER.info("[Vesuvio] Auto-retrain: starting training for domain(s) " + readyDomains + " ...");
+        LOGGER.info("[Vesuvio] Автообучение: запуск для типов " + readyDomains + " ...");
 
+        Path trainingLog = stagingDir.resolve("training-output.log");
         Process process;
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.redirectErrorStream(true);
+            pb.redirectOutput(trainingLog.toFile());
             pb.directory(pluginFolder.toFile());
             process = pb.start();
+            activeProcess = process;
+            if (stopped) { process.destroyForcibly(); return; }
         } catch (IOException e) {
             if (warnedMissingPython.compareAndSet(false, true)) {
                 LOGGER.warning("=============================================================================");
-                LOGGER.warning("[Vesuvio] Auto-retrain: could not launch '" + pythonExe + "'. Automatic ONNX");
-                LOGGER.warning("[Vesuvio] retraining needs Python 3 with scikit-learn + skl2onnx installed on");
-                LOGGER.warning("[Vesuvio] this machine. Install it once with:");
+                LOGGER.warning("[Vesuvio] Автообучение: не удалось запустить «" + pythonExe + "». Для автоматического");
+                LOGGER.warning("[Vesuvio] обучения ONNX необходим Python 3 с библиотеками scikit-learn и skl2onnx");
+                LOGGER.warning("[Vesuvio] на этой машине. Установите зависимости командой:");
                 LOGGER.warning("[Vesuvio]   pip install -r " + scriptsDir.resolve("requirements.txt"));
-                LOGGER.warning("[Vesuvio] Or set layers.onnx.auto-retrain.python-executable in config.yml if");
-                LOGGER.warning("[Vesuvio] python3 isn't on PATH. The OnlineClassifier self-learning layer keeps");
-                LOGGER.warning("[Vesuvio] working regardless - this only affects the ONNX neural models.");
+                LOGGER.warning("[Vesuvio] Или укажите layers.onnx.auto-retrain.python-executable в config.yml,");
+                LOGGER.warning("[Vesuvio] если python3 отсутствует в PATH. Встроенный самообучающийся классификатор");
+                LOGGER.warning("[Vesuvio] продолжает работать — это влияет только на модели ONNX.");
                 LOGGER.warning("=============================================================================");
             } else {
-                LOGGER.warning("[Vesuvio] Auto-retrain: still can't launch '" + pythonExe + "' (see earlier warning for setup instructions).");
+                LOGGER.warning("[Vesuvio] Автообучение: по-прежнему не удаётся запустить «" + pythonExe + "» (инструкции установки приведены в предыдущем предупреждении).");
             }
             return;
         }
-
-        List<String> outputLines = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                outputLines.add(line);
-            }
-        } catch (IOException ignored) {}
 
         boolean finished;
         try {
@@ -218,32 +230,39 @@ public final class ModelAutoTrainer {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
-            LOGGER.warning("[Vesuvio] Auto-retrain: interrupted while waiting for training script.");
+            LOGGER.warning("[Vesuvio] Автообучение: ожидание скрипта прервано.");
             return;
         }
 
+        List<String> outputLines = new ArrayList<>();
+        // Read after waitFor: a silent child cannot block timeout handling in readLine().
+        try (var lines = Files.lines(trainingLog, StandardCharsets.UTF_8)) {
+            lines.limit(256).forEach(outputLines::add);
+        } catch (IOException ignored) {}
+        if (stopped) return;
+
         if (!finished) {
             process.destroyForcibly();
-            LOGGER.warning("[Vesuvio] Auto-retrain: training script timed out and was killed.");
+            LOGGER.warning("[Vesuvio] Автообучение: время выполнения скрипта истекло, процесс остановлен.");
             logScriptOutput(outputLines);
             return;
         }
 
         int exitCode = process.exitValue();
         if (exitCode != 0) {
-            LOGGER.warning("[Vesuvio] Auto-retrain: training script exited with code " + exitCode + ".");
+            LOGGER.warning("[Vesuvio] Автообучение: скрипт завершился с кодом " + exitCode + ".");
             logScriptOutput(outputLines);
             return;
         }
 
-        LOGGER.info("[Vesuvio] Auto-retrain: training script completed successfully.");
+        LOGGER.info("[Vesuvio] Автообучение: скрипт успешно завершён.");
         logScriptOutput(outputLines);
 
         for (String domain : readyDomains) {
             String modelFile = domain + "_model.onnx";
             Path staged = stagingDir.resolve(modelFile);
             if (!Files.exists(staged)) {
-                LOGGER.warning("[Vesuvio] Auto-retrain: expected output " + staged + " was not produced, skipping hot-reload for " + domain + ".");
+                LOGGER.warning("[Vesuvio] Автообучение: ожидаемый файл " + staged + " не создан, пропущена перезагрузка " + domain + ".");
                 continue;
             }
 
@@ -267,16 +286,16 @@ public final class ModelAutoTrainer {
                 }
                 Files.copy(staged, live, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e) {
-                LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to install retrained model " + modelFile, e);
+                LOGGER.log(Level.WARNING, "[Vesuvio] Автообучение: не удалось установить обученную модель " + modelFile, e);
                 continue;
             }
 
             String modelName = domain + "_model";
             mlManager.hotReload(modelName, live).thenAccept(success -> {
                 if (success) {
-                    LOGGER.info("[Vesuvio] Auto-retrain: hot-reloaded freshly retrained " + modelFile + ".");
+                    LOGGER.info("[Vesuvio] Автообучение: перезагружена обученная модель " + modelFile + ".");
                 } else {
-                    LOGGER.warning("[Vesuvio] Auto-retrain: hot-reload of " + modelFile + " reported failure - check earlier ML log lines.");
+                    LOGGER.warning("[Vesuvio] Автообучение: перезагрузка " + modelFile + " завершилась ошибкой — проверьте предыдущие записи журнала моделей.");
                 }
             });
         }
@@ -301,7 +320,7 @@ public final class ModelAutoTrainer {
             Files.createDirectories(modelsDir);
             Files.copy(staged, candidate, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: failed to stage shadow candidate for " + domain, e);
+            LOGGER.log(Level.WARNING, "[Vesuvio] Автообучение: не удалось подготовить теневого кандидата для " + domain, e);
             return;
         }
 
@@ -315,12 +334,12 @@ public final class ModelAutoTrainer {
         mlManager.hotReload(shadowName, candidate).thenAccept(success -> {
             if (success) {
                 LOGGER.info(String.format(Locale.US,
-                        "[Vesuvio] Auto-retrain: '%s' passed the gate and is now running in SHADOW MODE at threshold "
-                                + "%.3f - it scores live traffic but changes nothing. Check '/vesuvio model shadow' "
-                                + "after a few hours, then '/vesuvio model promote %s' to publish it.",
+                        "[Vesuvio] Автообучение: «%s» прошёл проверку качества и работает в ТЕНЕВОМ РЕЖИМЕ с порогом "
+                                + "%.3f — оценивает текущие данные, не влияя на решения. Выполните «/vesuvio model shadow» "
+                                + "через несколько часов, затем «/vesuvio model promote %s» для публикации.",
                         domain, threshold, domain));
             } else {
-                LOGGER.warning("[Vesuvio] Auto-retrain: shadow candidate for " + domain + " failed to load.");
+                LOGGER.warning("[Vesuvio] Автообучение: теневой кандидат для " + domain + " не загружен.");
             }
         });
     }
@@ -349,7 +368,7 @@ public final class ModelAutoTrainer {
     public String promoteCandidate(String domain) {
         Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
         if (!Files.exists(candidate)) {
-            return "No shadow candidate staged for '" + domain + "'.";
+            return "Нет теневого кандидата для «" + domain + "».";
         }
 
         String modelName = domain + "_model";
@@ -362,8 +381,8 @@ public final class ModelAutoTrainer {
             Files.copy(candidate, live, StandardCopyOption.REPLACE_EXISTING);
             Files.deleteIfExists(candidate);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to promote shadow candidate for " + domain, e);
-            return "Failed to promote '" + domain + "' candidate - see console.";
+            LOGGER.log(Level.WARNING, "[Vesuvio] Не удалось опубликовать теневого кандидата для " + domain, e);
+            return "Не удалось опубликовать кандидата «" + domain + "» — подробности в консоли.";
         }
 
         String summary = shadowEvaluator.describe(modelName);
@@ -371,9 +390,9 @@ public final class ModelAutoTrainer {
         shadowEvaluator.clear(modelName);
         mlManager.hotReload(modelName, live);
 
-        LOGGER.info("[Vesuvio] Shadow candidate promoted to live for " + domain + " (" + summary + ")");
-        return "Promoted '" + domain + "' candidate to live. Previous model kept as "
-                + domain + "_model.onnx.previous. Observed: " + summary;
+        LOGGER.info("[Vesuvio] Теневой кандидат опубликован для " + domain + " (" + summary + ")");
+        return "Опубликован кандидат «" + domain + "». Предыдущая модель сохранена как "
+                + domain + "_model.onnx.previous. Наблюдение: " + summary;
     }
 
     /** Throws away the shadow candidate for a domain without publishing it. */
@@ -384,11 +403,11 @@ public final class ModelAutoTrainer {
         shadowEvaluator.clear(modelName);
         try {
             boolean existed = Files.deleteIfExists(candidate);
-            return existed ? "Discarded the '" + domain + "' shadow candidate."
-                    : "No shadow candidate staged for '" + domain + "'.";
+            return existed ? "Удалён теневой кандидат «" + domain + "»."
+                    : "Нет теневого кандидата для «" + domain + "».";
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to delete shadow candidate for " + domain, e);
-            return "Failed to delete the '" + domain + "' candidate file - see console.";
+            LOGGER.log(Level.WARNING, "[Vesuvio] Не удалось удалить теневого кандидата для " + domain, e);
+            return "Не удалось удалить файл кандидата «" + domain + "» — подробности в консоли.";
         }
     }
 
@@ -420,8 +439,8 @@ public final class ModelAutoTrainer {
 
         Path reportPath = stagingDir.resolve(domain + "_report.json");
         if (!Files.exists(reportPath)) {
-            LOGGER.warning("[Vesuvio] Auto-retrain: no evaluation report for '" + domain
-                    + "' - refusing to publish an unmeasured model. (Is the bundled training script outdated?)");
+            LOGGER.warning("[Vesuvio] Автообучение: нет отчёта оценки для «" + domain
+                    + "» — модель без измерений не публикуется. Возможно, встроенный скрипт обучения устарел.");
             return false;
         }
 
@@ -429,13 +448,13 @@ public final class ModelAutoTrainer {
         try {
             json = Files.readString(reportPath, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Auto-retrain: could not read evaluation report for " + domain, e);
+            LOGGER.log(Level.WARNING, "[Vesuvio] Автообучение: не удалось прочитать отчёт оценки для " + domain, e);
             return false;
         }
 
         if (!readJsonBoolean(json, "validated")) {
-            LOGGER.warning("[Vesuvio] Auto-retrain: '" + domain + "' model is UNVALIDATED (too few distinct "
-                    + "players to hold any out) - not publishing. More players need to contribute samples.");
+            LOGGER.warning("[Vesuvio] Автообучение: модель «" + domain + "» НЕ ПРОШЛА ВАЛИДАЦИЮ (слишком мало разных "
+                    + "игроков для отдельной проверочной выборки) — публикация отменена. Нужны образцы от большего числа игроков.");
             return false;
         }
 
@@ -445,8 +464,8 @@ public final class ModelAutoTrainer {
 
         if (Double.isNaN(precision) || precision < minPrecision) {
             LOGGER.warning(String.format(Locale.US,
-                    "[Vesuvio] Auto-retrain: '%s' model scored precision=%.3f (recall=%.3f) at the configured "
-                            + "false-positive budget, below the %.3f floor - not publishing.",
+                    "[Vesuvio] Автообучение: модель «%s» получила точность %.3f (полнота %.3f) при заданном "
+                            + "бюджете ложных срабатываний, ниже минимума %.3f — публикация отменена.",
                     domain, precision, recall, minPrecision));
             return false;
         }
@@ -460,9 +479,9 @@ public final class ModelAutoTrainer {
         double maxCalibrationError = config.getAutoRetrainMaxCalibrationError();
         if (!Double.isNaN(calibrationError) && maxCalibrationError > 0 && calibrationError > maxCalibrationError) {
             LOGGER.warning(String.format(Locale.US,
-                    "[Vesuvio] Auto-retrain: '%s' model is poorly calibrated (expected calibration error %.3f > %.3f) "
-                            + "- not publishing, because the probability thresholds in config.yml would no longer mean "
-                            + "what they say. Enabling layers.onnx.auto-retrain.calibrate usually fixes this.",
+                    "[Vesuvio] Автообучение: модель «%s» плохо откалибрована (ошибка калибровки %.3f > %.3f) "
+                            + "— публикация отменена, поскольку пороги вероятности в config.yml потеряли бы смысл. "
+                            + "Обычно помогает включение layers.onnx.auto-retrain.calibrate.",
                     domain, calibrationError, maxCalibrationError));
             return false;
         }
@@ -473,14 +492,14 @@ public final class ModelAutoTrainer {
             // silently rewriting config.yml from a background task would be a surprising thing for
             // a plugin to do. Logged so the recommendation is actually actionable.
             LOGGER.info(String.format(Locale.US,
-                    "[Vesuvio] Auto-retrain: '%s' reaches the configured false-positive budget at "
-                            + "threshold %.3f - set layers.onnx.models.%s.threshold to that if you want to match it.",
+                    "[Vesuvio] Автообучение: модель «%s» достигает заданного бюджета ложных срабатываний при "
+                            + "пороге %.3f — для его использования задайте layers.onnx.models.%s.threshold.",
                     domain, suggested, domain + "_model"));
         }
 
         LOGGER.info(String.format(Locale.US,
-                "[Vesuvio] Auto-retrain: '%s' model passed the quality gate (precision=%.3f, recall=%.3f, "
-                        + "calibration error=%s).",
+                "[Vesuvio] Автообучение: модель «%s» прошла проверку качества (точность %.3f, полнота %.3f, "
+                        + "ошибка калибровки: %s).",
                 domain, precision, recall,
                 Double.isNaN(calibrationError) ? "n/a" : String.format(Locale.US, "%.3f", calibrationError)));
         return true;
@@ -531,7 +550,7 @@ public final class ModelAutoTrainer {
         int shown = 0;
         for (String line : lines) {
             if (shown++ >= cap) {
-                LOGGER.info(String.format("[Vesuvio] Auto-retrain: ... (%d more line(s) omitted)", lines.size() - cap));
+                LOGGER.info(String.format("[Vesuvio] Автообучение: ... (пропущено ещё %d строк)", lines.size() - cap));
                 break;
             }
             LOGGER.info("[Vesuvio][train_models.py] " + line);
@@ -542,7 +561,7 @@ public final class ModelAutoTrainer {
         try {
             Files.createDirectories(scriptsDir);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to create scripts directory", e);
+            LOGGER.log(Level.WARNING, "[Vesuvio] Не удалось создать каталог скриптов", e);
             return;
         }
         extractResource("scripts/train_models.py", scriptsDir.resolve("train_models.py"));
@@ -552,12 +571,12 @@ public final class ModelAutoTrainer {
     private void extractResource(String resourcePath, Path target) {
         try (InputStream in = resourceLoader.apply(resourcePath)) {
             if (in == null) {
-                LOGGER.warning("[Vesuvio] Bundled resource not found in jar: " + resourcePath);
+                LOGGER.warning("[Vesuvio] Встроенный ресурс не найден в JAR: " + resourcePath);
                 return;
             }
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "[Vesuvio] Failed to extract bundled resource " + resourcePath, e);
+            LOGGER.log(Level.WARNING, "[Vesuvio] Не удалось извлечь встроенный ресурс " + resourcePath, e);
         }
     }
 }

@@ -68,7 +68,7 @@ public final class TemporalConsistencyCheck {
                 // Anomaly A: Variance collapsed drastically mid-fight (cheat toggled on)
                 if (earlyStd > 25.0f && currentStdDev < 6.0f) {
                     return CheckResult.flag("TemporalConsistency", 0.91, 2.5,
-                            String.format("Mid-fight variance collapse (EarlyStd: %.1fms -> LateStd: %.1fms)", earlyStd, currentStdDev), details);
+                            String.format("Резкое снижение разброса в бою (начало: %.1f мс -> конец: %.1f мс)", earlyStd, currentStdDev), details);
                 }
 
                 // Anomaly B: Robotic stamina - 0% fatigue across 12+ seconds of continuous 15+ CPS clicking
@@ -76,7 +76,7 @@ public final class TemporalConsistencyCheck {
                 double stdDiff = Math.abs(currentStdDev - earlyStd);
                 if (currentCps > 14.0 && meanDiff < 1.0 && stdDiff < 0.8) {
                     return CheckResult.flag("TemporalConsistency", 0.88, 2.0,
-                            String.format("Superhuman fatigue resistance at %.1f CPS (ΔMean: %.2fms)", currentCps, meanDiff), details);
+                            String.format("Неестественная устойчивость к усталости при %.1f кликов/с (изменение среднего: %.2f мс)", currentCps, meanDiff), details);
                 }
 
                 // Anomaly C: Duplicate-interval ratio spikes mid-fight - a legit-looking, jittered
@@ -86,7 +86,7 @@ public final class TemporalConsistencyCheck {
                 float earlyDup = data.getEarlyCombatDupRatio();
                 if (earlyDup >= 0 && earlyDup < 0.15f && currentDupRatio > 0.55f) {
                     return CheckResult.flag("TemporalConsistency", 0.89, 2.2,
-                            String.format(Locale.US, "Mid-fight duplicate-interval spike (Early: %.2f -> Late: %.2f)",
+                            String.format(Locale.US, "Всплеск одинаковых интервалов в бою (начало: %.2f -> конец: %.2f)",
                                     earlyDup, currentDupRatio), details);
                 }
 
@@ -96,7 +96,7 @@ public final class TemporalConsistencyCheck {
                 float earlyEntropy = data.getEarlyCombatEntropy();
                 if (earlyEntropy >= 2.2f && currentEntropy < 1.0f) {
                     return CheckResult.flag("TemporalConsistency", 0.87, 2.0,
-                            String.format(Locale.US, "Mid-fight click-timing entropy collapse (Early: %.2f -> Late: %.2f bits)",
+                            String.format(Locale.US, "Резкое падение энтропии кликов в бою (начало: %.2f -> конец: %.2f бит)",
                                     earlyEntropy, currentEntropy), details);
                 }
 
@@ -111,7 +111,7 @@ public final class TemporalConsistencyCheck {
                     if (similarity > 0.985f) {
                         details.put("signatureSimilarity", similarity);
                         return CheckResult.flag("TemporalConsistency", 0.85, 1.8,
-                                String.format(Locale.US, "Click signature frozen across combat (similarity %.1f%% over %.1fs)",
+                                String.format(Locale.US, "Профиль кликов неизменен на протяжении боя (сходство %.1f%% за %.1f с)",
                                         similarity * 100, combatDuration / 1000.0), details);
                     }
                 }

@@ -74,7 +74,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
                 data.getClickBuffer().addClick(now, false);
 
                 // Offload full detection pipeline to virtual thread
-                virtualExecutor.execute(() -> checkPipeline.processClick(player, data));
+                checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.processClick(player, data));
             }
 
         } else if (type == PacketType.Play.Client.INTERACT_ENTITY) {
@@ -91,7 +91,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
                 // an "attack" against an entity that does not really exist.
                 var npcTrapManager = checkPipeline.getNpcTrapManager();
                 if (npcTrapManager != null && npcTrapManager.isTrapEntity(player.getUniqueId(), targetEntityId)) {
-                    virtualExecutor.execute(() -> checkPipeline.handleNpcTrapHit(player, data));
+                    checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.handleNpcTrapHit(player, data));
                     return;
                 }
 
@@ -99,19 +99,10 @@ public final class ClickPacketListener extends PacketListenerAbstract {
                 data.recordCombatAction();
                 data.getClickBuffer().addClick(now, true);
 
-                // Captured HERE, on this connection's netty thread, in true packet arrival order:
-                // any rotation packet the client sent before this attack in the same flush has
-                // already updated data's yaw/pitch (AimPacketListener runs on the same thread for
-                // the same connection), and nothing that arrives after this line can have. See
-                // UserData#consumePendingAttackRotation for why the world-check half of this
-                // attack - which runs a full tick later on the main thread - needs this instead of
-                // reading the attacker's live location at that point.
-                if (data.hasInitialRotation()) {
-                    data.setPendingAttackRotation(data.getLastYaw(), data.getLastPitch());
-                }
+                var attack = data.captureAttack(now);
 
-                virtualExecutor.execute(() -> {
-                    checkPipeline.processAttack(player, targetEntityId, data);
+                checkPipeline.submitPacketCheck(data, virtualExecutor, () -> {
+                    checkPipeline.processAttack(player, targetEntityId, data, attack);
                     checkPipeline.processClick(player, data);
                 });
             }

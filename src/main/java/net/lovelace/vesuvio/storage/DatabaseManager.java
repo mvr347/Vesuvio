@@ -48,7 +48,7 @@ public final class DatabaseManager implements AutoCloseable {
             try {
                 java.nio.file.Files.createDirectories(dataFolder);
             } catch (java.io.IOException e) {
-                LOGGER.log(Level.SEVERE, "Failed to create data directory: " + dataFolder, e);
+                LOGGER.log(Level.SEVERE, "Не удалось создать каталог данных: " + dataFolder, e);
             }
             Path dbFile = dataFolder.resolve(config.getSqliteFileName());
             hikari.setDriverClassName("org.sqlite.JDBC");
@@ -130,7 +130,7 @@ public final class DatabaseManager implements AutoCloseable {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_vesuvio_ban_fp_ip ON vesuvio_ban_fingerprints(ip_address);");
 
         } catch (SQLException e) {
-            LOGGER.log(Level.SEVERE, "Failed to initialize database tables", e);
+            LOGGER.log(Level.SEVERE, "Не удалось создать таблицы базы данных", e);
         }
     }
 
@@ -152,7 +152,7 @@ public final class DatabaseManager implements AutoCloseable {
                 }
             }
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to load player profile for " + uuid, e);
+            LOGGER.log(Level.WARNING, "Не удалось загрузить профиль игрока " + uuid, e);
         }
         return null;
     }
@@ -165,7 +165,7 @@ public final class DatabaseManager implements AutoCloseable {
             ps.setString(2, uuid.toString());
             ps.executeUpdate();
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to update suspect status for " + uuid, e);
+            LOGGER.log(Level.WARNING, "Не удалось обновить статус подозреваемого " + uuid, e);
         }
     }
 
@@ -217,7 +217,7 @@ public final class DatabaseManager implements AutoCloseable {
             ps.setLong(8, now);
             ps.executeUpdate();
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to upsert player " + username, e);
+            LOGGER.log(Level.WARNING, "Не удалось сохранить игрока " + username, e);
         }
     }
 
@@ -282,8 +282,8 @@ public final class DatabaseManager implements AutoCloseable {
 
             conn.commit();
         } catch (SQLException e) {
-            LOGGER.log(Level.SEVERE, "Error committing batch logs to database - re-queuing "
-                    + violationBatch.size() + " violation(s) and " + punishmentBatch.size() + " punishment(s) for retry", e);
+            LOGGER.log(Level.SEVERE, "Ошибка записи журнала в базу данных — возвращаем в очередь "
+                    + violationBatch.size() + " нарушений и " + punishmentBatch.size() + " наказаний для повторной попытки", e);
             violationQueue.addAll(violationBatch);
             punishmentQueue.addAll(punishmentBatch);
         }
@@ -320,7 +320,7 @@ public final class DatabaseManager implements AutoCloseable {
                 }
             }
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to load recent punishments", e);
+            LOGGER.log(Level.WARNING, "Не удалось загрузить последние наказания", e);
         }
         return result;
     }
@@ -350,7 +350,7 @@ public final class DatabaseManager implements AutoCloseable {
                 }
             }
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to load recent violations", e);
+            LOGGER.log(Level.WARNING, "Не удалось загрузить последние нарушения", e);
         }
         return result;
     }
@@ -374,7 +374,7 @@ public final class DatabaseManager implements AutoCloseable {
             ps.setLong(7, record.timestamp());
             ps.executeUpdate();
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to record ban fingerprint for " + record.username(), e);
+            LOGGER.log(Level.WARNING, "Не удалось записать профиль блокировки для " + record.username(), e);
         }
     }
 
@@ -395,7 +395,7 @@ public final class DatabaseManager implements AutoCloseable {
                 }
             }
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to look up ban fingerprint by IP", e);
+            LOGGER.log(Level.WARNING, "Не удалось найти профиль блокировки по IP", e);
         }
         return null;
     }
@@ -417,7 +417,7 @@ public final class DatabaseManager implements AutoCloseable {
                 }
             }
         } catch (SQLException e) {
-            LOGGER.log(Level.WARNING, "Failed to load recent ban fingerprints", e);
+            LOGGER.log(Level.WARNING, "Не удалось загрузить последние профили блокировок", e);
         }
         return result;
     }

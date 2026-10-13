@@ -132,7 +132,7 @@ public final class TimerCheck {
 
                 return CheckResult.flag("Timer", confidence, vl,
                         String.format(Locale.US,
-                                "Accelerated game clock (drift: +%.0fms over %.0fms allowance, ~%.2fx speed)",
+                                "Ускорены игровые часы (опережение: +%.0f мс при допуске %.0f мс, скорость ~%.2fx)",
                                 balance, threshold, ratio),
                         details);
             }

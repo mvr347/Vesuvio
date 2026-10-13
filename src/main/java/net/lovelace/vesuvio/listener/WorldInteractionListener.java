@@ -71,7 +71,7 @@ public final class WorldInteractionListener implements Listener {
      * starts on one block and finishes on another has not mined anything impossibly fast, and
      * pairing those two events produced exactly that reading.
      */
-    private record DigStart(String blockKey, long startedAtMillis) {}
+    private record DigStart(String blockKey, long startedAtNanos, long minimumMillis, Material material, long epoch) {}
 
     private final Map<UUID, DigStart> blockDamageTimes = new ConcurrentHashMap<>();
 
@@ -101,6 +101,7 @@ public final class WorldInteractionListener implements Listener {
     // -------------------------------------------------------------
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         Player player = event.getPlayer();
         if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
 
@@ -112,7 +113,7 @@ public final class WorldInteractionListener implements Listener {
 
         // 1.1 AirPlace: placing block against air or disconnected in space
         if (config.isAirPlaceEnabled() && (against.getType().isAir() || !hasAdjacentSolidBlock(placed))) {
-            event.setCancelled(true);
+            if (config.mayPunish()) event.setCancelled(true);
             Map<String, Object> details = new HashMap<>();
             details.put("placed", placed.getType().name());
             details.put("against", against.getType().name());
@@ -121,11 +122,11 @@ public final class WorldInteractionListener implements Listener {
                     "AirPlace",
                     0.99,
                     15.0,
-                    "Placed block in empty air without adjacent surface",
+                    "Установка блока в воздухе без соседней опоры",
                     details
             );
-            pipeline.handleFlag(player, data, result);
             data.addVl(result.vl());
+            pipeline.handleFlag(player, data, result);
             data.adjustRisk(20.0);
             return;
         }
@@ -142,7 +143,7 @@ public final class WorldInteractionListener implements Listener {
             // Placing directly below feet requires looking down (pitch >= 60°).
             // Scaffold places blocks under feet while pitch is looking horizontally forward (< 40°)
             if (distSq < 1.8 && pitch < 40.0f && (player.isSprinting() || data.getLastDeltaXZ() > 0.22)) {
-                event.setCancelled(true);
+                if (config.mayPunish()) event.setCancelled(true);
                 Map<String, Object> details = new HashMap<>();
                 details.put("pitch", pitch);
                 details.put("placedY", placed.getY());
@@ -153,11 +154,11 @@ public final class WorldInteractionListener implements Listener {
                         "Scaffold",
                         0.95,
                         12.0,
-                        String.format(Locale.US, "Unnatural downward placement angle (pitch: %.1f° < 40° limit)", pitch),
+                        String.format(Locale.US, "Недопустимый угол установки вниз (наклон: %.1f° при минимуме 40°)", pitch),
                         details
                 );
-                pipeline.handleFlag(player, data, result);
                 data.addVl(result.vl());
+                pipeline.handleFlag(player, data, result);
                 data.adjustRisk(18.0);
             }
         }
@@ -182,11 +183,11 @@ public final class WorldInteractionListener implements Listener {
                                 "FastPlace",
                                 0.93,
                                 10.0,
-                                String.format(Locale.US, "Block placement faster than vanilla's cycle allows (%.0fms, min ~200ms)", elapsedMs),
+                                String.format(Locale.US, "Слишком быстрая установка блоков (%.0f мс, минимум около 200 мс)", elapsedMs),
                                 Map.of("elapsedMs", elapsedMs, "streak", count)
                         );
-                        pipeline.handleFlag(player, data, result);
                         data.addVl(result.vl());
+                        pipeline.handleFlag(player, data, result);
                         data.adjustRisk(16.0);
                     }
                 } else {
@@ -217,11 +218,11 @@ public final class WorldInteractionListener implements Listener {
                                 "Tower",
                                 0.92,
                                 11.0,
-                                String.format(Locale.US, "Pillaring faster than jump physics allow (%.0fms between placements, min ~250ms)", elapsedMs),
+                                String.format(Locale.US, "Постройка столба быстрее допустимой физики прыжка (%.0f мс между блоками, минимум около 250 мс)", elapsedMs),
                                 Map.of("elapsedMs", elapsedMs, "streak", count)
                         );
-                        pipeline.handleFlag(player, data, result);
                         data.addVl(result.vl());
+                        pipeline.handleFlag(player, data, result);
                         data.adjustRisk(17.0);
                     }
                 } else {
@@ -287,6 +288,7 @@ public final class WorldInteractionListener implements Listener {
      * client's targeting can produce.
      */
     private void checkBlockReachAndGhostHand(Player player, UserData data, Block block, String action) {
+        if (data.hasRecentTeleport()) return;
         if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
 
         Location eye = player.getEyeLocation();
@@ -305,11 +307,11 @@ public final class WorldInteractionListener implements Listener {
                         "BlockReach",
                         0.93,
                         9.0,
-                        String.format(Locale.US, "Block %s beyond reach (%.2fm, max %.2fm)", action, distance, allowedReach),
+                        String.format(Locale.US, "Действие с блоком (%s) за пределами досягаемости (%.2f м, максимум %.2f м)", net.lovelace.vesuvio.i18n.Russian.label(action), distance, allowedReach),
                         Map.of("distance", distance, "maxAllowed", allowedReach, "action", action)
                 );
-                pipeline.handleFlag(player, data, result);
                 data.addVl(result.vl());
+                pipeline.handleFlag(player, data, result);
                 data.adjustRisk(15.0);
                 return;
             }
@@ -321,20 +323,37 @@ public final class WorldInteractionListener implements Listener {
             if (hit != null && hit.getHitBlock() != null && !hit.getHitBlock().equals(block)) {
                 Block obstruction = hit.getHitBlock();
                 if (EnvironmentSnapshotService.isGenuinelySolid(obstruction)
-                        && !isAdjacent(obstruction, block)) {
+                        && !isAdjacent(obstruction, block) && !hasVisibleBlockFace(player, eye, block)) {
                     CheckResult result = CheckResult.flag(
                             "GhostHand",
                             0.96,
                             13.0,
-                            String.format(Locale.US, "Block %s through solid obstruction %s", action, obstruction.getType().name()),
+                            String.format(Locale.US, "Действие с блоком (%s) сквозь сплошную преграду %s", net.lovelace.vesuvio.i18n.Russian.label(action), obstruction.getType().name()),
                             Map.of("obstruction", obstruction.getType().name(), "action", action, "distance", distance)
                     );
-                    pipeline.handleFlag(player, data, result);
                     data.addVl(result.vl());
+                    pipeline.handleFlag(player, data, result);
                     data.adjustRisk(18.0);
                 }
             }
         }
+    }
+
+    /** A blocked ray to the centre does not prove the visible face/corner is occluded. */
+    private boolean hasVisibleBlockFace(Player player, Location eye, Block target) {
+        for (double x : new double[]{0.01, 0.5, 0.99}) {
+            for (double y : new double[]{0.01, 0.5, 0.99}) {
+                for (double z : new double[]{0.01, 0.5, 0.99}) {
+                    var direction = target.getLocation().add(x, y, z).toVector().subtract(eye.toVector());
+                    double length = direction.length();
+                    if (length < 0.01) return true;
+                    var hit = player.getWorld().rayTraceBlocks(eye, direction.normalize(), length,
+                            FluidCollisionMode.NEVER, true);
+                    if (hit == null || target.equals(hit.getHitBlock())) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -382,6 +401,7 @@ public final class WorldInteractionListener implements Listener {
     // -------------------------------------------------------------
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onBlockDamage(BlockDamageEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         Player player = event.getPlayer();
         if (player.getGameMode() == GameMode.CREATIVE) return;
 
@@ -401,12 +421,21 @@ public final class WorldInteractionListener implements Listener {
         }
 
         if (config.isFastBreakEnabled()) {
-            blockDamageTimes.put(player.getUniqueId(), new DigStart(blockKey(block), System.currentTimeMillis()));
+            long minimum = event.getInstaBreak() ? 0 : minimumBreakMillis(block.getBreakSpeed(player));
+            DigStart previous = blockDamageTimes.get(player.getUniqueId());
+            String key = blockKey(block);
+            // Repeated START_DESTROY packets for one dig must not move its clock forward.
+            if (previous == null || !previous.blockKey().equals(key) || previous.material() != block.getType()
+                    || previous.epoch() != config.runtime().detectionEpoch()) {
+                blockDamageTimes.put(player.getUniqueId(), new DigStart(key, System.nanoTime(), minimum,
+                        block.getType(), config.runtime().detectionEpoch()));
+            }
         }
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onBlockBreak(BlockBreakEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         if (!config.isFastBreakEnabled()) return;
         Player player = event.getPlayer();
         if (player.getGameMode() == GameMode.CREATIVE) return;
@@ -416,18 +445,18 @@ public final class WorldInteractionListener implements Listener {
 
         // Bedrock breaker
         if (hardness < 0) {
-            event.setCancelled(true);
+            if (config.mayPunish()) event.setCancelled(true);
             UserData data = userDataManager.get(player.getUniqueId());
             if (data != null) {
                 CheckResult result = CheckResult.flag(
                         "BedrockBreaker",
                         1.0,
                         35.0,
-                        "Broke unbreakable block " + block.getType().name(),
+                        "Сломан неразрушаемый блок " + block.getType().name(),
                         Map.of("block", block.getType().name())
                 );
-                pipeline.handleFlag(player, data, result);
                 data.addVl(result.vl());
+                pipeline.handleFlag(player, data, result);
                 data.adjustRisk(50.0);
             }
             return;
@@ -439,11 +468,15 @@ public final class WorldInteractionListener implements Listener {
         // below is per-block anyway, so there is nothing a hardness bucket buys.
         DigStart dig = blockDamageTimes.remove(player.getUniqueId());
         UserData breakData = userDataManager.get(player.getUniqueId());
-        if (breakData != null && hardness > 0.0f && dig != null && dig.blockKey().equals(blockKey(block))) {
-            long elapsed = System.currentTimeMillis() - dig.startedAtMillis();
-            long vanillaMinMs = estimateMinLegitBreakMillis(player, block, hardness);
-            // Guard against a clock going backwards; a negative interval is not evidence.
-            double ratio = (vanillaMinMs <= 0) ? 1.0 : Math.max(0.0, (double) elapsed) / vanillaMinMs;
+        if (breakData != null && !breakData.hasRecentTeleport() && hardness > 0.0f && dig != null
+                && dig.epoch() == config.runtime().detectionEpoch()
+                && dig.material() == block.getType() && dig.blockKey().equals(blockKey(block))) {
+            long elapsed = (System.nanoTime() - dig.startedAtNanos()) / 1_000_000L;
+            // Paper computes actual per-tick progress, including modern mining attributes,
+            // custom tools, enchantments, effects and harvestability. Use the faster endpoint
+            // if equipment/effects changed during this dig; uncertainty must favour the player.
+            long vanillaMinMs = Math.min(dig.minimumMillis(), minimumBreakMillis(block.getBreakSpeed(player)));
+            double ratio = breakTimeRatio(elapsed, vanillaMinMs);
 
             DecayingEvidence evidence = fastBreakEvidence.computeIfAbsent(
                     player.getUniqueId(), k -> new DecayingEvidence());
@@ -451,11 +484,11 @@ public final class WorldInteractionListener implements Listener {
             double halfLife = config.getFastBreakEvidenceHalfLifeMs();
 
             if (ratio < config.getFastBreakConclusiveRatio()) {
-                event.setCancelled(true);
+                if (config.mayPunish()) event.setCancelled(true);
                 evidence.reset();
                 flagFastBreak(player, breakData, block, elapsed, vanillaMinMs, ratio, 0.97, 18.0,
                         String.format(Locale.US,
-                                "Broke %s in %dms against a vanilla minimum of %dms for this tool and effects (%.0f%% of it)",
+                                "Блок %s сломан за %d мс при минимуме %d мс для этого инструмента и эффектов (%.0f%% от минимума)",
                                 block.getType().name(), elapsed, vanillaMinMs, ratio * 100.0));
                 return;
             }
@@ -464,11 +497,11 @@ public final class WorldInteractionListener implements Listener {
                 double score = evidence.reward(1.0, nowNanos, halfLife);
                 if (score >= config.getFastBreakEvidenceThreshold()
                         && evidence.events() >= config.getFastBreakEvidenceMinEvents()) {
-                    event.setCancelled(true);
+                    if (config.mayPunish()) event.setCancelled(true);
                     evidence.reset();
                     flagFastBreak(player, breakData, block, elapsed, vanillaMinMs, ratio, 0.93, 15.0,
                             String.format(Locale.US,
-                                    "Sustained mining faster than vanilla allows (%s in %dms vs %dms minimum, %.0f%% of it, score %.1f)",
+                                    "Стабильная добыча быстрее допустимой (%s за %d мс при минимуме %d мс, %.0f%% от минимума, оценка %.1f)",
                                     block.getType().name(), elapsed, vanillaMinMs, ratio * 100.0, score));
                     return;
                 }
@@ -491,48 +524,26 @@ public final class WorldInteractionListener implements Listener {
         }
     }
 
-    /**
-     * Estimates the fastest a legitimate vanilla client could break this block, using the actual
-     * vanilla digging-speed formula (tool tier, Efficiency, Haste/Conduit Power, off-ground and
-     * underwater penalties) rather than a flat cutoff.
-     *
-     * Returns the vanilla minimum itself, in milliseconds - no safety margin is folded in here.
-     * The caller compares the measured interval against it as a ratio, so how much slack a break
-     * is given is one configured number (fastbreak.conclusive-ratio / suspicious-ratio) instead of
-     * being buried in this estimate. Everything uncertain in the model resolves towards a faster
-     * assumed dig, which lowers this floor and makes the check more forgiving, never less.
-     */
-    private long estimateMinLegitBreakMillis(Player player, Block block, float hardness) {
-        ItemStack tool = player.getInventory().getItemInMainHand();
-        double speed = toolSpeedMultiplier(tool, block);
+    /** Paper's per-tick break progress already includes the complete server mining model. */
+    public static long minimumBreakMillis(double damagePerTick) {
+        if (!Double.isFinite(damagePerTick) || damagePerTick <= 0 || damagePerTick >= 1) return 0;
+        return (long) Math.ceil(1.0 / damagePerTick) * 50L;
+    }
 
-        int efficiencyLevel = tool.getEnchantmentLevel(Enchantment.EFFICIENCY);
-        if (efficiencyLevel > 0) {
-            speed += (double) (efficiencyLevel * efficiencyLevel) + 1.0;
-        }
+    /** One initial progress tick plus one tick of packet batching are not impossible mining. */
+    public static double breakTimeRatio(long elapsedMillis, long minimumMillis) {
+        if (elapsedMillis < 0 || minimumMillis <= 50) return 1.0;
+        return (elapsedMillis + 100.0) / minimumMillis;
+    }
 
-        PotionEffect haste = player.getPotionEffect(PotionEffectType.HASTE);
-        int hasteAmplifier = (haste != null) ? haste.getAmplifier() : -1;
-        PotionEffect conduit = player.getPotionEffect(PotionEffectType.CONDUIT_POWER);
-        if (conduit != null) {
-            hasteAmplifier = Math.max(hasteAmplifier, conduit.getAmplifier());
-        }
-        if (hasteAmplifier >= 0) {
-            speed *= 1.0 + (hasteAmplifier + 1) * 0.2;
-        }
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onDigAbort(org.bukkit.event.block.BlockDamageAbortEvent event) {
+        blockDamageTimes.remove(event.getPlayer().getUniqueId());
+    }
 
-        if (!player.isOnGround()) {
-            speed /= 5.0;
-        }
-        if (player.isInWater()) {
-            ItemStack helmet = player.getInventory().getHelmet();
-            boolean hasAquaAffinity = helmet != null && helmet.getEnchantmentLevel(Enchantment.AQUA_AFFINITY) > 0;
-            if (!hasAquaAffinity) {
-                speed /= 5.0;
-            }
-        }
-
-        return vanillaBreakMillis(speed, hardness);
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onToolChange(org.bukkit.event.player.PlayerItemHeldEvent event) {
+        blockDamageTimes.remove(event.getPlayer().getUniqueId());
     }
 
     /**
@@ -558,40 +569,6 @@ public final class WorldInteractionListener implements Listener {
         return Math.max(50L, Math.round(vanillaTicks * 50.0));
     }
 
-    /**
-     * Vanilla tool speed for this tool against this block. Tool correctness is asked of the server
-     * ({@link Block#isPreferredTool}) rather than hardcoded per material, so a block family this
-     * code has never heard of is still judged the way the server judges it.
-     *
-     * <p>Every uncertain case resolves upward. A faster assumed tool means a lower vanilla minimum,
-     * which means a more forgiving check - the direction a mis-modelled loadout has to fail in.
-     */
-    private double toolSpeedMultiplier(ItemStack tool, Block block) {
-        String name = tool.getType().name();
-
-        // Shears and swords have their own per-block speeds (shears on wool/leaves, a sword on
-        // cobweb or bamboo) that do not follow the tier table at all. They are given the largest
-        // of those values whenever they could apply, because over-estimating only relaxes the check.
-        if (name.equals("SHEARS")) return 15.0;
-        if (name.endsWith("_SWORD")) return 15.0;
-
-        if (!block.isPreferredTool(tool)) {
-            // Wrong tool (or bare hand): vanilla speed 1.0. Note the /30 divisor above is still the
-            // harvestable one, so this stays the lenient reading.
-            return 1.0;
-        }
-
-        if (name.startsWith("WOODEN_") || name.startsWith("WOOD_")) return 2.0;
-        if (name.startsWith("STONE_")) return 4.0;
-        if (name.startsWith("IRON_")) return 6.0;
-        if (name.startsWith("DIAMOND_")) return 8.0;
-        if (name.startsWith("NETHERITE_")) return 9.0;
-        if (name.startsWith("GOLDEN_") || name.startsWith("GOLD_")) return 12.0;
-
-        // Preferred tool of a kind this code does not recognise - assume the fastest vanilla tier.
-        return 12.0;
-    }
-
     private static String blockKey(Block b) {
         return b.getWorld().getUID() + ":" + b.getX() + ":" + b.getY() + ":" + b.getZ();
     }
@@ -608,8 +585,8 @@ public final class WorldInteractionListener implements Listener {
         details.put("tool", player.getInventory().getItemInMainHand().getType().name());
 
         CheckResult result = CheckResult.flag("FastBreak", confidence, vl, explanation, details);
-        pipeline.handleFlag(player, data, result);
         data.addVl(result.vl());
+        pipeline.handleFlag(player, data, result);
         data.adjustRisk(20.0);
     }
 
@@ -656,11 +633,11 @@ public final class WorldInteractionListener implements Listener {
                         "XrayBurst",
                         0.92,
                         15.0,
-                        String.format(Locale.US, "Rapid rare ore discoveries (%d %s in <60s)", profile.burstOreCount, mat.name()),
+                        String.format(Locale.US, "Слишком частые находки редкой руды (%d блоков %s за менее чем 60 с)", profile.burstOreCount, mat.name()),
                         Map.of("ore", mat.name(), "burstCount", profile.burstOreCount)
                 );
-                pipeline.handleFlag(player, data, result);
                 data.addVl(result.vl());
+                pipeline.handleFlag(player, data, result);
                 data.adjustRisk(25.0);
             }
 
@@ -673,11 +650,11 @@ public final class WorldInteractionListener implements Listener {
                             "XrayStatistical",
                             0.95,
                             20.0,
-                            String.format(Locale.US, "Abnormal ore-to-stone mining ratio: %.1f%% (straight-to-ore tunneling)", ratio * 100),
+                            String.format(Locale.US, "Аномальная доля руды среди добытых блоков: %.1f%% (прокоп прямо к руде)", ratio * 100),
                             Map.of("oreCount", profile.diamondOreCount, "stoneCount", profile.stoneCount, "ratio", ratio)
                     );
-                    pipeline.handleFlag(player, data, result);
                     data.addVl(result.vl());
+                    pipeline.handleFlag(player, data, result);
                     data.adjustRisk(30.0);
                 }
             }
@@ -696,6 +673,7 @@ public final class WorldInteractionListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onVehicleMove(VehicleMoveEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         Entity vehicle = event.getVehicle();
 
         // Ascending-without-support only applies to vehicles that walk/float like a living entity.
@@ -732,11 +710,11 @@ public final class WorldInteractionListener implements Listener {
                                 "VehicleFly",
                                 0.96,
                                 16.0,
-                                String.format(Locale.US, "Ascending mid-air while mounted on %s (ΔY: %.2f)", vehicle.getType().name(), deltaY),
+                                String.format(Locale.US, "Подъём в воздухе верхом на %s (ΔY: %.2f)", vehicle.getType().name(), deltaY),
                                 details
                         );
-                        pipeline.handleFlag(player, data, result);
                         data.addVl(result.vl());
+                        pipeline.handleFlag(player, data, result);
                         data.adjustRisk(25.0);
 
                         // Eject player from hacked flying vehicle
@@ -790,12 +768,12 @@ public final class WorldInteractionListener implements Listener {
                 "VehicleClip",
                 0.94,
                 14.0,
-                String.format(Locale.US, "Travelling through solid geometry on %s (%.2fb/t sustained for %d ticks)",
+                String.format(Locale.US, "Движение сквозь сплошные блоки верхом на %s (%.2f блока/такт в течение %d тактов)",
                         vehicle.getType().name(), horizontal, VEHICLE_CLIP_REQUIRED_TICKS),
                 details
         );
-        pipeline.handleFlag(player, data, result);
         data.addVl(result.vl());
+        pipeline.handleFlag(player, data, result);
         data.adjustRisk(22.0);
     }
 
@@ -822,6 +800,7 @@ public final class WorldInteractionListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         if (event.getHand() != EquipmentSlot.HAND) return; // avoid double-counting the off-hand event
         Player player = event.getPlayer();
         var action = event.getAction();
@@ -841,6 +820,7 @@ public final class WorldInteractionListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onItemConsume(PlayerItemConsumeEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         if (!config.isFastEatEnabled()) return;
         Player player = event.getPlayer();
         UserData data = userDataManager.get(player.getUniqueId());
@@ -855,18 +835,19 @@ public final class WorldInteractionListener implements Listener {
                     "FastEat",
                     0.93,
                     9.0,
-                    String.format(Locale.US, "Consumed %s faster than vanilla's animation allows (%dms, min ~%dms)",
+                    String.format(Locale.US, "Употребление %s быстрее допустимой анимации (%d мс, минимум около %d мс)",
                             event.getItem().getType().name(), elapsed, MIN_EAT_MS),
                     Map.of("item", event.getItem().getType().name(), "elapsedMs", elapsed)
             );
-            pipeline.handleFlag(player, data, result);
             data.addVl(result.vl());
+            pipeline.handleFlag(player, data, result);
             data.adjustRisk(14.0);
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onShootBow(EntityShootBowEvent event) {
+        if (!config.isAnticheatEnabled()) return;
         if (!config.isFastBowEnabled()) return;
         if (!(event.getEntity() instanceof Player player)) return;
 
@@ -884,12 +865,12 @@ public final class WorldInteractionListener implements Listener {
                     "FastBow",
                     0.90,
                     8.0,
-                    String.format(Locale.US, "Near-full draw force (%.2f) from an impossibly short charge (%dms, min ~%.0fms)",
+                    String.format(Locale.US, "Почти полное натяжение (%.2f) за слишком короткое время (%d мс, минимум около %.0f мс)",
                             force, elapsed, MIN_FULL_CHARGE_MS),
                     Map.of("force", force, "elapsedMs", elapsed)
             );
-            pipeline.handleFlag(player, data, result);
             data.addVl(result.vl());
+            pipeline.handleFlag(player, data, result);
             data.adjustRisk(13.0);
         }
     }

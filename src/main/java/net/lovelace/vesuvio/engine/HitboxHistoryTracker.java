@@ -32,9 +32,49 @@ public final class HitboxHistoryTracker {
             double dz = z - cz;
             return Math.sqrt(dx * dx + dy * dy + dz * dz);
         }
+
+        /** Slab intersection of a normalized sight ray with the slightly expanded hitbox. */
+        public double rayDistance(double x, double y, double z, double dx, double dy, double dz, double expand) {
+            double near = 0, far = Double.POSITIVE_INFINITY;
+            double[] origins = {x, y, z}, directions = {dx, dy, dz};
+            double[] lower = {minX - expand, minY - expand, minZ - expand};
+            double[] upper = {maxX + expand, maxY + expand, maxZ + expand};
+            for (int axis = 0; axis < 3; axis++) {
+                if (!Double.isFinite(origins[axis]) || !Double.isFinite(directions[axis])) return Double.POSITIVE_INFINITY;
+                if (Math.abs(directions[axis]) < 1.0e-12) {
+                    if (origins[axis] < lower[axis] || origins[axis] > upper[axis]) return Double.POSITIVE_INFINITY;
+                } else {
+                    double a = (lower[axis] - origins[axis]) / directions[axis];
+                    double b = (upper[axis] - origins[axis]) / directions[axis];
+                    near = Math.max(near, Math.min(a, b));
+                    far = Math.min(far, Math.max(a, b));
+                    if (near > far) return Double.POSITIVE_INFINITY;
+                }
+            }
+            return near;
+        }
     }
 
     private final Map<UUID, Deque<BoxSnapshot>> history = new ConcurrentHashMap<>();
+
+    /**
+     * Candidate frames near the client's rendered time, anchored to packet receipt rather than
+     * scheduler execution. Test every candidate: a valid historical hit must not become a flag
+     * merely because the nearest server tick differs from client interpolation.
+     */
+    public List<BoxSnapshot> attackCandidates(Player target, int pingMs, long receivedNanos) {
+        Deque<BoxSnapshot> queue = history.get(target.getUniqueId());
+        if (queue == null) return List.of();
+        long rendered = receivedNanos - Math.max(0, pingMs) * 1_000_000L;
+        List<BoxSnapshot> result = new ArrayList<>();
+        synchronized (queue) {
+            for (BoxSnapshot box : queue) {
+                if (box.timestampNanos() >= rendered - 150_000_000L
+                        && box.timestampNanos() <= Math.min(receivedNanos, rendered + 50_000_000L)) result.add(box);
+            }
+        }
+        return result;
+    }
 
     /**
      * Called every server tick to capture the current bounding boxes of all online players.
@@ -92,7 +132,7 @@ public final class HitboxHistoryTracker {
     }
 
     /**
-     * Searches the full history for the oldest snapshot age that would place the target within
+     * Searches the full history for the newest snapshot age that would place the target within
      * {@code maxReach} of {@code eyeX/Y/Z}, returning {@code -1} if no snapshot in the tracked
      * window (up to {@link #MAX_SNAPSHOTS} ticks) makes the hit valid at all.
      *
@@ -106,21 +146,21 @@ public final class HitboxHistoryTracker {
         Deque<BoxSnapshot> queue = history.get(target.getUniqueId());
         if (queue == null) return -1;
 
-        long now = System.nanoTime();
-        double oldestValidMs = -1;
-
         synchronized (queue) {
-            for (BoxSnapshot snap : queue) {
-                if (snap.distanceTo(eyeX, eyeY, eyeZ) <= maxReach) {
-                    double ageMs = (now - snap.timestampNanos()) / 1_000_000.0;
-                    if (ageMs > oldestValidMs) {
-                        oldestValidMs = ageMs;
-                    }
-                }
+            return minimumRequiredRewindMs(queue, eyeX, eyeY, eyeZ, maxReach, System.nanoTime());
+        }
+    }
+
+    public static double minimumRequiredRewindMs(Iterable<BoxSnapshot> frames, double x, double y, double z,
+                                                 double reach, long now) {
+        double newestValidMs = -1;
+        for (BoxSnapshot snap : frames) {
+            if (snap.timestampNanos() <= now && snap.distanceTo(x, y, z) <= reach) {
+                double ageMs = (now - snap.timestampNanos()) / 1_000_000.0;
+                if (newestValidMs < 0 || ageMs < newestValidMs) newestValidMs = ageMs;
             }
         }
-
-        return oldestValidMs;
+        return newestValidMs;
     }
 
     public void remove(UUID uuid) {

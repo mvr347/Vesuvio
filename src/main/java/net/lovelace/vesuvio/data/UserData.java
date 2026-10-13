@@ -327,8 +327,19 @@ public final class UserData {
         return lastSwingNanos;
     }
 
-    public void setLastSwingNanos(long lastSwingNanos) {
+    private final long[] recentSwings = new long[64];
+    private int swingCursor, swingCount;
+    public synchronized void setLastSwingNanos(long lastSwingNanos) {
         this.lastSwingNanos = lastSwingNanos;
+        recentSwings[swingCursor] = lastSwingNanos;
+        swingCursor = (swingCursor + 1) % recentSwings.length;
+        swingCount = Math.min(recentSwings.length, swingCount + 1);
+    }
+    public synchronized boolean hasSwingNear(long attackNanos) {
+        for (int i = 0; i < swingCount; i++) {
+            if (Math.abs(recentSwings[i] - attackNanos) <= 150_000_000L) return true;
+        }
+        return false;
     }
 
     public boolean isFirstAttackSeen() {
@@ -576,6 +587,29 @@ public final class UserData {
             net.lovelace.vesuvio.engine.EnvironmentSnapshot.EMPTY;
 
     public net.lovelace.vesuvio.engine.EnvironmentSnapshot getEnvironment() { return environment; }
+
+    private volatile boolean physicsObserved;
+    private final net.lovelace.vesuvio.engine.physics.ClientWorld clientWorld =
+            new net.lovelace.vesuvio.engine.physics.ClientWorld();
+    public net.lovelace.vesuvio.engine.physics.ClientWorld clientWorld() { return clientWorld; }
+    private volatile long physicsObservationEpoch;
+    private volatile net.lovelace.vesuvio.engine.physics.PhysicsFrame physicsFrame =
+            net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown("OFF");
+    private final net.lovelace.vesuvio.engine.physics.PhysicsSession physicsSession =
+            new net.lovelace.vesuvio.engine.physics.PhysicsSession();
+    public boolean isPhysicsObserved() { return physicsObserved; }
+    public long getPhysicsObservationEpoch() { return physicsObservationEpoch; }
+    public synchronized void setPhysicsObserved(boolean enabled) {
+        if (physicsObserved == enabled) return;
+        physicsObserved = enabled;
+        physicsObservationEpoch++;
+        clientWorld.reset(enabled ? "WAIT_CHUNKS" : "OFF");
+        physicsFrame = net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown(enabled ? "WARMUP" : "OFF");
+        physicsSession.reset(enabled ? "WARMUP" : "OFF");
+    }
+    public net.lovelace.vesuvio.engine.physics.PhysicsSession physicsSession() { return physicsSession; }
+    public net.lovelace.vesuvio.engine.physics.PhysicsFrame getPhysicsFrame() { return physicsFrame; }
+    public void setPhysicsFrame(net.lovelace.vesuvio.engine.physics.PhysicsFrame frame) { physicsFrame = frame; }
 
     public void setEnvironment(net.lovelace.vesuvio.engine.EnvironmentSnapshot environment) {
         this.environment = environment;
@@ -920,8 +954,87 @@ public final class UserData {
     // displacement, so BlinkCheck can tell "just teleported" apart from "silence just broke with a
     // huge catch-up jump" - both look identical at the position-delta level.
     private volatile long lastTeleportMillis = 0L;
-    public void recordTeleport() { this.lastTeleportMillis = System.currentTimeMillis(); }
-    public boolean hasRecentTeleport() { return (System.currentTimeMillis() - lastTeleportMillis) < 1500L; }
+    public synchronized void recordTeleport() {
+        this.lastTeleportMillis = System.currentTimeMillis();
+        resetMovementTracking();
+        setInitialRotation(false);
+        getAimBuffer().reset();
+        getClickBuffer().reset();
+        hasPendingAttackRotation = false;
+        swingCount = 0;
+        swingCursor = 0;
+        lastSwingNanos = 0;
+        resetGcdStreak();
+        resetStrafeReversal();
+        setEnvironment(net.lovelace.vesuvio.engine.EnvironmentSnapshot.EMPTY);
+    }
+
+    private long lastPunishmentNanos;
+    public synchronized boolean tryPunishment(long now) {
+        if (lastPunishmentNanos != 0 && now - lastPunishmentNanos < 1_000_000_000L) return false;
+        lastPunishmentNanos = now;
+        return true;
+    }
+    private volatile long movementResetNanos;
+    private final net.lovelace.vesuvio.engine.OrderedTaskQueue packetChecks =
+            new net.lovelace.vesuvio.engine.OrderedTaskQueue();
+    public long getMovementResetNanos() { return movementResetNanos; }
+    public net.lovelace.vesuvio.engine.OrderedTaskQueue packetChecks() { return packetChecks; }
+
+    /** Reset kinematic history, never the player's accumulated violations. */
+    public synchronized void resetMovementTracking() {
+        movementResetNanos = System.nanoTime();
+        physicsFrame = net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown("MOVEMENT_RESET");
+        physicsSession.reset("MOVEMENT_RESET");
+        hasLastPosition = false;
+        hasReportedState = false;
+        hasReportedPosition = false;
+        reachEvidence.reset();
+        hitboxEvidence.reset();
+        lastDeltaY = 0;
+        lastDeltaXZ = 0;
+        airTicks = 0;
+        groundTicks = 0;
+        lastPositionNanos = 0;
+        lastAnyMovementNanos = 0;
+        lastPositionCarryingNanos = 0;
+        resetFlyStreak();
+        resetSpeedStreak();
+        resetNoFallStreak();
+        resetStepStreak();
+        resetInvMoveStreak();
+        resetPhaseTicks();
+        resetTimerBalance();
+        resetMovementAckBucket();
+        clearBlinkFlushWindow();
+        clearPendingBlink();
+        clearPendingVelocity();
+        setPrevAirDeltaY(0);
+        setPrevHorizontalSpeed(0);
+        clearPredictedVector();
+        speedAirborneTicks = 0;
+        speedPrevOnGround = true;
+        setSpeedPredictionDebt(0);
+    }
+    private volatile boolean awaitingTeleport;
+    private volatile int expectedTeleportId;
+    private volatile long teleportSentNanos;
+    public synchronized void expectTeleport(int id) {
+        recordTeleport();
+        expectedTeleportId = id;
+        teleportSentNanos = System.nanoTime();
+        awaitingTeleport = true;
+    }
+    public synchronized boolean acknowledgeTeleport(int id) {
+        if (!awaitingTeleport || id != expectedTeleportId) return false;
+        awaitingTeleport = false;
+        recordTeleport();
+        return true;
+    }
+    public boolean hasRecentTeleport() {
+        return (awaitingTeleport && System.nanoTime() - teleportSentNanos < 10_000_000_000L)
+                || (System.currentTimeMillis() - lastTeleportMillis) < 3000L;
+    }
 
     // Wall-clock time of the last game-mode change. A game mode is read from the once-per-tick
     // EnvironmentSnapshot, so for up to one tick after the change the movement checks are still
@@ -952,6 +1065,15 @@ public final class UserData {
     private float reportedYaw, reportedPitch;
     private boolean reportedOnGround;
     private boolean hasReportedState;
+    private boolean hasReportedPosition;
+    public synchronized net.lovelace.vesuvio.engine.AttackSnapshot captureAttack(long receivedNanos) {
+        return new net.lovelace.vesuvio.engine.AttackSnapshot(hasReportedPosition, reportedX, reportedY, reportedZ,
+                hasInitialRotation(), getLastYaw(), getLastPitch(), receivedNanos);
+    }
+    private final DecayingEvidence reachEvidence = new DecayingEvidence();
+    private final DecayingEvidence hitboxEvidence = new DecayingEvidence();
+    public DecayingEvidence reachEvidence() { return reachEvidence; }
+    public DecayingEvidence hitboxEvidence() { return hitboxEvidence; }
 
     /** Client's own send epsilon is 2.0E-4 per axis; a little headroom for float round-tripping. */
     private static final double REPORTED_POSITION_EPSILON = 0.002;
@@ -975,6 +1097,7 @@ public final class UserData {
         }
 
         if (hasPosition) {
+            hasReportedPosition = true;
             if (Math.abs(x - reportedX) > REPORTED_POSITION_EPSILON
                     || Math.abs(y - reportedY) > REPORTED_POSITION_EPSILON
                     || Math.abs(z - reportedZ) > REPORTED_POSITION_EPSILON) {
@@ -1001,6 +1124,16 @@ public final class UserData {
         return changed;
     }
 
+
+    private volatile double predictedPreviousX, predictedPreviousZ;
+    private volatile boolean hasPredictedVector;
+    public double getPredictedPreviousX() { return predictedPreviousX; }
+    public double getPredictedPreviousZ() { return predictedPreviousZ; }
+    public boolean hasPredictedVector() { return hasPredictedVector; }
+    public void setPredictedVector(double x, double z) {
+        predictedPreviousX = x; predictedPreviousZ = z; hasPredictedVector = true;
+    }
+    public void clearPredictedVector() { hasPredictedVector = false; }
 
     public double getPrevHorizontalSpeed() { return prevHorizontalSpeed; }
     public void setPrevHorizontalSpeed(double v) { this.prevHorizontalSpeed = v; }

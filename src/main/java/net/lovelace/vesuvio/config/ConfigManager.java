@@ -35,22 +35,33 @@ public final class ConfigManager {
      * the command-executing thread (main thread for a player sender), read from netty threads and
      * virtual-thread checks.
      */
-    private volatile boolean anticheatEnabled = true;
+    private final RuntimeControls runtimeControls = new RuntimeControls();
 
     public ConfigManager(Plugin plugin) {
         this.plugin = plugin;
         reload();
     }
 
+    // Executor settings take effect after a plugin/server restart.
+    public boolean useVirtualThreads() { return config.getBoolean("settings.virtual-threads", true); }
+    public int getWorkerCapacity() { return Math.clamp(config.getInt("settings.max-background-tasks", 2048), 32, 16384); }
+    public int getInferenceParallelism() {
+        return Math.clamp(config.getInt("settings.inference-parallelism", Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2))), 1, 32);
+    }
+
     public boolean isAnticheatEnabled() {
-        return anticheatEnabled;
+        return runtimeControls.detectionEnabled();
     }
 
     /** @return the new state, so callers (the command) can report what actually happened. */
     public boolean setAnticheatEnabled(boolean enabled) {
-        this.anticheatEnabled = enabled;
-        return enabled;
+        return runtimeControls.setDetection(enabled);
     }
+
+    public RuntimeControls runtime() { return runtimeControls; }
+    public boolean isPunishmentEnabled() { return runtimeControls.punishmentsEnabled(); }
+    public boolean mayPunish() { return runtimeControls.mayPunish(); }
+    public boolean setPunishmentEnabled(boolean enabled) { return runtimeControls.setPunishments(enabled); }
 
     public void reload() {
         plugin.saveDefaultConfig();

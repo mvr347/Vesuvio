@@ -69,26 +69,26 @@ public final class StatisticalClickCheck {
         if (cps >= 12.0 && stdDev < (8.5 * sensitivity)) {
             double confidence = Math.min(0.99, 0.78 + (12.0 / cps) * 0.2);
             return CheckResult.flag("ClickStatistical", confidence, 2.0,
-                    String.format(Locale.US, "Unnatural low variance (StdDev: %.1fms) at %.1f CPS", stdDev, cps), details);
+                    String.format(Locale.US, "Неестественно малый разброс (%.1f мс) при %.1f кликов/с", stdDev, cps), details);
         }
 
         // 2. Macro / Script Duplicate Interval Ratio (identically spaced clicks)
         if (dupRatio >= (0.30 / sensitivity) && cps >= 10.0) {
             double confidence = Math.min(0.97, 0.68 + dupRatio * 0.3);
             return CheckResult.flag("ClickStatistical", confidence, 1.8,
-                    String.format(Locale.US, "Repetitive interval duplication (DupRatio: %.0f%%) at %.1f CPS", dupRatio * 100, cps), details);
+                    String.format(Locale.US, "Повторяющиеся интервалы (%.0f%%) при %.1f кликов/с", dupRatio * 100, cps), details);
         }
 
         // 3. Constant Delay Autoclicker (consecutive near-identical clicks within 1ms)
         if (maxConsecutive >= (0.28 / sensitivity) && cps >= 7.0) {
             return CheckResult.flag("ClickStatistical", 0.93, 2.4,
-                    String.format(Locale.US, "Consecutive identical intervals (%.0f%% of window)", maxConsecutive * 100), details);
+                    String.format(Locale.US, "Одинаковые интервалы подряд (%.0f%% окна)", maxConsecutive * 100), details);
         }
 
         // 4. Low Shannon Entropy at sustained high clicking
         if (entropy < (1.6 * sensitivity) && cps >= 10.0) {
             return CheckResult.flag("ClickStatistical", 0.85, 1.5,
-                    String.format(Locale.US, "Robotic click entropy (Entropy: %.2f) at %.1f CPS", entropy, cps), details);
+                    String.format(Locale.US, "Механическая энтропия кликов (%.2f) при %.1f кликов/с", entropy, cps), details);
         }
 
         if (data.getClickBuffer().getCount() < FULL_MIN_SAMPLES) {
@@ -98,7 +98,7 @@ public final class StatisticalClickCheck {
         // 5. Impossibly High Peak CPS bursts (> 24 CPS)
         if (peakCps > 24.0 && lowDelayRatio > (0.35 / sensitivity)) {
             return CheckResult.flag("ClickStatistical", 0.94, 3.0,
-                    String.format(Locale.US, "Burst speed anomaly (Peak CPS: %.1f)", peakCps), details);
+                    String.format(Locale.US, "Аномальный всплеск скорости (пик: %.1f кликов/с)", peakCps), details);
         }
 
         // 6. IQR Boxplot Outlier Resistance (Kauri-inspired: catches humanized cheats with artificial pauses)
@@ -106,7 +106,7 @@ public final class StatisticalClickCheck {
         details.put("iqr", iqr);
         if (cps >= 11.0 && iqr < (6.5 * sensitivity)) {
             return CheckResult.flag("ClickStatistical", 0.93, 2.2,
-                    String.format(Locale.US, "Synthetic IQR density (IQR: %.1fms) at %.1f CPS", iqr, cps), details);
+                    String.format(Locale.US, "Искусственная плотность интервалов (межквартильный размах: %.1f мс) при %.1f кликов/с", iqr, cps), details);
         }
 
         return CheckResult.pass("ClickStatistical");

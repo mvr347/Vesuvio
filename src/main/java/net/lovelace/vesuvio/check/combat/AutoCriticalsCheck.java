@@ -71,7 +71,7 @@ public final class AutoCriticalsCheck {
                     "AutoCriticals",
                     0.94,
                     14.0,
-                    String.format(Locale.US, "Packet micro-hop crit exploit (ΔY: %.4fb, airTicks: %d)", deltaY, airTicks),
+                    String.format(Locale.US, "Критический удар через пакетный микропрыжок (ΔY: %.4f блока, в воздухе: %d тактов)", deltaY, airTicks),
                     details
             );
         }

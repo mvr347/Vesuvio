@@ -40,6 +40,7 @@ public final class UserDataManager {
     public void remove(UUID uuid) {
         UserData data = users.remove(uuid);
         if (data != null) {
+            data.setPhysicsObserved(false);
             data.getClickBuffer().reset();
             data.getAimBuffer().reset();
         }

@@ -79,7 +79,7 @@ public final class BrandPacketListener extends PacketListenerAbstract {
             if (lower.contains(suspicious.toLowerCase())) {
                 userData.adjustTrust(-40.0);
                 userData.adjustRisk(35.0);
-                LOGGER.warning(String.format("[Vesuvio] Flagged suspicious client brand '%s' for player %s (Trust: %.0f, Risk: %.0f)",
+                LOGGER.warning(String.format("[Vesuvio] Подозрительный клиент «%s» у игрока %s (доверие: %.0f, риск: %.0f)",
                         brand, player.getName(), userData.getTrustScore(), userData.getRiskIndex()));
                 return;
             }

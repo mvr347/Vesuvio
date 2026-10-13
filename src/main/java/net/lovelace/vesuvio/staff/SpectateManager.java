@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio.staff;
 
+import net.lovelace.vesuvio.i18n.Russian;
+
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
@@ -46,7 +48,7 @@ public final class SpectateManager {
         staff.teleport(target.getLocation());
 
         BossBar bossBar = BossBar.bossBar(
-                Component.text("Vesuvio Live Telemetry: " + target.getName()),
+                Component.text("Vesuvio — наблюдение: " + target.getName()),
                 0.0f,
                 BossBar.Color.RED,
                 BossBar.Overlay.PROGRESS
@@ -130,7 +132,7 @@ public final class SpectateManager {
             // 1. ActionBar update in Russian
             String actionMsg = String.format(Locale.US,
                     "<red><b>КПС:</b> <yellow>%.1f</yellow></red> <dark_gray>|</dark_gray> "
-                    + "<gold><b>VL:</b> <yellow>%.0f</yellow></gold> <dark_gray>|</dark_gray> "
+                    + "<gold><b>Нарушения:</b> <yellow>%.0f</yellow></gold> <dark_gray>|</dark_gray> "
                     + "<aqua><b>Нейросеть:</b> <yellow>%.0f%%</yellow></aqua> <dark_gray>|</dark_gray> "
                     + "<dark_red><b>Риск:</b> <yellow>%.0f</yellow></dark_red> <dark_gray>|</dark_gray> "
                     + "<green><b>Доверие:</b> <yellow>%.0f</yellow></green> <dark_gray>|</dark_gray> "
@@ -144,7 +146,7 @@ public final class SpectateManager {
                 float progress = (float) Math.max(0.0, Math.min(1.0, risk / 100.0));
                 bar.progress(progress);
                 bar.name(mm.deserialize(String.format(Locale.US,
-                        "<red><b>%s</b></red> <dark_gray>»</dark_gray> <gray>Угроза: <red>%.0f%%</red> | VL: <gold>%.0f</gold> | Проверка: <yellow>%s</yellow></gray>",
+                        "<red><b>%s</b></red> <dark_gray>»</dark_gray> <gray>Угроза: <red>%.0f%%</red> | Нарушения: <gold>%.0f</gold> | Проверка: <yellow>%s</yellow></gray>",
                         target.getName(), risk, vl, targetData.getLastTriggeredCheck())));
             }
         }

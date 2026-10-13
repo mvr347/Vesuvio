@@ -163,7 +163,7 @@ public final class FlyCheck {
                     details.put("subType", "SustainedFlight");
                     data.setPrevAirDeltaY(deltaY);
                     return CheckResult.flag("Fly", 0.95, 2.8,
-                            String.format(Locale.US, "Sustained flight - gravity not applied (ΔY: %.3f, AirTicks: %d)", deltaY, airTicks),
+                            String.format(Locale.US, "Устойчивый полёт без действия гравитации (ΔY: %.3f, в воздухе: %d тактов)", deltaY, airTicks),
                             details);
                 }
             } else {
@@ -181,7 +181,7 @@ public final class FlyCheck {
                 details.put("subType", "Hover");
                 data.setPrevAirDeltaY(deltaY);
                 return CheckResult.flag("Fly", 0.94, 2.2,
-                        String.format(Locale.US, "Unnatural hovering (ΔY: %.3f, AirTicks: %d)", deltaY, airTicks), details);
+                        String.format(Locale.US, "Неестественное зависание (ΔY: %.3f, в воздухе: %d тактов)", deltaY, airTicks), details);
             }
         }
 
@@ -207,7 +207,7 @@ public final class FlyCheck {
                     details.put("subType", "JumpImpulse");
                     data.setPrevAirDeltaY(deltaY);
                     return CheckResult.flag("Fly", 0.93, 2.6,
-                            String.format(Locale.US, "Jump impulse exceeds jump-strength attribute (ΔY: %.2f, max: %.2f)", deltaY, maxImpulse),
+                            String.format(Locale.US, "Импульс прыжка превышает атрибут силы прыжка (ΔY: %.2f, максимум: %.2f)", deltaY, maxImpulse),
                             details);
                 }
             } else {
@@ -225,7 +225,7 @@ public final class FlyCheck {
         // ago, whatever that starting point was and wherever it came from.
         // -----------------------------------------------------------------
         if (airTicks >= 2) {
-            double predicted = (prevDeltaY - GRAVITY) * DRAG;
+            double predicted = net.lovelace.vesuvio.engine.HorizontalMotionModel.verticalVelocity(prevDeltaY, GRAVITY, DRAG);
             double tolerance = CONSISTENCY_TOLERANCE_FIXED + Math.abs(prevDeltaY) * CONSISTENCY_TOLERANCE_RATIO;
             double allowed = predicted + tolerance;
             if (deltaY > allowed) {
@@ -247,7 +247,7 @@ public final class FlyCheck {
                     details.put("subType", subType);
                     data.setPrevAirDeltaY(deltaY);
                     return CheckResult.flag("Fly", confidence, vl,
-                            String.format(Locale.US, "Gravity not consistently applied (ΔY: %.3f, expected ≤%.3f, AirTicks: %d)",
+                            String.format(Locale.US, "Гравитация применяется непоследовательно (ΔY: %.3f, ожидается ≤%.3f, в воздухе: %d тактов)",
                                     deltaY, allowed, airTicks),
                             details);
                 }

@@ -42,6 +42,7 @@ public final class PlayerLifecycleListener implements Listener {
     private final BanEvasionManager banEvasionManager;
     private final CheckPipeline checkPipeline;
     private final ConfigManager config;
+    private final java.util.concurrent.Executor backgroundExecutor;
 
     public PlayerLifecycleListener(UserDataManager userDataManager,
                                    DatabaseManager databaseManager,
@@ -55,7 +56,8 @@ public final class PlayerLifecycleListener implements Listener {
                                    SelfLearningManager selfLearningManager,
                                    BanEvasionManager banEvasionManager,
                                    CheckPipeline checkPipeline,
-                                   ConfigManager config) {
+                                   ConfigManager config, java.util.concurrent.Executor backgroundExecutor) {
+        this.backgroundExecutor = backgroundExecutor;
         this.userDataManager = userDataManager;
         this.databaseManager = databaseManager;
         this.spectateManager = spectateManager;
@@ -71,15 +73,24 @@ public final class PlayerLifecycleListener implements Listener {
         this.config = config;
     }
 
+    private void runBackground(Runnable task) {
+        net.lovelace.vesuvio.engine.AsyncTasks.run(task, backgroundExecutor).exceptionally(failure -> {
+            java.util.logging.Logger.getLogger("Vesuvio").log(java.util.logging.Level.WARNING,
+                    "Не удалось выполнить фоновую задачу входа игрока", failure);
+            return null;
+        });
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         UserData data = userDataManager.getOrCreate(player);
 
+        java.util.UUID playerId = player.getUniqueId();
         // Asynchronously load persistent player metrics from database
-        Thread.ofVirtual().start(() -> {
-            DatabaseManager.PlayerProfile profile = databaseManager.loadPlayer(player.getUniqueId());
-            if (profile != null) {
+        runBackground(() -> {
+            DatabaseManager.PlayerProfile profile = databaseManager.loadPlayer(playerId);
+            if (profile != null && userDataManager.get(playerId) == data) {
                 data.setTrustScore(profile.trustScore());
                 data.setRiskIndex(profile.riskScore());
                 data.setManualSuspect(profile.isSuspect());
@@ -100,7 +111,7 @@ public final class PlayerLifecycleListener implements Listener {
         // Ban-evasion: exact-IP match against a previous ban fingerprint. Fast and checked on
         // every join (the fuzzy playstyle-signature check happens later, once the click buffer
         // fills - see CheckPipeline#processClick).
-        if (banEvasionManager != null && config != null && config.isBanEvasionEnabled() && config.isBanEvasionIpCheckEnabled()) {
+        if (banEvasionManager != null && config != null && config.isAnticheatEnabled() && config.isBanEvasionEnabled() && config.isBanEvasionIpCheckEnabled()) {
             String ip;
             try {
                 ip = (player.getAddress() != null && player.getAddress().getAddress() != null)
@@ -110,16 +121,17 @@ public final class PlayerLifecycleListener implements Listener {
             }
             if (ip != null) {
                 final String finalIp = ip;
-                Thread.ofVirtual().start(() -> {
+                runBackground(() -> {
                     var match = banEvasionManager.findIpMatch(finalIp);
                     match.ifPresent(m -> {
+                        if (!config.isAnticheatEnabled() || userDataManager.get(playerId) != data) return;
                         data.adjustRisk(config.getBanEvasionIpMatchRisk());
                         Map<String, Object> details = new HashMap<>();
                         details.put("bannedUsername", m.bannedUsername());
                         details.put("banReason", m.reason());
                         details.put("bannedAt", m.timestamp());
                         CheckResult result = CheckResult.flag("BanEvasion", 0.85, 2.0,
-                                String.format(Locale.US, "IP matches banned player '%s'", m.bannedUsername()),
+                                String.format(Locale.US, "IP совпадает с заблокированным игроком «%s»", m.bannedUsername()),
                                 details);
                         if (checkPipeline != null) {
                             checkPipeline.handleFlag(player, data, result);
@@ -186,6 +198,9 @@ public final class PlayerLifecycleListener implements Listener {
             data.setInitialRotation(false);
             data.resetGcdStreak();
             data.recordTeleport();
+            if (worldInteractionListener != null) worldInteractionListener.forgetPlayer(event.getPlayer().getUniqueId());
+            if (hitboxTracker != null) hitboxTracker.remove(event.getPlayer().getUniqueId());
+            if (environmentSnapshotService != null) environmentSnapshotService.remove(event.getPlayer().getUniqueId());
         }
     }
 
@@ -212,6 +227,9 @@ public final class PlayerLifecycleListener implements Listener {
             data.setInitialRotation(false);
             data.resetGcdStreak();
             data.recordTeleport();
+            if (worldInteractionListener != null) worldInteractionListener.forgetPlayer(event.getPlayer().getUniqueId());
+            if (hitboxTracker != null) hitboxTracker.remove(event.getPlayer().getUniqueId());
+            if (environmentSnapshotService != null) environmentSnapshotService.remove(event.getPlayer().getUniqueId());
         }
     }
 

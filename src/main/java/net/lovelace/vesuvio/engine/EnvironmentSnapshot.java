@@ -76,6 +76,7 @@ public record EnvironmentSnapshot(
 
         // --- Live attributes (base value + any equipped item's AttributeModifier, resolved by
         // the server exactly like it resolves attack damage or movement speed from gear) ---
+        double movementSpeed, // Resolved MOVEMENT_SPEED, including equipment/effect modifiers.
         double jumpStrength, // Attribute.JUMP_STRENGTH; vanilla default ~0.42
 
         // --- Inventory ---
@@ -92,7 +93,7 @@ public record EnvironmentSnapshot(
             false, false, false, false,
             false, false, false, false, false, -1,
             0, 0,
-            0.42,
+            0.1, 0.42,
             false, "NONE");
 
     /**

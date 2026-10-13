@@ -50,15 +50,14 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
 
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
-        // Kill-switch: with detection off, a foreign (non-ours) transaction id already falls
-        // through uncancelled below - this just makes that the unconditional behaviour instead of
-        // consuming/cancelling our own probes' replies. TransactionManager.tick() (main-thread,
-        // not a packet-listener entry point) keeps sending pings regardless - other systems such as
-        // /vesuvio debug and /vesuvio spectate latency readouts depend on it, and it does no
-        // detection or punishment work itself.
-        if (!config.isAnticheatEnabled()) return;
-
         var type = event.getPacketType();
+        if (type == PacketType.Play.Client.TELEPORT_CONFIRM) {
+            if (event.getPlayer() instanceof Player player) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) data.acknowledgeTeleport(new com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientTeleportConfirm(event).getTeleportId());
+            }
+            return; // The server still needs its own acknowledgement.
+        }
         if (type != PacketType.Play.Client.PONG && type != PacketType.Play.Client.WINDOW_CONFIRMATION) {
             return;
         }
@@ -82,6 +81,13 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
 
     @Override
     public void onPacketSend(PacketSendEvent event) {
+        if (event.getPacketType() == PacketType.Play.Server.PLAYER_POSITION_AND_LOOK) {
+            if (event.getPlayer() instanceof Player player) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) data.expectTeleport(new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerPositionAndLook(event).getTeleportId());
+            }
+            return;
+        }
         if (!config.isAnticheatEnabled()) return;
         if (event.getPacketType() != PacketType.Play.Server.ENTITY_VELOCITY) return;
 

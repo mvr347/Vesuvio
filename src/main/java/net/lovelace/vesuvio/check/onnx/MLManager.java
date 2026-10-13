@@ -32,12 +32,23 @@ public final class MLManager implements AutoCloseable {
     private final Map<String, Integer> inputWidths = new ConcurrentHashMap<>();
     private final AtomicLong totalInferences = new AtomicLong(0);
 
-    public MLManager() {
+    private final java.util.concurrent.ExecutorService executor;
+    private final java.util.concurrent.Semaphore inferenceSlots;
+    private final java.util.concurrent.locks.ReentrantReadWriteLock sessionLock =
+            new java.util.concurrent.locks.ReentrantReadWriteLock(true);
+    private boolean closed;
+
+    public MLManager() { this(true, Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2))); }
+
+    public MLManager(boolean virtualThreads, int parallelism) {
+        inferenceSlots = new java.util.concurrent.Semaphore(Math.max(1, parallelism));
+        executor = new net.lovelace.vesuvio.engine.ManagedExecutor("Vesuvio-ML-", virtualThreads,
+                128, Math.max(1, parallelism), getClass().getClassLoader());
         OrtEnvironment tempEnv = null;
         try {
             tempEnv = OrtEnvironment.getEnvironment("Vesuvio");
         } catch (Throwable t) {
-            LOGGER.log(Level.WARNING, "Native ONNX Runtime could not be initialized. Fallback neural heuristic will be used.", t);
+            LOGGER.log(Level.WARNING, "Не удалось запустить ONNX Runtime. Будет использована резервная эвристика.", t);
         }
         this.env = tempEnv;
     }
@@ -47,12 +58,22 @@ public final class MLManager implements AutoCloseable {
     }
 
     public void loadModel(String name, Path path) throws OrtException {
+        sessionLock.writeLock().lock();
+        try {
+            if (closed) throw new IllegalStateException("Менеджер моделей уже закрыт");
+            loadModelLocked(name, path);
+        } finally { sessionLock.writeLock().unlock(); }
+    }
+
+    private void loadModelLocked(String name, Path path) throws OrtException {
         if (env == null || !Files.exists(path)) {
             return;
         }
 
         OrtSession session;
         try (OrtSession.SessionOptions opts = new OrtSession.SessionOptions()) {
+            opts.setIntraOpNumThreads(1);
+            opts.setInterOpNumThreads(1);
             opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             session = env.createSession(path.toString(), opts);
         }
@@ -64,35 +85,53 @@ public final class MLManager implements AutoCloseable {
                 old.close();
             } catch (OrtException ignored) {}
         }
-        LOGGER.info("[Vesuvio] Successfully loaded ONNX model: " + name + " from " + path.getFileName());
+        LOGGER.info("[Vesuvio] Загружена модель ONNX: " + name + " из " + path.getFileName());
     }
 
     /**
      * Hot-reloads an ONNX model asynchronously without interrupting gameplay.
      */
     public CompletableFuture<Boolean> hotReload(String name, Path newPath) {
-        return CompletableFuture.supplyAsync(() -> {
+        return net.lovelace.vesuvio.engine.AsyncTasks.supply(() -> {
             try {
-                if (!Files.exists(newPath)) {
-                    LOGGER.warning("[Vesuvio] Hot-reload failed: Model file does not exist: " + newPath);
+                if (env == null || !Files.exists(newPath)) {
+                    LOGGER.warning("[Vesuvio] Перезагрузка невозможна: ONNX недоступен или отсутствует файл модели: " + newPath);
                     return false;
                 }
                 loadModel(name, newPath);
                 return true;
             } catch (Exception e) {
-                LOGGER.log(Level.SEVERE, "[Vesuvio] Error during hot-reload of model " + name, e);
+                LOGGER.log(Level.SEVERE, "[Vesuvio] Ошибка перезагрузки модели " + name, e);
                 return false;
             }
-        });
+        }, executor);
     }
 
     /**
      * Evaluates features asynchronously against the specified ONNX model.
      */
     public CompletableFuture<MLResult> evaluateAsync(String modelName, float[] features) {
-        totalInferences.incrementAndGet();
+        // The caller may reuse its extraction buffer immediately after submission.
+        float[] snapshot = features == null ? null : features.clone();
+        return net.lovelace.vesuvio.engine.AsyncTasks.supply(() -> {
+            boolean acquired = false;
+            try {
+                inferenceSlots.acquire();
+                acquired = true;
+                sessionLock.readLock().lockInterruptibly();
+                try {
+                    if (closed) throw new IllegalStateException("Менеджер моделей уже закрыт");
+                    totalInferences.incrementAndGet();
+                    return evaluate(modelName, snapshot);
+                } finally { sessionLock.readLock().unlock(); }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CompletionException(interrupted);
+            } finally { if (acquired) inferenceSlots.release(); }
+        }, executor);
+    }
 
-        return CompletableFuture.supplyAsync(() -> {
+    private MLResult evaluate(String modelName, float[] features) {
             ModelConfig cfg = configs.get(modelName);
             double threshold = (cfg != null) ? cfg.threshold() : 0.85;
             double weight = (cfg != null) ? cfg.weight() : 1.5;
@@ -108,8 +147,8 @@ public final class MLManager implements AutoCloseable {
                 // features are only ever appended), and zero-padding covers the reverse case.
                 int expected = expectedInputWidth(modelName, session);
                 float[] inputFeatures = fitToWidth(features, expected);
-                try (OnnxTensor tensor = OnnxTensor.createTensor(env, new float[][]{inputFeatures})) {
-                    var results = session.run(Map.of(inputName, tensor));
+                try (OnnxTensor tensor = OnnxTensor.createTensor(env, new float[][]{inputFeatures});
+                     OrtSession.Result results = session.run(Map.of(inputName, tensor))) {
                     // Expected output: probabilities vector or tensor
                     Object outputObj = results.get(results.size() - 1).getValue();
                     double probability = parseProbability(outputObj);
@@ -119,24 +158,23 @@ public final class MLManager implements AutoCloseable {
                         // evidence about this player. Returning a mid-range number here used to
                         // feed 0.5 straight into the scoring pipeline as if the model had really
                         // said "coin flip"; fall through to the heuristic instead.
-                        LOGGER.warning("[Vesuvio] ONNX model '" + modelName
-                                + "' returned an unrecognised output shape - falling back to the heuristic.");
+                        LOGGER.warning("[Vesuvio] Модель ONNX «" + modelName
+                                + "» вернула неизвестный формат результата — используется резервная эвристика.");
                     } else {
                         Map<String, Object> details = buildDetails(modelName, features, probability);
-                        String expl = String.format("ONNX %s inference confidence: %.1f%%", modelName, probability * 100);
+                        String expl = String.format("Уверенность модели ONNX %s: %.1f%%", modelName, probability * 100);
                         return MLResult.of(modelName, probability, threshold, weight, expl, details);
                     }
                 } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "Error running ONNX inference for " + modelName + ", falling back", e);
+                    LOGGER.log(Level.WARNING, "Ошибка вычисления ONNX для " + modelName + ", используется резервная эвристика", e);
                 }
             }
 
             // High-precision neural fallback heuristic if .onnx file has not been loaded
             double probability = evaluateNeuralFallback(modelName, features);
             Map<String, Object> details = buildDetails(modelName, features, probability);
-            String expl = String.format("NeuralHeuristic %s probability: %.1f%%", modelName, probability * 100);
+            String expl = String.format("Вероятность по резервной эвристике %s: %.1f%%", modelName, probability * 100);
             return MLResult.of(modelName, probability, threshold, weight, expl, details);
-        });
     }
 
     /**
@@ -168,7 +206,7 @@ public final class MLManager implements AutoCloseable {
         float entropy = f[5];
         float peakCps = f[6];
         float maxConsecutive = f[7];
-        float cps = f[14];
+        float cps = f.length > 14 ? f[14] : (mean > 0 ? 1000f / mean : 0);
 
         // Non-linear combination mimicking logistic regression / multi-layer perceptron
         double z = -4.2;
@@ -214,14 +252,14 @@ public final class MLManager implements AutoCloseable {
                 }
             }
         } catch (Exception e) {
-            LOGGER.log(Level.FINE, "Could not read input width for " + modelName, e);
+            LOGGER.log(Level.FINE, "Не удалось прочитать размер входа модели " + modelName, e);
         }
 
         if (width <= 0) {
             width = "aim_model".equalsIgnoreCase(modelName) ? 8 : 16;
         }
         inputWidths.put(modelName, width);
-        LOGGER.info("[Vesuvio] Model '" + modelName + "' expects " + width + " input feature(s).");
+        LOGGER.info("[Vesuvio] Модель «" + modelName + "» ожидает " + width + " входных признаков.");
         return width;
     }
 
@@ -306,6 +344,12 @@ public final class MLManager implements AutoCloseable {
      * replaced in place by {@link #loadModel} instead and are never unloaded.
      */
     public void unloadModel(String name) {
+        sessionLock.writeLock().lock();
+        try { unloadModelLocked(name); }
+        finally { sessionLock.writeLock().unlock(); }
+    }
+
+    private void unloadModelLocked(String name) {
         configs.remove(name);
         inputWidths.remove(name);
         OrtSession session = sessions.remove(name);
@@ -328,13 +372,25 @@ public final class MLManager implements AutoCloseable {
         return status;
     }
 
+    public void stopTasks() { net.lovelace.vesuvio.engine.ManagedExecutor.stop(executor); }
+
     @Override
     public void close() {
+        stopTasks();
+        sessionLock.writeLock().lock();
+        try {
+            if (closed) return;
+            closed = true;
+            closeSessions();
+        } finally { sessionLock.writeLock().unlock(); }
+    }
+
+    private void closeSessions() {
         for (OrtSession session : sessions.values()) {
             try {
                 session.close();
             } catch (OrtException e) {
-                LOGGER.log(Level.WARNING, "Error closing OrtSession", e);
+                LOGGER.log(Level.WARNING, "Ошибка закрытия сеанса ONNX", e);
             }
         }
         sessions.clear();

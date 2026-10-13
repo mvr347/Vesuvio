@@ -91,7 +91,7 @@ public final class SnapAimCheck {
                 details.put("eventsEvaluated", evidence.events());
 
                 String explanation = String.format(Locale.US,
-                        "Mechanical rotation reversal: %.1f° then %.1f° back within %.0fms (evidence %.1f/%.1f)",
+                        "Механический разворот: %.1f° и затем %.1f° обратно за %.0f мс (свидетельства %.1f/%.1f)",
                         prevDelta, signedDeltaYaw, gapMs, score, threshold);
 
                 evidence.reset();

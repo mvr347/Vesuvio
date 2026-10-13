@@ -110,8 +110,8 @@ public final class AutoDatasetCollector {
         if (collected || historySamples > 0) {
             autoCheatCount.incrementAndGet();
             LOGGER.info(String.format(
-                    "[Vesuvio AutoLearn] Auto-collected CHEAT sample(s) for %s on ban, plus %d earlier session window(s) "
-                            + "(click classifier: %d samples, aim classifier: %d samples)",
+                    "[Vesuvio Автообучение] При блокировке %s автоматически собраны образцы ЧИТА и %d предыдущих окон сессии "
+                            + "(классификатор кликов: %d образцов, прицеливания: %d образцов)",
                     player.getName(), historySamples,
                     clickClassifier.getTrainedSamplesCount(), aimClassifier.getTrainedSamplesCount()));
         }
@@ -160,7 +160,7 @@ public final class AutoDatasetCollector {
         if (collected || historySamples > 0) {
             autoCheatCount.incrementAndGet();
             LOGGER.info(String.format(
-                    "[Vesuvio AutoLearn] Auto-collected conclusive TRAP sample(s) for %s, plus %d earlier session window(s)",
+                    "[Vesuvio Автообучение] Для %s собраны подтверждённые ЛОВУШКОЙ образцы и %d предыдущих окон сессии",
                     player.getName(), historySamples));
         }
     }
