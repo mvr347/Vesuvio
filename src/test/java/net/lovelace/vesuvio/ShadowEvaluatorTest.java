@@ -60,7 +60,7 @@ public class ShadowEvaluatorTest {
         evaluator.clear("click_model");
         assertNull(evaluator.get("click_model"),
                 "stats from a promoted candidate would be compared against itself if kept");
-        assertTrue(evaluator.describe("click_model").contains("no paired inferences"));
+        assertTrue(evaluator.describe("click_model").contains("парных вычислений пока нет"));
     }
 
     @Test

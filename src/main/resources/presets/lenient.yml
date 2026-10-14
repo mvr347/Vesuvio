@@ -1,6 +1,6 @@
 # ==============================================================================
-#                      PRESET: LENIENT (CASUAL / HIGH PING / CROSSPLAY)
-#   Optimal for servers with high network latency, Geyser/Bedrock crossplay, or Wi-Fi players.
+#                      ПРОФИЛЬ: LENIENT (МЯГКИЙ / ВЫСОКИЙ ПИНГ / СОВМЕСТНАЯ ИГРА)
+#   Для высокого пинга, совместной игры с Geyser/Bedrock или подключения по Wi-Fi.
 # ==============================================================================
 description: "Мягкий режим для серверов с высоким пингом, мобильными игроками или Bedrock"
 
@@ -39,7 +39,7 @@ punishments:
       action: "notify-staff"
     80:
       action: "kick"
-      command: "kick %player% <red>[Vesuvio] Extreme combat desync detected.</red>"
+      command: "kick %player% <red>[Vesuvio] Обнаружена сильная рассинхронизация боя.</red>"
     130:
       action: "ban"
-      command: "ban %player% 3d <red>[Vesuvio] Unfair Advantage (Confirmed ML).</red>"
+      command: "ban %player% 3d <red>[Vesuvio] Использование читов (подтверждено моделью).</red>"

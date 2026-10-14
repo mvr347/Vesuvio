@@ -89,7 +89,7 @@ public final class PhaseCheck {
 
         return CheckResult.flag("Phase", 0.95, 4.0,
                 String.format(Locale.US,
-                        "Travelling inside a solid block (%.2fb/t sustained for %d ticks)",
+                        "Движение внутри сплошного блока (%.2f блока/такт в течение %d тактов)",
                         horizontal, REQUIRED_TICKS),
                 details);
     }

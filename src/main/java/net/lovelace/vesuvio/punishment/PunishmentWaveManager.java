@@ -48,8 +48,9 @@ public final class PunishmentWaveManager {
     }
 
     public void queuePunishment(UUID uuid, String username, String command, String reason) {
+        if (!config.mayPunish()) return;
         queue.put(uuid, new QueuedPunishment(uuid, username, command, reason, System.currentTimeMillis()));
-        LOGGER.info(String.format("[Vesuvio] Queued player %s into Lava Wave. Current wave size: %d", username, queue.size()));
+        LOGGER.info(String.format("[Vesuvio] Игрок %s добавлен в волну наказаний. Игроков в очереди: %d", username, queue.size()));
         if (loveHuntHook != null) {
             loveHuntHook.createLavaBounty(uuid, username, reason);
         }
@@ -75,14 +76,18 @@ public final class PunishmentWaveManager {
      * Executes the Lava Wave, banning all queued cheaters simultaneously.
      */
     public int executeWave() {
-        if (queue.isEmpty()) return 0;
+        if (!config.mayPunish() || queue.isEmpty()) return 0;
+        long actionEpoch = config.runtime().actionEpoch();
 
         List<QueuedPunishment> toExecute = new ArrayList<>(queue.values());
         queue.clear();
 
         // Must run command execution on Bukkit main thread
         Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!config.runtime().acceptsAction(actionEpoch)) return;
+            int executed = 0;
             for (QueuedPunishment p : toExecute) {
+                if (!config.runtime().acceptsAction(actionEpoch)) break;
                 if (p.command() != null && !p.command().isBlank()) {
                     String cmd = p.command();
                     if (cmd.contains("<") && cmd.contains(">")) {
@@ -90,8 +95,9 @@ public final class PunishmentWaveManager {
                             cmd = net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacySection().serialize(mm.deserialize(cmd));
                         } catch (Throwable ignored) {}
                     }
-                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
-                }
+                    if (!Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd)) continue;
+                    executed++;
+                } else continue;
 
                 databaseManager.logPunishmentAsync(new net.lovelace.vesuvio.storage.PunishmentRecord(
                         p.uuid(),
@@ -102,11 +108,11 @@ public final class PunishmentWaveManager {
                 ));
             }
 
-            if (config.isWaveBroadcastEnabled() && !toExecute.isEmpty()) {
+            if (config.isWaveBroadcastEnabled() && executed > 0) {
                 String announcement = String.format(Locale.US,
                         "<newline><gradient:#ff4500:#ff8c00><b>🌋 [Vesuvio] Волна банов Lava Wave изверглась!</b></gradient><newline>"
                         + "<gray>Массовая зачистка античита заблокировала <red><b>%d</b></red> нарушителей. Играйте честно!</gray><newline>",
-                        toExecute.size());
+                        executed);
                 Bukkit.broadcast(mm.deserialize(announcement));
             }
         });

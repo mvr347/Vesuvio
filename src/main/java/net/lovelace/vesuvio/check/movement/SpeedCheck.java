@@ -95,13 +95,15 @@ public final class SpeedCheck {
         // No fresh main-thread snapshot means we cannot tell ice from dirt or a boat from a sprint.
         // Judging movement on unknown terrain is how false positives are made; skip instead.
         if (!env.isFresh(System.currentTimeMillis(), 500L)) {
+            data.clearPredictedVector();
             data.setPrevHorizontalSpeed(Math.hypot(deltaX, deltaZ));
             return CheckResult.pass("Speed");
         }
 
         double hDist = Math.hypot(deltaX, deltaZ);
 
-        if (env.isMovementExempt() || env.levitation() || data.hasRecentVelocity() || env.swimming()) {
+        if (env.isMovementExempt() || env.levitation() || data.hasRecentVelocity() || env.swimming() || env.inWater() || env.inLava() || env.nearClimbable()) {
+            data.clearPredictedVector();
             data.setPrevHorizontalSpeed(hDist);
             data.setSpeedPredictionDebt(0.0);
             data.resetSpeedStreak();
@@ -111,6 +113,7 @@ public final class SpeedCheck {
         // A gap that does not correspond to one tick carries more than one tick of movement.
         // Reset momentum rather than predicting from a distance we cannot attribute to a tick.
         if (elapsedMs > MAX_TICK_GAP_MS || elapsedMs <= 0) {
+            data.clearPredictedVector();
             data.setPrevHorizontalSpeed(hDist);
             return CheckResult.pass("Speed");
         }
@@ -129,14 +132,25 @@ public final class SpeedCheck {
                 + prediction.accel() * ACCEL_TOLERANCE
                 + ABSOLUTE_SLACK * Math.max(1.0, lagTolerance);
         double debt = data.getSpeedPredictionDebt();
+        double excess = Math.max(0, hDist - allowed);
+        boolean stableGround = onGround && data.getGroundTicks() >= 3;
+        boolean collision = env.blockedPosX() || env.blockedNegX() || env.blockedPosZ() || env.blockedNegZ();
+        if (data.hasPredictedVector() && stableGround && !collision && hDist > 0.03
+                && env.blockBelow() != Material.SLIME_BLOCK) {
+            double residual = net.lovelace.vesuvio.engine.HorizontalMotionModel.residual(
+                    data.getPredictedPreviousX(), data.getPredictedPreviousZ(), deltaX, deltaZ,
+                    slipperinessOf(env.blockBelow()) * AIR_FRICTION,
+                    prediction.accel() * ACCEL_TOLERANCE, 0, ABSOLUTE_SLACK * Math.max(1, lagTolerance));
+            excess = Math.max(excess, residual);
+        }
+        data.setPredictedVector(deltaX, deltaZ);
 
-        if (hDist > allowed) {
-            debt = Math.min(DEBT_CEILING, debt + (hDist - allowed));
+        if (excess > 0) {
+            debt = Math.min(DEBT_CEILING, debt + excess);
             data.setSpeedPredictionDebt(debt);
 
             if (debt >= DEBT_FLAG_THRESHOLD) {
                 data.incrementSpeedStreak();
-                double excess = hDist - allowed;
                 double confidence = Math.min(0.99, 0.76 + Math.min(0.20, debt * 0.12));
                 double vl = Math.min(6.0, 1.2 + debt * 2.0);
 
@@ -156,7 +170,7 @@ public final class SpeedCheck {
 
                 return CheckResult.flag("Speed", confidence, vl,
                         String.format(Locale.US,
-                                "Outran movement model (%.3fb/t vs predicted max %.3fb/t on %s, debt %.2f)",
+                                "Превышена модель скорости (%.3f блока/такт при максимуме %.3f на %s, накопленное превышение %.2f)",
                                 hDist, allowed, env.blockBelow().name().toLowerCase(Locale.ROOT), debt),
                         details);
             }
@@ -192,17 +206,21 @@ public final class SpeedCheck {
             friction = slipperiness * AIR_FRICTION;
             // Vanilla scales ground acceleration by 0.16277 / friction^3, which is what keeps a
             // player's top speed roughly constant across surfaces while ice lets momentum carry.
-            accel = GROUND_ACCEL * (0.16277136 / (friction * friction * friction));
+            double attribute = Double.isFinite(env.movementSpeed()) && env.movementSpeed() >= 0 ? env.movementSpeed() : GROUND_ACCEL;
+            // The resolved attribute already contains Speed/Slowness, gear and sprint modifiers.
+            // Grant the possible sprint transition when the main-thread snapshot is one tick old.
+            accel = attribute * (env.sprinting() ? 1.0 : SPRINT_MULTIPLIER)
+                    * (0.16277136 / (friction * friction * friction));
         } else {
             friction = AIR_FRICTION;
             accel = AIR_ACCEL;
         }
 
         // Sprinting is a straight 1.3x on the applied acceleration.
-        accel *= SPRINT_MULTIPLIER;
+        if (!onGround) accel *= SPRINT_MULTIPLIER;
 
         // Speed / Slowness style attribute modifiers are multiplicative on movement speed.
-        if (env.speedAmplifier() >= 0) {
+        if (!onGround && env.speedAmplifier() >= 0) {
             accel *= 1.0 + 0.20 * (env.speedAmplifier() + 1);
         }
 

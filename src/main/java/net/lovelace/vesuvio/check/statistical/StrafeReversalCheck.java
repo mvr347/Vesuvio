@@ -129,7 +129,7 @@ public final class StrafeReversalCheck {
         details.put("humanFloorMs", humanTicks * 50.0);
 
         String explanation = String.format(Locale.US,
-                "Camera answered target direction reversals in ~%.0fms across %d events (human sensorimotor floor ~%dms)",
+                "Камера реагировала на смену направления цели за ~%.0f мс в %d случаях (минимальная реакция человека ~%d мс)",
                 lastReactionTicks * 50.0, totalEvents, humanTicks * 50);
 
         data.resetStrafeReversal();

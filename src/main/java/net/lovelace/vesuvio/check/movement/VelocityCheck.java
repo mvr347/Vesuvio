@@ -161,7 +161,7 @@ public final class VelocityCheck {
 
         return CheckResult.flag("Velocity", confidence, vl,
                 String.format(Locale.US,
-                        "Absorbed server knockback (took %.0f%% of a %.2fb/t impulse over %d ticks, evidence %.1f/%.1f)",
+                        "Подавлено серверное отбрасывание (принято %.0f%% импульса %.2f блока/такт за %d тактов, свидетельства %.1f/%.1f)",
                         percent, impulse, MEASURE_TICKS, score, EVIDENCE_THRESHOLD),
                 details);
     }

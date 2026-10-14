@@ -22,7 +22,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.*;
-import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -46,6 +45,7 @@ public final class ApiServer implements AutoCloseable {
     private final DatabaseManager databaseManager;
 
     private HttpServer server;
+    private java.util.concurrent.ExecutorService requestExecutor;
     private byte[] cachedDashboardHtml;
 
     public ApiServer(Plugin plugin,
@@ -69,17 +69,17 @@ public final class ApiServer implements AutoCloseable {
             if (in != null) {
                 cachedDashboardHtml = in.readAllBytes();
             } else {
-                cachedDashboardHtml = "<h1>Vesuvio Dashboard</h1><p>Resource not found.</p>".getBytes(StandardCharsets.UTF_8);
+                cachedDashboardHtml = "<h1>Панель Vesuvio</h1><p>Ресурс не найден.</p>".getBytes(StandardCharsets.UTF_8);
             }
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Failed to load dashboard.html resource", e);
-            cachedDashboardHtml = "<h1>Vesuvio Dashboard</h1>".getBytes(StandardCharsets.UTF_8);
+            LOGGER.log(Level.WARNING, "Не удалось загрузить ресурс dashboard.html", e);
+            cachedDashboardHtml = "<h1>Панель Vesuvio</h1>".getBytes(StandardCharsets.UTF_8);
         }
     }
 
     public void start() {
         if (!config.isWebEnabled()) {
-            LOGGER.info("[Vesuvio] Web server is disabled in config.yml.");
+            LOGGER.info("[Vesuvio] Веб-сервер отключён в config.yml.");
             return;
         }
 
@@ -87,11 +87,11 @@ public final class ApiServer implements AutoCloseable {
         boolean publiclyBound = !"127.0.0.1".equals(config.getWebHost()) && !"localhost".equals(config.getWebHost());
         if (usingDefaultToken && publiclyBound) {
             LOGGER.severe("=============================================================================");
-            LOGGER.severe("[Vesuvio] SECURITY WARNING: web.bearer-token is still the default value and");
-            LOGGER.severe("[Vesuvio] web.host is bound publicly (" + config.getWebHost() + "). Anyone who can reach this");
-            LOGGER.severe("[Vesuvio] port can reset VL/Risk and hot-reload models. Change web.bearer-token");
-            LOGGER.severe("[Vesuvio] in config.yml immediately, or set web.host to 127.0.0.1 if the panel is");
-            LOGGER.severe("[Vesuvio] only accessed locally / via a reverse proxy that adds its own auth.");
+            LOGGER.severe("[Vesuvio] ВНИМАНИЕ: web.bearer-token всё ещё имеет значение по умолчанию,");
+            LOGGER.severe("[Vesuvio] а web.host доступен извне (" + config.getWebHost() + "). Любой, кто имеет доступ к этому");
+            LOGGER.severe("[Vesuvio] порту, может сбросить нарушения/риск и перезагрузить модели. Измените web.bearer-token");
+            LOGGER.severe("[Vesuvio] в config.yml или задайте web.host: 127.0.0.1, если панель используется");
+            LOGGER.severe("[Vesuvio] только локально или через обратный прокси с собственной авторизацией.");
             LOGGER.severe("=============================================================================");
         }
 
@@ -100,13 +100,9 @@ public final class ApiServer implements AutoCloseable {
             String host = config.getWebHost();
             server = HttpServer.create(new InetSocketAddress(host, port), 0);
 
-            // Virtual Threads executor with plugin classloader
-            ClassLoader pluginClassLoader = getClass().getClassLoader();
-            server.setExecutor(Executors.newThreadPerTaskExecutor(task -> {
-                Thread t = Thread.ofVirtual().name("Vesuvio-API-", 0).unstarted(task);
-                t.setContextClassLoader(pluginClassLoader);
-                return t;
-            }));
+            requestExecutor = new net.lovelace.vesuvio.engine.ManagedExecutor(
+                    "Vesuvio-API-", config.useVirtualThreads(), 128, 4, getClass().getClassLoader());
+            server.setExecutor(requestExecutor);
 
             // Root dashboard
             server.createContext("/", this::handleRoot);
@@ -121,10 +117,12 @@ public final class ApiServer implements AutoCloseable {
             server.createContext("/api/v1/models/reload", this::handleModelsReload);
 
             server.start();
-            LOGGER.info(String.format("[Vesuvio] Web Dashboard & REST API listening at http://%s:%d (Virtual Threads Enabled)", host, port));
+            LOGGER.info(String.format("[Vesuvio] Веб-панель и REST API доступны по адресу http://%s:%d", host, port));
 
         } catch (IOException e) {
-            LOGGER.log(Level.SEVERE, "Failed to start Vesuvio Web Server", e);
+            LOGGER.log(Level.SEVERE, "Не удалось запустить веб-сервер Vesuvio", e);
+            if (server != null) server.stop(0);
+            net.lovelace.vesuvio.engine.ManagedExecutor.stop(requestExecutor);
         }
     }
 
@@ -154,7 +152,7 @@ public final class ApiServer implements AutoCloseable {
             while ((read = in.read(buffer)) != -1) {
                 total += read;
                 if (total > MAX_REQUEST_BODY_BYTES) {
-                    throw new IOException("Request body exceeds " + MAX_REQUEST_BODY_BYTES + " bytes");
+                    throw new IOException("Размер тела запроса превышает " + MAX_REQUEST_BODY_BYTES + " байт");
                 }
                 out.write(buffer, 0, read);
             }
@@ -205,7 +203,7 @@ public final class ApiServer implements AutoCloseable {
             return;
         }
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
 
@@ -234,7 +232,7 @@ public final class ApiServer implements AutoCloseable {
             return;
         }
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
 
@@ -263,7 +261,7 @@ public final class ApiServer implements AutoCloseable {
         String path = exchange.getRequestURI().getPath();
         String[] parts = path.split("/");
         if (parts.length < 5) {
-            sendJson(exchange, 404, "{\"error\": \"Not found\"}");
+            sendJson(exchange, 404, "{\"error\": \"Не найдено\"}");
             return;
         }
 
@@ -271,7 +269,7 @@ public final class ApiServer implements AutoCloseable {
         try {
             uuid = UUID.fromString(parts[4]);
         } catch (IllegalArgumentException e) {
-            sendJson(exchange, 400, "{\"error\": \"Invalid UUID\"}");
+            sendJson(exchange, 400, "{\"error\": \"Некорректный UUID\"}");
             return;
         }
 
@@ -281,7 +279,7 @@ public final class ApiServer implements AutoCloseable {
         if ("score".equalsIgnoreCase(subRoute)) {
             UserData data = userDataManager.get(uuid);
             if (data == null) {
-                sendJson(exchange, 404, "{\"error\": \"Player not tracked\"}");
+                sendJson(exchange, 404, "{\"error\": \"Игрок не отслеживается\"}");
                 return;
             }
             String json = String.format(Locale.US,
@@ -292,7 +290,7 @@ public final class ApiServer implements AutoCloseable {
         }
 
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
 
@@ -303,16 +301,16 @@ public final class ApiServer implements AutoCloseable {
                 data.resetVl();
                 data.adjustRisk(-30.0);
             }
-            sendJson(exchange, 200, "{\"status\": \"Action executed\"}");
+            sendJson(exchange, 200, "{\"status\": \"Действие выполнено\"}");
             return;
         }
 
-        sendJson(exchange, 404, "{\"error\": \"Unknown player sub-route\"}");
+        sendJson(exchange, 404, "{\"error\": \"Неизвестный маршрут игрока\"}");
     }
 
     private void handlePunishments(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
         sendJson(exchange, 200, "[]");
@@ -320,7 +318,7 @@ public final class ApiServer implements AutoCloseable {
 
     private void handlePendingReviews(HttpExchange exchange) throws IOException {
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
 
@@ -344,18 +342,18 @@ public final class ApiServer implements AutoCloseable {
 
     private void handleReviewAction(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, "{\"error\": \"Method not allowed\"}");
+            sendJson(exchange, 405, "{\"error\": \"Метод не разрешён\"}");
             return;
         }
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
 
         String path = exchange.getRequestURI().getPath();
         String[] parts = path.split("/");
         if (parts.length < 5) {
-            sendJson(exchange, 400, "{\"error\": \"Missing sample ID\"}");
+            sendJson(exchange, 400, "{\"error\": \"Не указан идентификатор образца\"}");
             return;
         }
 
@@ -364,7 +362,7 @@ public final class ApiServer implements AutoCloseable {
         try {
             body = readBoundedBody(exchange);
         } catch (IOException e) {
-            sendJson(exchange, 413, "{\"error\": \"Request body too large\"}");
+            sendJson(exchange, 413, "{\"error\": \"Тело запроса слишком велико\"}");
             return;
         }
         String verdict = body.contains("cheat") ? "cheat" : "legit";
@@ -380,19 +378,19 @@ public final class ApiServer implements AutoCloseable {
         );
 
         if (success) {
-            sendJson(exchange, 200, "{\"status\": \"Verdict accepted\"}");
+            sendJson(exchange, 200, "{\"status\": \"Вердикт принят\"}");
         } else {
-            sendJson(exchange, 404, "{\"error\": \"Sample not found or expired\"}");
+            sendJson(exchange, 404, "{\"error\": \"Образец не найден или устарел\"}");
         }
     }
 
     private void handleModelsReload(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, "{\"error\": \"Method not allowed\"}");
+            sendJson(exchange, 405, "{\"error\": \"Метод не разрешён\"}");
             return;
         }
         if (!checkAuth(exchange)) {
-            sendJson(exchange, 401, "{\"error\": \"Unauthorized\"}");
+            sendJson(exchange, 401, "{\"error\": \"Нет доступа\"}");
             return;
         }
 
@@ -400,14 +398,15 @@ public final class ApiServer implements AutoCloseable {
         mlManager.hotReload("click_model", modelsDir.resolve("click_model.onnx"));
         mlManager.hotReload("aim_model", modelsDir.resolve("aim_model.onnx"));
 
-        sendJson(exchange, 200, "{\"status\": \"Hot-reload dispatched\"}");
+        sendJson(exchange, 200, "{\"status\": \"Перезагрузка моделей запущена\"}");
     }
 
     @Override
     public void close() {
         if (server != null) {
             server.stop(1);
-            LOGGER.info("[Vesuvio] Web server stopped.");
+            net.lovelace.vesuvio.engine.ManagedExecutor.stop(requestExecutor);
+            LOGGER.info("[Vesuvio] Веб-сервер остановлен.");
         }
     }
 }

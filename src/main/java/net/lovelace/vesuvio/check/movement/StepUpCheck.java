@@ -71,7 +71,7 @@ public final class StepUpCheck {
                     "StepUp",
                     confidence,
                     12.0,
-                    String.format(Locale.US, "Unnatural step height (ΔY: %.2fb > 0.6b limit)", deltaY),
+                    String.format(Locale.US, "Недопустимая высота шага (ΔY: %.2f блока при максимуме 0.6)", deltaY),
                     details
             );
         }

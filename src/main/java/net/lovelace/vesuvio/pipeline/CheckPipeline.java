@@ -81,6 +81,9 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.check.combat.MoveDirectionCheck moveDirectionCheck = new net.lovelace.vesuvio.check.combat.MoveDirectionCheck();
     private final net.lovelace.vesuvio.check.statistical.BaritoneCheck baritoneCheck = new net.lovelace.vesuvio.check.statistical.BaritoneCheck();
 
+    private final java.util.concurrent.Executor backgroundExecutor;
+    private final net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics;
+
     public CheckPipeline(Plugin plugin,
                          ConfigManager config,
                          MLManager mlManager,
@@ -93,7 +96,11 @@ public final class CheckPipeline {
                          net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
                          net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager,
                          net.lovelace.vesuvio.engine.TransactionManager transactionManager,
-                         net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager) {
+                         net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager,
+                         java.util.concurrent.Executor backgroundExecutor,
+                         net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics) {
+        this.diagnostics = diagnostics;
+        this.backgroundExecutor = backgroundExecutor;
         this.plugin = plugin;
         this.config = config;
         this.mlManager = mlManager;
@@ -162,9 +169,20 @@ public final class CheckPipeline {
      * {@link ConfigManager} directly) can gate before doing any per-packet work at all, rather
      * than dispatching to a virtual thread just to have this pipeline no-op there.
      */
+    public void submitPacketCheck(UserData data, java.util.concurrent.Executor executor, Runnable task) {
+        long epoch = config.runtime().detectionEpoch();
+        long reset = data.getMovementResetNanos();
+        data.packetChecks().submit(executor, () -> {
+            synchronized (data) {
+                if (config.runtime().acceptsDetection(epoch) && data.getMovementResetNanos() == reset) task.run();
+            }
+        });
+    }
+
     public boolean isAnticheatEnabled() {
         return config.isAnticheatEnabled();
     }
+    public long getDetectionEpoch() { return config.runtime().detectionEpoch(); }
 
     public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
         return banEvasionManager;
@@ -178,7 +196,7 @@ public final class CheckPipeline {
      * Processes click events from a player. Runs asynchronously.
      */
     public void processClick(Player player, UserData data) {
-        if (!config.isAnticheatEnabled()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
 
         // -------------------------------------------------------------
         // Layer 1: Statistical Engine (Fast, Heuristic)
@@ -224,12 +242,15 @@ public final class CheckPipeline {
         // whatever the previous inference happened to leave behind - see the ensemble block.
         java.util.concurrent.CompletableFuture<MLResult> clickMlFuture = null;
 
+        final long detectionEpoch = config.runtime().detectionEpoch();
+        final long resetEpoch = data.getMovementResetNanos();
         if (config.isOnnxEnabled() && isSuspicious && data.shouldRunML()) {
             data.markMLRun();
             float[] featuresCopy = features.clone();
 
             clickMlFuture = mlManager.evaluateAsync("click_model", featuresCopy);
             clickMlFuture.thenAccept(mlResult -> {
+                if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
                 data.setLastMLProbability(mlResult.probability());
                 recordShadowVerdict("click_model", featuresCopy, mlResult.probability());
 
@@ -240,7 +261,7 @@ public final class CheckPipeline {
                     data.setLastTriggeredCheck("ClickML");
 
                     CheckResult res = CheckResult.flag("ClickML", mlResult.probability(), mlResult.vl(),
-                            String.format(Locale.US, "Neural click model confidence: %.1f%%", mlResult.probability() * 100),
+                            String.format(Locale.US, "Уверенность модели кликов: %.1f%%", mlResult.probability() * 100),
                             mlResult.details());
                     handleFlag(player, data, res);
 
@@ -277,7 +298,7 @@ public final class CheckPipeline {
                     slDetails.put("trainedSamples", classifier.getTrainedSamplesCount());
 
                     CheckResult slResult = CheckResult.flag("ClickSelfLearn", selfLearnProb, 1.6 * config.getSelfLearningWeight(),
-                            String.format(Locale.US, "Online self-learning classifier confidence: %.1f%% (trained on %d samples)",
+                            String.format(Locale.US, "Уверенность самообучающегося классификатора: %.1f%% (обучен на %d образцах)",
                                     selfLearnProb * 100, classifier.getTrainedSamplesCount()),
                             slDetails);
                     handleFlag(player, data, slResult);
@@ -314,7 +335,7 @@ public final class CheckPipeline {
                 float similarity = ClickSignature.hammingSimilarity(baseline, signature);
                 if (similarity < (1.0f - config.getFingerprintDeviationThreshold())) {
                     data.adjustRisk(config.getFingerprintRiskPenalty());
-                    LOGGER.info(String.format("[Vesuvio] Playstyle fingerprint divergence for %s: sim=%.2f",
+                    LOGGER.info(String.format("[Vesuvio] Изменение стиля игры %s: сходство=%.2f",
                             player.getName(), similarity));
                 }
             }
@@ -328,27 +349,28 @@ public final class CheckPipeline {
                 && !data.isAltCheckDone() && data.getClickBuffer().getCount() >= 48) {
             data.setAltCheckDone(true);
             long[] signatureSnapshot = signature.clone();
-            java.util.concurrent.CompletableFuture.runAsync(() -> {
+            net.lovelace.vesuvio.engine.AsyncTasks.run(() -> {
                 var match = banEvasionManager.findSignatureMatch(
                         signatureSnapshot, config.getBanEvasionSignatureThreshold(), config.getBanEvasionSignatureScanLimit());
                 match.ifPresent(m -> {
+                    if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
                     data.adjustRisk(config.getBanEvasionSignatureMatchRisk());
                     Map<String, Object> details = new HashMap<>();
                     details.put("bannedUsername", m.bannedUsername());
                     details.put("similarity", m.similarity());
                     CheckResult result = CheckResult.flag("BanEvasion", 0.75, 1.5,
-                            String.format(Locale.US, "Playstyle matches banned player '%s' (similarity %.0f%%)",
+                            String.format(Locale.US, "Стиль игры совпадает с заблокированным игроком «%s» (сходство %.0f%%)",
                                     m.bannedUsername(), m.similarity() * 100),
                             details);
                     handleFlag(player, data, result);
                 });
-            }).exceptionally(ex -> {
+            }, backgroundExecutor).exceptionally(ex -> {
                 // altCheckDone is already set above (this check only ever needs to run once per
                 // session - the signature snapshot it compares only gets more stable over time,
                 // not less), but a failure here would otherwise vanish silently since nothing
                 // else observes this future. Log it so an operator can see the check misfired.
                 LOGGER.log(java.util.logging.Level.WARNING,
-                        "[Vesuvio] Ban-evasion signature check failed for " + player.getName(), ex);
+                        "[Vesuvio] Ошибка проверки обхода блокировки по стилю игры: " + player.getName(), ex);
                 return null;
             });
         }
@@ -375,12 +397,15 @@ public final class CheckPipeline {
 
             if (clickMlFuture != null) {
                 clickMlFuture
-                        .thenAccept(mlResult -> applyEnsemble(data, statConfidence, mlResult.probability(),
-                                selfLearn, repeat, temporal))
+                        .thenAccept(mlResult -> {
+                            if (config.runtime().acceptsDetection(detectionEpoch) && data.getMovementResetNanos() == resetEpoch)
+                                applyEnsemble(data, statConfidence, mlResult.probability(), selfLearn, repeat, temporal);
+                        })
                         .exceptionally(ex -> {
                             // Inference failed; still score the rest of the layers rather than
                             // silently dropping the whole ensemble contribution for this click.
-                            applyEnsemble(data, statConfidence, null, selfLearn, repeat, temporal);
+                            if (config.runtime().acceptsDetection(detectionEpoch) && data.getMovementResetNanos() == resetEpoch)
+                                applyEnsemble(data, statConfidence, null, selfLearn, repeat, temporal);
                             return null;
                         });
             } else {
@@ -433,7 +458,7 @@ public final class CheckPipeline {
      *                       real signed value.
      */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch, float signedDeltaYaw) {
-        if (!config.isAnticheatEnabled()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
 
         // KillauraAngleCheck's ReactionTime sub-check needs to know when the attacker's camera
         // last made a "real" turn, not merely received a rotation packet - tracked here since this
@@ -500,7 +525,10 @@ public final class CheckPipeline {
             if (isAimSuspicious && data.shouldRunML()) {
                 data.markMLRun();
                 float[] featuresCopy = aimFeatures.clone();
+                long detectionEpoch = config.runtime().detectionEpoch();
+                long resetEpoch = data.getMovementResetNanos();
                 mlManager.evaluateAsync("aim_model", featuresCopy).thenAccept(mlResult -> {
+                    if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
                     recordShadowVerdict("aim_model", featuresCopy, mlResult.probability());
                     if (mlResult.isFlag()) {
                         data.addVl(mlResult.vl() * config.getOnnxWeight());
@@ -509,7 +537,7 @@ public final class CheckPipeline {
                         data.setLastTriggeredCheck("AimML");
 
                         CheckResult res = CheckResult.flag("AimML", mlResult.probability(), mlResult.vl(),
-                                String.format(Locale.US, "Neural aim model confidence: %.1f%%", mlResult.probability() * 100),
+                                String.format(Locale.US, "Уверенность модели прицеливания: %.1f%%", mlResult.probability() * 100),
                                 mlResult.details());
                         handleFlag(player, data, res);
                     }
@@ -540,7 +568,7 @@ public final class CheckPipeline {
                     slDetails.put("trainedSamples", aimClassifier.getTrainedSamplesCount());
 
                     CheckResult slResult = CheckResult.flag("AimSelfLearn", aimSelfLearnProb, 1.6 * config.getSelfLearningWeight(),
-                            String.format(Locale.US, "Online aim self-learning classifier confidence: %.1f%% (trained on %d samples)",
+                            String.format(Locale.US, "Уверенность самообучающегося классификатора прицеливания: %.1f%% (обучен на %d образцах)",
                                     aimSelfLearnProb * 100, aimClassifier.getTrainedSamplesCount()),
                             slDetails);
                     handleFlag(player, data, slResult);
@@ -559,7 +587,12 @@ public final class CheckPipeline {
      * Evaluates attack interactions: NoSwing, InventoryAttack, and Latency-Compensated Reach.
      */
     public void processAttack(Player player, int targetEntityId, UserData data) {
-        if (!config.isAnticheatEnabled()) return;
+        processAttack(player, targetEntityId, data, data.captureAttack(System.nanoTime()));
+    }
+
+    public void processAttack(Player player, int targetEntityId, UserData data,
+                              net.lovelace.vesuvio.engine.AttackSnapshot attack) {
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
 
         // A downed/invulnerable attacker or target means a third-party plugin (revive/downed-
         // state mechanics, admin god-mode, spawn protection, etc.) is actively controlling that
@@ -571,22 +604,21 @@ public final class CheckPipeline {
             return;
         }
 
-        // 1. BadPackets: NoSwing check
+        // Animation may legally follow ATTACK in the same client tick. Wait three server
+        // ticks and match against the bounded swing history, not just the last animation.
         if (config.isBadPacketsEnabled() && config.isBadPacketsNoSwing()) {
-            if (!data.isFirstAttackSeen()) {
-                // First attack of the session has no swing baseline yet - vanilla clients can
-                // deliver this Interact packet before their Animation packet, so lastSwingNanos
-                // being 0 here isn't a violation. Skip once, then judge normally from here on.
-                data.setFirstAttackSeen(true);
-            } else {
-                CheckResult swingResult = badPacketsCheck.checkNoSwing(data.getLastSwingNanos());
-                if (swingResult.isFlag()) {
-                    data.addVl(swingResult.vl());
-                    data.adjustRisk(18.0);
-                    data.setLastTriggeredCheck(swingResult.checkName());
-                    handleFlag(player, data, swingResult);
-                }
-            }
+            long epoch = config.runtime().detectionEpoch();
+            long reset = data.getMovementResetNanos();
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (!config.runtime().acceptsDetection(epoch) || data.getMovementResetNanos() != reset
+                        || !player.isOnline() || data.hasRecentTeleport() || data.hasSwingNear(attack.receivedNanos())) return;
+                CheckResult result = CheckResult.flag("BadPackets", 0.95, 3.0,
+                        "Атака без соответствующей анимации руки", Map.of("windowMs", 150));
+                data.addVl(result.vl());
+                data.adjustRisk(18);
+                data.setLastTriggeredCheck(result.checkName());
+                handleFlag(player, data, result);
+            }, 3L);
         }
 
         // 2. BadPackets: InventoryAttack check
@@ -637,11 +669,17 @@ public final class CheckPipeline {
         if (!config.isReachEnabled() && !config.isKillauraAngleEnabled()) {
             return;
         }
-        Bukkit.getScheduler().runTask(plugin, () -> runAttackWorldChecks(player, targetEntityId, data));
+        long epoch = config.runtime().detectionEpoch();
+        long reset = data.getMovementResetNanos();
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!config.runtime().acceptsDetection(epoch) || data.getMovementResetNanos() != reset
+                    || data.hasRecentTeleport()) return;
+            runAttackWorldChecks(player, targetEntityId, data, attack);
+        });
     }
 
     /** Main-thread half of {@link #processAttack}: everything that needs live world state. */
-    private void runAttackWorldChecks(Player player, int targetEntityId, UserData data) {
+    private void runAttackWorldChecks(Player player, int targetEntityId, UserData data, net.lovelace.vesuvio.engine.AttackSnapshot attack) {
         if (!player.isOnline()) return;
 
         org.bukkit.entity.Entity target = null;
@@ -664,17 +702,17 @@ public final class CheckPipeline {
             // identical in the log otherwise.
             if (config.isDebug()) {
                 LOGGER.info(String.format(Locale.US,
-                        "[ATTACK] %s -> entityId=%d SKIPPED (%s) - no combat check ran for this attack",
+                        "[Атака] %s -> сущность=%d: пропущена (%s), боевые проверки не выполнены",
                         player.getName(), targetEntityId,
-                        target == null ? "target not among nearby entities"
-                                : target.equals(player) ? "target resolved to the attacker"
-                                : "target is invulnerable"));
+                        target == null ? "цель отсутствует среди ближайших сущностей"
+                                : target.equals(player) ? "цель совпадает с атакующим"
+                                : "цель неуязвима"));
             }
             return;
         }
 
         if (config.isReachEnabled()) {
-            CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator);
+            CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator, attack);
             if (reachResult.isFlag()) {
                 data.addVl(reachResult.vl() * config.getStatisticalWeight());
                 data.adjustRisk(reachResult.confidence() * 8.0);
@@ -690,7 +728,7 @@ public final class CheckPipeline {
         }
 
         if (config.isKillauraAngleEnabled()) {
-            CheckResult angleResult = angleCheck.check(player, target, data);
+            CheckResult angleResult = angleCheck.check(player, target, data, attack);
             if (angleResult.isFlag()) {
                 data.addVl(angleResult.vl());
                 data.adjustRisk(angleResult.confidence() * 9.0);
@@ -735,7 +773,7 @@ public final class CheckPipeline {
      * every other combat check relies on.
      */
     public void handleNpcTrapHit(Player player, UserData data) {
-        if (!config.isAnticheatEnabled()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
 
         if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
 
@@ -748,7 +786,7 @@ public final class CheckPipeline {
         details.put("target", "npc-trap");
 
         CheckResult result = CheckResult.flag("NpcTrap", 1.0, 25.0,
-                "Attacked a per-player packet trap entity invisible to legitimate play", details);
+                "Атака персональной пакетной сущности-ловушки, недоступной при обычной игре", details);
         data.addVl(result.vl());
         data.adjustRisk(60.0);
         data.setLastTriggeredCheck(result.checkName());
@@ -768,7 +806,16 @@ public final class CheckPipeline {
      *                                   thread, see {@link UserData#noteReportedClientState}.
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos, boolean clientHadSomethingToReport) {
-        if (!config.isAnticheatEnabled()) return;
+        if (!config.isAnticheatEnabled() || packetReceiptNanos < data.getMovementResetNanos()) return;
+        if (data.hasRecentTeleport()) {
+            data.resetTimerBalance();
+            data.setLastAnyMovementNanos(packetReceiptNanos);
+            if (hasPos) {
+                data.setLastPosition(x, y, z, onGround);
+                data.setLastPositionNanos(packetReceiptNanos);
+            }
+            return;
+        }
 
         // A third-party plugin controlling this player's state (revive/downed mechanics,
         // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside normal
@@ -790,6 +837,7 @@ public final class CheckPipeline {
             data.resetSpeedStreak();
             data.setPrevHorizontalSpeed(0.0);
             data.setSpeedPredictionDebt(0.0);
+            data.clearPredictedVector();
             data.clearPendingVelocity();
             data.resetPhaseTicks();
             data.setLastAnyMovementNanos(packetReceiptNanos);
@@ -813,6 +861,7 @@ public final class CheckPipeline {
             data.resetSpeedStreak();
             data.setPrevHorizontalSpeed(0.0);
             data.setSpeedPredictionDebt(0.0);
+            data.clearPredictedVector();
             data.clearPendingVelocity();
             data.resetPhaseTicks();
             data.setLastAnyMovementNanos(packetReceiptNanos);
@@ -828,7 +877,7 @@ public final class CheckPipeline {
 
         // 1. Timer check runs on every movement packet
         if (config.isTimerEnabled()) {
-            CheckResult timerResult = timerCheck.check(data, lagTolerance);
+            CheckResult timerResult = timerCheck.check(data, lagTolerance, packetReceiptNanos);
             if (timerResult.isFlag()) {
                 data.addVl(timerResult.vl());
                 data.adjustRisk(timerResult.confidence() * 10.0);
@@ -855,7 +904,7 @@ public final class CheckPipeline {
             return;
         }
 
-        long nowNanos = System.nanoTime();
+        long nowNanos = packetReceiptNanos;
         long prevNanos = data.getLastPositionNanos();
         data.setLastPositionNanos(nowNanos);
 
@@ -897,6 +946,7 @@ public final class CheckPipeline {
             data.resetSpeedStreak();
             data.setPrevHorizontalSpeed(0.0);
             data.setSpeedPredictionDebt(0.0);
+            data.clearPredictedVector();
             data.clearPendingVelocity();
             data.resetPhaseTicks();
             return;
@@ -1012,14 +1062,19 @@ public final class CheckPipeline {
     }
 
     public void handleFlag(Player player, UserData data, CheckResult result) {
+        boolean disabled = !config.isAnticheatEnabled();
+        boolean teleportGrace = data.hasRecentTeleport();
+        diagnostics.flag(data, result, disabled ? "отклонено: проверки выключены"
+                : teleportGrace ? "отклонено: защита после телепортации" : "принято");
+        if (disabled || teleportGrace) return;
         // 0. Verbose console diagnostics (settings.debug: true) - dumps the exact feature values
         // that triggered the flag, so server owners can tune thresholds without guessing.
         if (config.isDebug()) {
             LOGGER.info(String.format(Locale.US,
-                    "[FLAG] %s | check=%s confidence=%.2f vl+=%.2f -> VL=%.1f Risk=%.1f Trust=%.1f | %s | details=%s",
+                    "[FLAG] %s | проверка=%s уверенность=%.2f добавлено=%.2f -> нарушения=%.1f риск=%.1f доверие=%.1f | %s | подробности=%s",
                     player.getName(), result.checkName(), result.confidence(), result.vl(),
                     data.getVl(), data.getRiskIndex(), data.getTrustScore(),
-                    result.explanation(), result.details()));
+                    result.explanation(), net.lovelace.vesuvio.i18n.Russian.details(result.details())));
         }
 
         // 1. Broadcast smart MiniMessage alert to staff
@@ -1047,88 +1102,53 @@ public final class CheckPipeline {
     }
 
     private void evaluatePunishments(Player player, UserData data) {
-        double currentVl = data.getVl();
-
-        for (ConfigManager.PunishmentRule rule : config.getPunishmentRules()) {
-            if (currentVl >= rule.vlThreshold()) {
-                String cmd = rule.command();
-                if (cmd != null && !cmd.isBlank()) {
-                    String formatted = cmd
-                            .replace("%player%", player.getName())
-                            .replace("%vl%", String.format(Locale.US, "%.0f", currentVl))
-                            .replace("%risk%", String.format(Locale.US, "%.0f", data.getRiskIndex()))
-                            .replace("%ml%", String.format(Locale.US, "%.1f", data.getLastMLProbability() * 100));
-
-                    // Auto-collect a confirmed-cheat training sample the moment a ban fires -
-                    // by now the pipeline is confident enough that this is safe ground truth.
-                    // Also snapshot a ban-evasion fingerprint (IP + playstyle signature) so a
-                    // fresh account rejoining later can be matched against it.
-                    if ("ban".equalsIgnoreCase(rule.action())) {
-                        selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
-
-                        if (banEvasionManager != null && config.isBanEvasionEnabled()) {
-                            String ip = null;
-                            try {
-                                if (player.getAddress() != null && player.getAddress().getAddress() != null) {
-                                    ip = player.getAddress().getAddress().getHostAddress();
-                                }
-                            } catch (Throwable ignored) {}
-                            banEvasionManager.recordBanFingerprint(
-                                    player.getUniqueId(), player.getName(), ip, data.getClientBrand(),
-                                    data.getClickBuffer().getSignature(), formatted);
-                        }
+        if (!config.mayPunish()) return;
+        long epoch = config.runtime().actionEpoch();
+        long reset = data.getMovementResetNanos();
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!config.runtime().acceptsAction(epoch)
+                    || data.getMovementResetNanos() != reset || data.hasRecentTeleport()) return;
+            // A burst can flag several checks in one tick: execute at most one action per second.
+            if (!data.tryPunishment(System.nanoTime())) return;
+            double currentVl = data.getVl();
+            for (ConfigManager.PunishmentRule rule : config.getPunishmentRules()) {
+                if (currentVl < rule.vlThreshold() || rule.command() == null || rule.command().isBlank()) continue;
+                String formatted = rule.command().replace("%player%", player.getName())
+                        .replace("%vl%", String.format(Locale.US, "%.0f", currentVl))
+                        .replace("%risk%", String.format(Locale.US, "%.0f", data.getRiskIndex()))
+                        .replace("%ml%", String.format(Locale.US, "%.1f", data.getLastMLProbability() * 100));
+                if ("ban".equalsIgnoreCase(rule.action())) {
+                    selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
+                    if (banEvasionManager != null && config.isBanEvasionEnabled()) {
+                        String ip = player.getAddress() != null && player.getAddress().getAddress() != null
+                                ? player.getAddress().getAddress().getHostAddress() : null;
+                        banEvasionManager.recordBanFingerprint(player.getUniqueId(), player.getName(), ip,
+                                data.getClientBrand(), data.getClickBuffer().getSignature(), formatted);
                     }
-
-                    // Check if rule is a ban and Lava Wave mode is enabled
-                    if ("ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null) {
-                        if (!waveManager.isQueued(player.getUniqueId())) {
-                            waveManager.queuePunishment(player.getUniqueId(), player.getName(), formatted, "Lava Wave: Unfair Advantage");
-                        }
-                        break;
-                    }
-
-                    // Execute immediate punishment (kick or instant command) on main server thread
-                    if ("kick".equalsIgnoreCase(rule.action())) {
-                        String kickReason = formatted;
-                        String prefix1 = "kick " + player.getName() + " ";
-                        String prefix2 = "minecraft:kick " + player.getName() + " ";
-                        if (kickReason.regionMatches(true, 0, prefix1, 0, prefix1.length())) {
-                            kickReason = kickReason.substring(prefix1.length());
-                        } else if (kickReason.regionMatches(true, 0, prefix2, 0, prefix2.length())) {
-                            kickReason = kickReason.substring(prefix2.length());
-                        }
-
-                        final String finalKickReason = kickReason;
-                        final String finalFormatted = formatted;
-                        Bukkit.getScheduler().runTask(plugin, () -> {
-                            if (player.isOnline()) {
-                                try {
-                                    player.kick(mm.deserialize(finalKickReason));
-                                } catch (Throwable t) {
-                                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), toLegacyCommand(finalFormatted));
-                                }
-                            } else {
-                                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), toLegacyCommand(finalFormatted));
-                            }
-                        });
-                    } else {
-                        final String consoleCmd = toLegacyCommand(formatted);
-                        Bukkit.getScheduler().runTask(plugin, () -> {
-                            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), consoleCmd);
-                        });
-                    }
-
-                    databaseManager.logPunishmentAsync(new net.lovelace.vesuvio.storage.PunishmentRecord(
-                            player.getUniqueId(),
-                            player.getName(),
-                            rule.action(),
-                            formatted,
-                            System.currentTimeMillis()
-                    ));
-                    break;
                 }
+                if ("ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null) {
+                    if (!waveManager.isQueued(player.getUniqueId())) {
+                        waveManager.queuePunishment(player.getUniqueId(), player.getName(), formatted, "Волна наказаний: использование читов");
+                    }
+                    return;
+                }
+                boolean executed;
+                if ("kick".equalsIgnoreCase(rule.action())) {
+                    if (!player.isOnline()) return;
+                    String reason = formatted;
+                    for (String prefix : new String[]{"kick " + player.getName() + " ", "minecraft:kick " + player.getName() + " "}) {
+                        if (reason.regionMatches(true, 0, prefix, 0, prefix.length())) { reason = reason.substring(prefix.length()); break; }
+                    }
+                    player.kick(mm.deserialize(reason));
+                    executed = true;
+                } else {
+                    executed = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), toLegacyCommand(formatted));
+                }
+                if (executed) databaseManager.logPunishmentAsync(new net.lovelace.vesuvio.storage.PunishmentRecord(
+                        player.getUniqueId(), player.getName(), rule.action(), formatted, System.currentTimeMillis()));
+                return;
             }
-        }
+        });
     }
 
     private String toLegacyCommand(String input) {

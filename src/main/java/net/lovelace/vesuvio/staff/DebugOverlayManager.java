@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio.staff;
 
+import net.lovelace.vesuvio.i18n.Russian;
+
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
@@ -68,7 +70,7 @@ public final class DebugOverlayManager {
                 // UUID that will never come back online - until the staff member manually
                 // toggles it off or disconnects themselves.
                 watchers.remove(entry.getKey());
-                staff.sendActionBar(mm.deserialize("<gray>[Vesuvio Debug] Цель отключилась от сервера.</gray>"));
+                staff.sendActionBar(mm.deserialize("<gray>[Vesuvio: отладка] Цель отключилась от сервера.</gray>"));
                 continue;
             }
 
@@ -76,19 +78,19 @@ public final class DebugOverlayManager {
             if (data == null) continue;
 
             String msg = String.format(Locale.US,
-                    "<yellow>DBG %s</yellow> <dark_gray>|</dark_gray> "
-                    + "<white>CPS:%.1f Std:%.1f Dup:%.0f%% Ent:%.2f</white> <dark_gray>|</dark_gray> "
-                    + "<aqua>Air:%d ΔY:%.2f Grnd:%s</aqua> <dark_gray>|</dark_gray> "
-                    + "<gold>VL:%.0f</gold> <red>Risk:%.0f</red> <green>Trust:%.0f</green> <dark_gray>|</dark_gray> "
-                    + "<blue>SL:%.0f%%</blue> <dark_gray>|</dark_gray> "
+                    "<yellow>Отладка %s</yellow> <dark_gray>|</dark_gray> "
+                    + "<white>Кликов/с:%.1f Разброс:%.1f Повторы:%.0f%% Энтропия:%.2f</white> <dark_gray>|</dark_gray> "
+                    + "<aqua>Воздух:%d ΔY:%.2f Земля:%s</aqua> <dark_gray>|</dark_gray> "
+                    + "<gold>Нарушения:%.0f</gold> <red>Риск:%.0f</red> <green>Доверие:%.0f</green> <dark_gray>|</dark_gray> "
+                    + "<blue>Самообучение:%.0f%%</blue> <dark_gray>|</dark_gray> "
                     + "<light_purple>%s</light_purple> <dark_gray>|</dark_gray> "
-                    + "<gray>Clk:%d/64 Aim:%d/64</gray>",
+                    + "<gray>Клики:%d/64 Прицел:%d/64</gray>",
                     target.getName(),
                     data.getLastCalculatedCPS(), data.getLastStdDevMs(), data.getLastDupRatio() * 100, data.getLastEntropy(),
-                    data.getAirTicks(), data.getLastDeltaY(), data.isLastOnGround() ? "Y" : "N",
+                    data.getAirTicks(), data.getLastDeltaY(), data.isLastOnGround() ? "да" : "нет",
                     data.getVl(), data.getRiskIndex(), data.getTrustScore(),
                     data.getLastSelfLearnProbability() * 100,
-                    data.getLastTriggeredCheck(),
+                    Russian.label(Russian.label(data.getLastTriggeredCheck())),
                     data.getClickBuffer().getCount(), data.getAimBuffer().getCount());
 
             staff.sendActionBar(mm.deserialize(msg));

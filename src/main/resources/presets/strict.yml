@@ -1,8 +1,8 @@
 # ==============================================================================
-#                      PRESET: STRICT (COMPETITIVE PVP)
-#   Optimal for Ranked Duels, Competitive BedWars, and Tournaments.
+#                      ПРОФИЛЬ: STRICT (СОРЕВНОВАТЕЛЬНОЕ PVP)
+#   Для рейтинговых дуэлей, соревновательного BedWars и турниров.
 # ==============================================================================
-description: "Строгий соревновательный режим (Ranked PvP, Duels, BedWars, Fast Waves)"
+description: "Строгий соревновательный режим (рейтинговое PvP, дуэли, BedWars, быстрые волны наказаний)"
 
 layers:
   statistical:
@@ -39,7 +39,7 @@ punishments:
       action: "notify-staff"
     45:
       action: "kick"
-      command: "kick %player% <red>[Vesuvio] Strict Check Violation (VL: %vl%).</red>"
+      command: "kick %player% <red>[Vesuvio] Нарушение строгой проверки (уровень: %vl%).</red>"
     75:
       action: "ban"
-      command: "ban %player% 30d <red>[Vesuvio] Unfair Advantage Detected (Competitive Strict).</red>"
+      command: "ban %player% 30d <red>[Vesuvio] Обнаружено использование читов (строгий соревновательный режим).</red>"

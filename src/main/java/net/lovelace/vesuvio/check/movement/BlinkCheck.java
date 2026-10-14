@@ -127,9 +127,9 @@ public final class BlinkCheck {
     /** Prints the active thresholds this instance was built with, for debug logging. */
     public String describeThresholds() {
         return String.format(Locale.US,
-                "minSilenceMs=%.1f maxJudgedSilenceMs=%.1f healthyRttFraction=%.2f requiredStreak=%d "
-                        + "shortSilenceMinMs=%.1f shortStreakBonus=%d releaseBurstMinBlocks=%.2f "
-                        + "activityProofRequired=%b catchUpTickClamp=%d burstSlop=%d activityGuardMs=%.0f",
+                "мин_пауза_мс=%.1f макс_пауза_мс=%.1f доля_нормального_пинга=%.2f серия=%d "
+                        + "мин_короткая_пауза_мс=%.1f добавка_серии=%d мин_скачок_блоков=%.2f "
+                        + "нужно_подтверждение_активности=%b предел_догоняющих_тактов=%d допуск_всплеска=%d защита_активности_мс=%.0f",
                 minSilenceMs, maxJudgedSilenceMs, healthyRttFraction, requiredStreak,
                 shortSilenceMinMs, shortBlinkStreakBonus, releaseBurstMinBlocks,
                 activityProofRequired, catchUpTickClamp, burstSlop, activityGuardMs);
@@ -407,29 +407,29 @@ public final class BlinkCheck {
                 confidence = Math.min(0.98, 0.93 + streakBoost);
                 vl = Math.min(6.0, 3.0 + silenceMs / 500.0);
                 explanation = String.format(Locale.US,
-                        "Movement withheld for %.0fms (healthy RTT %.0fms) while the client kept swinging/attacking - its main loop was running",
+                        "Движение задержано на %.0f мс при нормальном пинге %.0f мс, но клиент продолжал атаковать — игровой цикл работал",
                         silenceMs, rtt);
             }
             case FLUSH -> {
                 confidence = Math.min(0.98, 0.92 + streakBoost);
                 vl = Math.min(6.0, 3.0 + silenceMs / 500.0);
                 explanation = String.format(Locale.US,
-                        "Movement withheld for %.0fms then %d queued packets replayed against a budget of %d "
-                                + "- the client answered no transaction between them, so it cannot have generated them (healthy RTT %.0fms)",
+                        "Движение задержано на %.0f мс, затем отправлены %d накопленных пакетов при допустимых %d "
+                                + "— между ними не было ответа на транзакцию, клиент не мог их сформировать (нормальный пинг %.0f мс)",
                         silenceMs, flushPackets, flushBudget, rtt);
             }
             case DISPLACEMENT -> {
                 confidence = Math.min(0.97, 0.88 + Math.min(0.06, displacementAfter / 40.0) + streakBoost);
                 vl = Math.min(6.0, 2.5 + silenceMs / 500.0);
                 explanation = String.format(Locale.US,
-                        "Movement withheld for %.0fms (healthy RTT %.0fms) then flushed an unexplained %.2f-block catch-up jump",
+                        "Движение задержано на %.0f мс (нормальный пинг %.0f мс), затем скачок на %.2f блока без объяснимой причины",
                         silenceMs, rtt, displacementAfter);
             }
             default -> {
                 confidence = Math.min(0.90, 0.75 + (silenceMs - minSilenceMs) / 6000.0);
                 vl = Math.min(5.0, 2.0 + silenceMs / 500.0);
                 explanation = String.format(Locale.US,
-                        "Movement stream withheld for %.0fms %d times while the connection stayed healthy (RTT %.0fms)",
+                        "Поток движения задерживался на %.0f мс %d раз при исправном соединении (пинг %.0f мс)",
                         silenceMs, occurrences, rtt);
             }
         }

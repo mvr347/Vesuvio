@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vesuvio 26.2 - AntiCheat Operations Console</title>
+    <title>Vesuvio 26.2 - Панель управления античитом</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700;800&display=swap" rel="stylesheet">
@@ -381,7 +381,7 @@
             </div>
         </div>
         <div class="header-controls">
-            <input type="password" id="bearerToken" class="auth-input" placeholder="Bearer токен доступа...">
+            <input type="password" id="bearerToken" class="auth-input" placeholder="Токен доступа...">
             <button class="btn btn-lava" onclick="fetchDashboardData()">
                 <span>⚡ Обновить</span>
             </button>
@@ -397,7 +397,7 @@
             <div class="metric-label">Состояние сервера и TPS</div>
             <div class="metric-value" id="valTps">20.00</div>
             <div class="metric-footer">
-                <span class="status-dot"></span> Виртуальные потоки активны
+                <span class="status-dot"></span> Фоновая обработка проверок
             </div>
         </div>
         <div class="glass-panel metric-card" style="--card-accent: #ff4500;">
@@ -434,7 +434,7 @@
                             <th>Игрок</th>
                             <th>Индекс риска</th>
                             <th>Доверие</th>
-                            <th>VL</th>
+                            <th>Нарушения</th>
                             <th>Клиент</th>
                             <th>Действия</th>
                         </tr>
@@ -442,7 +442,7 @@
                     <tbody id="suspectsTableBody">
                         <tr>
                             <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">
-                                Нет активных подозреваемых. Все игроки играют честно.
+                                Сейчас нет активных подозреваемых.
                             </td>
                         </tr>
                     </tbody>
@@ -456,7 +456,7 @@
             <div class="glass-panel">
                 <div class="section-header">
                     <div class="section-title">
-                        <span>🧠 Очередь Active Learning</span>
+                        <span>🧠 Проверка обучающих образцов</span>
                     </div>
                     <span class="badge badge-vl" id="reviewCountBadge">0 в ожидании</span>
                 </div>
@@ -475,11 +475,11 @@
                 <div id="modelsStatusList" style="font-size: 13px; display: flex; flex-direction: column; gap: 10px;">
                     <div style="display: flex; justify-content: space-between;">
                         <span>click_model.onnx</span>
-                        <span class="badge badge-trust">АКТИВНА</span>
+                        <span class="badge badge-vl">СТАТУС НЕ ЗАГРУЖЕН</span>
                     </div>
                     <div style="display: flex; justify-content: space-between;">
                         <span>aim_model.onnx</span>
-                        <span class="badge badge-trust">АКТИВНА</span>
+                        <span class="badge badge-vl">СТАТУС НЕ ЗАГРУЖЕН</span>
                     </div>
                 </div>
             </div>
@@ -507,7 +507,7 @@
             try {
                 const res = await fetch('/api/v1/overview', { headers: getAuthHeaders() });
                 if (res.status === 401) {
-                    console.warn('Unauthorized. Check Bearer token.');
+                    console.warn('Нет доступа. Проверьте токен.');
                     return;
                 }
                 const data = await res.json();
@@ -520,7 +520,7 @@
                 loadSuspects();
                 loadReviews();
             } catch (e) {
-                console.error('Error polling dashboard:', e);
+                console.error('Ошибка обновления панели:', e);
             }
         }
 
@@ -531,7 +531,7 @@
                 const suspects = await res.json();
                 const tbody = document.getElementById('suspectsTableBody');
                 if (!suspects || suspects.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">Нет активных подозреваемых. Все игроки играют честно.</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">Сейчас нет активных подозреваемых.</td></tr>`;
                     return;
                 }
                 tbody.innerHTML = suspects.map(s => `
@@ -543,15 +543,15 @@
                         </td>
                         <td><span class="badge badge-trust">${s.trust.toFixed(0)}</span></td>
                         <td><span class="badge badge-vl">${s.vl.toFixed(0)}</span></td>
-                        <td><span style="font-family:var(--font-mono);font-size:12px;">${s.brand || 'Vanilla'}</span></td>
+                        <td><span style="font-family:var(--font-mono);font-size:12px;">${s.brand || 'Обычный клиент'}</span></td>
                         <td>
-                            <button class="btn" style="padding:4px 8px;font-size:11px;" onclick="playerAction('${s.uuid}', 'reset_vl')">Сброс VL</button>
-                            <button class="btn" style="padding:4px 8px;font-size:11px;color:#ff5e7e;" onclick="playerAction('${s.uuid}', 'kick')">Кик</button>
+                            <button class="btn" style="padding:4px 8px;font-size:11px;" onclick="playerAction('${s.uuid}', 'reset_vl')">Сброс нарушений</button>
+                            <button class="btn" style="padding:4px 8px;font-size:11px;color:#ff5e7e;" onclick="playerAction('${s.uuid}', 'kick')">Исключить</button>
                         </td>
                     </tr>
                 `).join('');
             } catch (e) {
-                console.error('Failed to load suspects', e);
+                console.error('Не удалось загрузить подозреваемых', e);
             }
         }
 
@@ -583,12 +583,12 @@
                     </div>
                 `).join('');
             } catch (e) {
-                console.error('Failed to load reviews', e);
+                console.error('Не удалось загрузить образцы', e);
             }
         }
 
         async function playerAction(uuid, action) {
-            if (!confirm(`Выполнить ${action} для игрока ${uuid}?`)) return;
+            if (!confirm(`Выполнить действие «${action === 'reset_vl' ? 'сброс нарушений' : 'исключение'}» для игрока ${uuid}?`)) return;
             await fetch(`/api/v1/player/${uuid}/action`, {
                 method: 'POST',
                 headers: getAuthHeaders(),
@@ -612,7 +612,7 @@
                 headers: getAuthHeaders()
             });
             if (res.ok) {
-                alert('Модели ONNX успешно перезагружены!');
+                alert('Перезагрузка моделей ONNX запущена. Результат смотрите в журнале сервера.');
             }
         }
 

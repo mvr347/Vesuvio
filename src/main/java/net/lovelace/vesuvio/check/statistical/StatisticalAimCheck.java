@@ -41,13 +41,13 @@ public final class StatisticalAimCheck {
         // 1. Extreme Snap Aim / Silent Aim (high snap ratio coupled with extreme jerk)
         if (snapRatio > (0.25 / sensitivity) && jerk > 20.0f && meanYaw > 6.0f) {
             return CheckResult.flag("AimStatistical", 0.90, 2.0,
-                    String.format("Violent snap rotations (SnapRatio: %.0f%%, Jerk: %.1f)", snapRatio * 100, jerk), details);
+                    String.format("Резкие рывки прицела (доля: %.0f%%, рывок: %.1f)", snapRatio * 100, jerk), details);
         }
 
         // 2. Perfectly Linear Machine Aim (completely robotic tracking with near-zero human jerk)
         if (jerk < (0.04f * sensitivity) && meanYaw > 5.0f && zeroRatio < 0.05f) {
             return CheckResult.flag("AimStatistical", 0.88, 1.8,
-                    String.format("Robotic constant angular tracking (Jerk: %.3f, MeanYaw: %.1f°)", jerk, meanYaw), details);
+                    String.format("Механическое постоянное угловое слежение (рывок: %.3f, средний поворот: %.1f°)", jerk, meanYaw), details);
         }
 
         // 3. Snap-and-Freeze (SnapLock): a hard snap onto the target followed by near-total
@@ -56,7 +56,7 @@ public final class StatisticalAimCheck {
         // a moving mob constantly does.
         if (snapRatio > (0.04 / sensitivity) && zeroRatio > (0.45 / sensitivity) && meanYaw > 2.5f) {
             return CheckResult.flag("AimStatistical", 0.86, 1.9,
-                    String.format("Snap-then-freeze rotation pattern (SnapRatio: %.0f%%, ZeroRatio: %.0f%%)",
+                    String.format("Рывок с последующим замиранием прицела (рывки: %.0f%%, замирания: %.0f%%)",
                             snapRatio * 100, zeroRatio * 100), details);
         }
 

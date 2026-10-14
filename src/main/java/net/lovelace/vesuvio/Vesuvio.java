@@ -26,7 +26,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.logging.Level;
 
 /**
@@ -52,6 +51,7 @@ public final class Vesuvio extends JavaPlugin {
     private net.lovelace.vesuvio.config.PresetManager presetManager;
     private CheckPipeline checkPipeline;
     private ApiServer apiServer;
+    private net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics;
     private ExecutorService virtualExecutor;
     private net.lovelace.vesuvio.integration.hunt.LoveHuntHook loveHuntHook;
     private net.lovelace.vesuvio.integration.papi.VesuvioExpansion papiExpansion;
@@ -80,14 +80,11 @@ public final class Vesuvio extends JavaPlugin {
         // 1. PacketEvents initialization
         PacketEvents.getAPI().init();
 
-        // 2. Virtual Threads Executor with PluginClassLoader awareness (Java 21+)
         ClassLoader pluginClassLoader = getClass().getClassLoader();
-        Thread.Builder.OfVirtual virtualBuilder = Thread.ofVirtual().name("Vesuvio-Worker-", 0);
-        this.virtualExecutor = Executors.newThreadPerTaskExecutor(task -> {
-            Thread t = virtualBuilder.unstarted(task);
-            t.setContextClassLoader(pluginClassLoader);
-            return t;
-        });
+        this.configManager = new ConfigManager(this);
+        this.virtualExecutor = new net.lovelace.vesuvio.engine.ManagedExecutor(
+                "Vesuvio-Worker-", configManager.useVirtualThreads(), configManager.getWorkerCapacity(),
+                Math.max(2, Runtime.getRuntime().availableProcessors()), pluginClassLoader);
 
         // Preload core classes so virtual threads and Netty pipeline handlers never fail
         try {
@@ -100,13 +97,12 @@ public final class Vesuvio extends JavaPlugin {
         } catch (ClassNotFoundException ignored) {}
 
         // 3. Configuration & Database
-        this.configManager = new ConfigManager(this);
         this.presetManager = new net.lovelace.vesuvio.config.PresetManager(this, configManager);
         this.databaseManager = new DatabaseManager(configManager, getDataFolder().toPath());
         this.userDataManager = new UserDataManager();
 
         // 4. ML Manager & Model Registration
-        this.mlManager = new MLManager();
+        this.mlManager = new MLManager(configManager.useVirtualThreads(), configManager.getInferenceParallelism());
         initModels();
 
         // 5. Self-Learning Layer
@@ -142,6 +138,8 @@ public final class Vesuvio extends JavaPlugin {
         var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
         var npcTrapManager = new net.lovelace.vesuvio.engine.NpcTrapManager(this, configManager);
 
+        this.diagnostics = new net.lovelace.vesuvio.diagnostics.DiagnosticService(this, configManager, userDataManager, transactionManager);
+
         // 7. Check Pipeline
         this.checkPipeline = new CheckPipeline(
                 this,
@@ -156,7 +154,9 @@ public final class Vesuvio extends JavaPlugin {
                 hitboxTracker,
                 banEvasionManager,
                 transactionManager,
-                npcTrapManager
+                npcTrapManager,
+                virtualExecutor,
+                diagnostics
         );
         this.checkPipeline.setAimTrackingService(aimTrackingService);
         // Shadow mode (see ShadowEvaluator): mirrors every real ONNX inference to a staged
@@ -180,14 +180,18 @@ public final class Vesuvio extends JavaPlugin {
                 new net.lovelace.vesuvio.packet.TransactionPacketListener(userDataManager, transactionManager, configManager)
         );
         PacketEvents.getAPI().getEventManager().registerListener(brandListener);
+        var clientWorldListener = new net.lovelace.vesuvio.packet.ClientWorldPacketListener(userDataManager, configManager);
+        PacketEvents.getAPI().getEventManager().registerListener(clientWorldListener);
 
         // 9. Register Bukkit Events
         var worldInteractionListener = new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager);
         Bukkit.getPluginManager().registerEvents(
-                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, transactionManager, environmentSnapshotService, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager),
+                new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, transactionManager, environmentSnapshotService, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager, virtualExecutor),
                 this
         );
+        Bukkit.getPluginManager().registerEvents(diagnostics, this);
         Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
+        Bukkit.getPluginManager().registerEvents(environmentSnapshotService, this);
         Bukkit.getPluginManager().registerEvents(
                 new net.lovelace.vesuvio.listener.PhysicsExemptionListener(userDataManager, configManager),
                 this
@@ -206,7 +210,8 @@ public final class Vesuvio extends JavaPlugin {
                 waveManager,
                 presetManager,
                 debugOverlayManager,
-                modelAutoTrainer
+                modelAutoTrainer,
+                diagnostics
         );
         var cmd = getCommand("vesuvio");
         if (cmd != null) {
@@ -250,12 +255,15 @@ public final class Vesuvio extends JavaPlugin {
         // the world on behalf of the async movement checks, and the transaction is the clock they
         // measure latency against.
         Bukkit.getScheduler().runTaskTimer(this, () -> {
-            environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers());
-            aimTrackingService.tick(Bukkit.getOnlinePlayers());
+            environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers(), configManager.isAnticheatEnabled());
+            if (configManager.isAnticheatEnabled()) aimTrackingService.tick(Bukkit.getOnlinePlayers());
             for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
                 transactionManager.tick(online);
+                clientWorldListener.tick(online);
             }
         }, 1L, 1L);
+
+        Bukkit.getScheduler().runTaskTimer(this, diagnostics::sample, 5L, 5L);
 
         // Schedulers: Live Spectate Overlay (every 2 ticks = 100ms)
         Bukkit.getScheduler().runTaskTimer(this, spectateManager::tickOverlay, 2L, 2L);
@@ -279,7 +287,7 @@ public final class Vesuvio extends JavaPlugin {
         // players) - runs every minute, AutoDatasetCollector internally rate-limits per player
         // against the configured interval. Cheat samples are collected inline on ban instead.
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
-            selfLearningManager.getAutoDatasetCollector().sweepLegitSamples(userDataManager);
+            if (configManager.isAnticheatEnabled()) selfLearningManager.getAutoDatasetCollector().sweepLegitSamples(userDataManager);
         }, 20L * 60L, 20L * 60L);
 
         // Schedulers: fully-automatic ONNX retraining (extracts the bundled Python script and,
@@ -287,8 +295,8 @@ public final class Vesuvio extends JavaPlugin {
         modelAutoTrainer.start();
 
         long elapsed = System.currentTimeMillis() - startMs;
-        getLogger().info(String.format("Vesuvio 26.2 (Author: Lovelace) initialized in %dms. Hybrid 3-Layer Engine Active.", elapsed));
-        getLogger().info("[Diagnostics] BlinkCheck thresholds: "
+        getLogger().info(String.format("Vesuvio 26.2 (автор: Lovelace) запущен за %d мс. Трёхуровневая система проверок активна.", elapsed));
+        getLogger().info("[Диагностика] Пороги проверки задержки движения: "
                 + net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(configManager).describeThresholds());
     }
 
@@ -309,7 +317,7 @@ public final class Vesuvio extends JavaPlugin {
             try {
                 mlManager.loadModel("click_model", clickPath);
             } catch (Exception e) {
-                getLogger().log(Level.WARNING, "Failed to load click_model.onnx, using neural fallback", e);
+                getLogger().log(Level.WARNING, "Не удалось загрузить click_model.onnx, используется резервная эвристика", e);
             }
         }
 
@@ -320,7 +328,7 @@ public final class Vesuvio extends JavaPlugin {
             try {
                 mlManager.loadModel("aim_model", aimPath);
             } catch (Exception e) {
-                getLogger().log(Level.WARNING, "Failed to load aim_model.onnx, using neural fallback", e);
+                getLogger().log(Level.WARNING, "Не удалось загрузить aim_model.onnx, используется резервная эвристика", e);
             }
         }
 
@@ -339,17 +347,18 @@ public final class Vesuvio extends JavaPlugin {
             try (java.io.InputStream in = getResource("models/" + modelName)) {
                 if (in != null) {
                     Files.copy(in, target);
-                    getLogger().info("Extracted pre-trained ONNX model: " + modelName);
+                    getLogger().info("Извлечена предобученная модель ONNX: " + modelName);
                 }
             } catch (Exception e) {
-                getLogger().warning("Could not extract default model " + modelName + ": " + e.getMessage());
+                getLogger().warning("Не удалось извлечь встроенную модель " + modelName + ": " + e.getMessage());
             }
         }
     }
 
     @Override
     public void onDisable() {
-        getLogger().info("Shutting down Vesuvio 26.2...");
+        getLogger().info("Остановка Vesuvio 26.2...");
+        if (configManager != null) configManager.setAnticheatEnabled(false);
 
         // Unregister Public API & Expansion
         if (papiExpansion != null) {
@@ -372,11 +381,15 @@ public final class Vesuvio extends JavaPlugin {
             debugOverlayManager.cleanup();
         }
 
-        // Stop the automatic retrain scheduler (does not interrupt an in-flight training run's
-        // subprocess timeout handling, just stops scheduling new ones)
+        // Stop scheduled/manual training and terminate its owned subprocess.
         if (modelAutoTrainer != null) {
             modelAutoTrainer.stop();
         }
+
+        // Drain workers before closing the resources they use.
+        net.lovelace.vesuvio.engine.ManagedExecutor.stop(virtualExecutor);
+        if (mlManager != null) mlManager.stopTasks();
+        if (diagnostics != null) diagnostics.close();
 
         // Flush and close the persistent dataset writer
         if (selfLearningManager != null) {
@@ -406,12 +419,7 @@ public final class Vesuvio extends JavaPlugin {
             PacketEvents.getAPI().terminate();
         } catch (Throwable ignored) {}
 
-        // Shutdown Virtual Threads Executor
-        if (virtualExecutor != null) {
-            virtualExecutor.shutdown();
-        }
-
-        getLogger().info("Vesuvio 26.2 shutdown complete.");
+        getLogger().info("Vesuvio 26.2 остановлен.");
     }
 
     public net.lovelace.vesuvio.config.PresetManager getPresetManager() {

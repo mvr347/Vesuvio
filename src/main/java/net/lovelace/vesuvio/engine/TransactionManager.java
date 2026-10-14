@@ -142,6 +142,9 @@ public class TransactionManager {
             // Ids are only ever ours if they are in our negative range.
             if (id > ID_START || id < ID_MIN) return false;
 
+            // Other plugins may also use negative ids. Verify ownership before draining:
+            // a foreign id must not erase all pending RTT/velocity acknowledgements.
+            if (state.pending.stream().noneMatch(p -> p.id == id)) return false;
             Pending match = null;
             // The client answers in order, so the match is almost always the head. Draining
             // everything up to and including the match also clears responses we somehow missed.

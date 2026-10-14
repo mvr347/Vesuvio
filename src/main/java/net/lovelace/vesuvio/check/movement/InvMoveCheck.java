@@ -54,7 +54,7 @@ public final class InvMoveCheck {
                         "InvMove",
                         0.92,
                         8.0,
-                        String.format(Locale.US, "Movement with open %s container (speed: %.2fb/t)",
+                        String.format(Locale.US, "Движение с открытым контейнером %s (скорость: %.2f блока/такт)",
                                 env.openInventoryType(), Math.sqrt(horizontalSq)),
                         details
                 );

@@ -125,14 +125,14 @@ public final class DatasetManager {
         try {
             Files.createDirectories(dataDirectory);
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to create dataset directory", e);
+            LOGGER.log(Level.WARNING, "Не удалось создать каталог набора данных", e);
         }
 
         // Preload whatever was persisted across the last restart so the in-memory view (and
         // /vesuvio dataset stats) reflect real history, not just this session.
         if (Files.exists(autoPersistFile)) {
             int loaded = importFromCsv(autoPersistFile);
-            LOGGER.info(String.format("[Vesuvio] Reloaded %d persisted training sample(s) from %s", loaded, autoPersistFile.getFileName()));
+            LOGGER.info(String.format("[Vesuvio] Загружено %d сохранённых обучающих образцов из %s", loaded, autoPersistFile.getFileName()));
         }
 
         try {
@@ -144,7 +144,7 @@ public final class DatasetManager {
                 persistWriter.flush();
             }
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to open persistent dataset file for append: " + autoPersistFile, e);
+            LOGGER.log(Level.WARNING, "Не удалось открыть файл набора данных для добавления: " + autoPersistFile, e);
             persistWriter = null;
         }
     }
@@ -166,7 +166,7 @@ public final class DatasetManager {
                     persistWriter.newLine();
                     persistWriter.flush();
                 } catch (IOException e) {
-                    LOGGER.log(Level.WARNING, "Failed to persist training sample to disk", e);
+                    LOGGER.log(Level.WARNING, "Не удалось записать обучающий образец на диск", e);
                 }
             }
         }
@@ -244,7 +244,7 @@ public final class DatasetManager {
             }
             return true;
         } catch (IOException e) {
-            LOGGER.log(Level.SEVERE, "Failed to export dataset to CSV: " + destination, e);
+            LOGGER.log(Level.SEVERE, "Не удалось экспортировать набор данных в CSV: " + destination, e);
             return false;
         }
     }
@@ -267,7 +267,7 @@ public final class DatasetManager {
             // domain, and reading it as a float would silently drop the whole row.
             int fileFeatureCount = countFeatureColumns(header);
             if (fileFeatureCount <= 0) {
-                LOGGER.warning("[Vesuvio] Dataset file has no recognisable feature columns: " + source);
+                LOGGER.warning("[Vesuvio] В наборе данных не найдены столбцы признаков: " + source);
                 return 0;
             }
             int domainIdx = 5 + fileFeatureCount;
@@ -310,7 +310,7 @@ public final class DatasetManager {
                 imported++;
             }
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Failed to import dataset from CSV: " + source, e);
+            LOGGER.log(Level.SEVERE, "Не удалось импортировать набор данных из CSV: " + source, e);
         }
 
         return imported;

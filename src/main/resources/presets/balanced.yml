@@ -1,8 +1,8 @@
 # ==============================================================================
-#                      PRESET: BALANCED (DEFAULT)
-#   Optimal for general survival, economy, mini-games, and casual PvP servers.
+#                      ПРОФИЛЬ: BALANCED (ПО УМОЛЧАНИЮ)
+#   Для выживания, экономики, мини-игр и обычного PvP.
 # ==============================================================================
-description: "Стандартный сбалансированный режим (Survival, SkyBlock, MiniGames)"
+description: "Стандартный сбалансированный режим (выживание, SkyBlock, мини-игры)"
 
 layers:
   statistical:
@@ -39,7 +39,7 @@ punishments:
       action: "notify-staff"
     60:
       action: "kick"
-      command: "kick %player% <red>[Vesuvio] Suspicious combat activity detected (VL: %vl%).</red>"
+      command: "kick %player% <red>[Vesuvio] Подозрительная боевая активность (уровень: %vl%).</red>"
     100:
       action: "ban"
-      command: "ban %player% 7d <red>[Vesuvio] Unfair Advantage (ML: %ml% | Risk: %risk%).</red>"
+      command: "ban %player% 7d <red>[Vesuvio] Использование читов (модель: %ml% | риск: %risk%).</red>"

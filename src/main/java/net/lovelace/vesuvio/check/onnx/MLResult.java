@@ -17,7 +17,7 @@ public record MLResult(
         Map<String, Object> details
 ) {
     public static MLResult empty(String modelName) {
-        return new MLResult(0.0, false, 0.0, modelName, "No evaluation", Collections.emptyMap());
+        return new MLResult(0.0, false, 0.0, modelName, "Вычисление не выполнялось", Collections.emptyMap());
     }
 
     public static MLResult of(String modelName, double probability, double threshold, double weight, String explanation, Map<String, Object> details) {

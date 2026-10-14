@@ -104,7 +104,7 @@ public final class MoveDirectionCheck {
 
         return CheckResult.flag("MoveDirection", 0.88, 3.5,
                 String.format(Locale.US,
-                        "Attacked %.1f° off sprint direction while sprint was maintained (%.2fb/t, evidence %.1f/%.1f)",
+                        "Атака под углом %.1f° к направлению спринта без его прерывания (%.2f блока/такт, свидетельства %.1f/%.1f)",
                         angleDegrees, moveSpeed, score, EVIDENCE_THRESHOLD),
                 details);
     }

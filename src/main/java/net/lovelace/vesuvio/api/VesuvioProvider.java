@@ -13,7 +13,7 @@ public final class VesuvioProvider {
 
     public static VesuvioAPI get() {
         if (instance == null) {
-            throw new IllegalStateException("VesuvioAPI is not yet registered. Ensure Vesuvio is loaded.");
+            throw new IllegalStateException("VesuvioAPI ещё не зарегистрирован. Убедитесь, что Vesuvio загружен.");
         }
         return instance;
     }

@@ -40,7 +40,7 @@ import java.util.UUID;
  *
  * Author: Lovelace
  */
-public final class EnvironmentSnapshotService {
+public final class EnvironmentSnapshotService implements org.bukkit.event.Listener {
 
     /** Force a block re-scan at least this often, even for a player who has not moved. */
     private static final int BLOCK_REFRESH_TICKS = 10;
@@ -61,23 +61,68 @@ public final class EnvironmentSnapshotService {
 
     /** Runs on the main thread once per tick. */
     public void captureAll(Iterable<? extends Player> players) {
+        captureAll(players, true);
+    }
+
+    public void captureAll(Iterable<? extends Player> players, boolean detectionEnabled) {
         tick++;
         for (Player player : players) {
             if (player == null || !player.isOnline() || player.hasMetadata("NPC")) continue;
             try {
                 UserData data = userDataManager.get(player.getUniqueId());
                 if (data == null) continue;
-                data.setEnvironment(capture(player));
+                EnvironmentSnapshot env = capture(player);
+                data.setEnvironment(env);
+                if (detectionEnabled && data.isPhysicsObserved()) {
+                    var location = player.getLocation();
+                    // Cache retention hint only; server blocks never populate the client replica.
+                    data.clientWorld().focus(location.getBlockX() >> 4, location.getBlockZ() >> 4);
+                    long reset = data.getMovementResetNanos();
+                    var frame = net.lovelace.vesuvio.engine.physics.PaperPhysicsCapture.capture(player, env, reset);
+                    data.setPhysicsFrame(frame); // Epoch is checked at consumption, including reset races.
+                }
             } catch (Throwable t) {
                 // A single misbehaving player (odd world state, a plugin-backed inventory that
                 // throws) must never take down the capture loop for everyone else.
                 blockCaches.remove(player.getUniqueId());
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) data.setPhysicsFrame(net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown("CAPTURE_FAILED"));
             }
         }
     }
 
     public void remove(UUID uuid) {
         blockCaches.remove(uuid);
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockPlace(org.bukkit.event.block.BlockPlaceEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    private void invalidateNear(org.bukkit.block.Block block) {
+        // The world mutation completes after the event. Evict now, then capture fresh shapes
+        // next tick instead of reusing up to half a second of pre-mining terrain.
+        blockCaches.entrySet().removeIf(entry -> {
+            BlockCache cache = entry.getValue();
+            boolean near = cache.worldUid.equals(block.getWorld().getUID())
+                    && Math.abs(cache.blockX - block.getX()) <= 2
+                    && Math.abs(cache.blockY - block.getY()) <= 3
+                    && Math.abs(cache.blockZ - block.getZ()) <= 2;
+            if (near) {
+                UserData data = userDataManager.get(entry.getKey());
+                if (data != null) {
+                    data.setEnvironment(EnvironmentSnapshot.EMPTY);
+                    // Client-world geometry changes only through outgoing block packets and Pong.
+                }
+            }
+            return near;
+        });
     }
 
     public void clear() {
@@ -122,6 +167,9 @@ public final class EnvironmentSnapshotService {
             // to the vanilla constant rather than let a jump check see a bogus 0.
         }
 
+        AttributeInstance movementAttribute = player.getAttribute(Attribute.MOVEMENT_SPEED);
+        double movementSpeed = movementAttribute == null ? 0.1 : movementAttribute.getValue();
+
         InventoryType openType = InventoryType.CRAFTING;
         try {
             openType = player.getOpenInventory().getType();
@@ -165,6 +213,7 @@ public final class EnvironmentSnapshotService {
                 speedAmplifier,
                 depthStrider,
                 soulSpeed,
+                movementSpeed,
                 jumpStrength,
                 containerOpen,
                 openType.name());

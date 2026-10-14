@@ -61,7 +61,7 @@ public final class PresetManager {
                 }
             }
         } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to initialize default presets: " + e.getMessage());
+            LOGGER.log(Level.WARNING, "Не удалось создать встроенные профили настроек: " + e.getMessage());
         }
     }
 
@@ -117,7 +117,7 @@ public final class PresetManager {
             mainConfig.save(target.toFile());
             return true;
         } catch (IOException e) {
-            LOGGER.log(Level.SEVERE, "Failed to save preset " + presetName, e);
+            LOGGER.log(Level.SEVERE, "Не удалось сохранить профиль " + presetName, e);
             return false;
         }
     }
@@ -128,9 +128,9 @@ public final class PresetManager {
     public String getPresetDescription(String presetName) {
         Path target = presetsDir.resolve(presetName.toLowerCase() + ".yml");
         if (!Files.exists(target)) {
-            return "Custom server preset";
+            return "Пользовательский профиль сервера";
         }
         FileConfiguration presetConfig = YamlConfiguration.loadConfiguration(target.toFile());
-        return presetConfig.getString("description", "Vesuvio configuration preset");
+        return presetConfig.getString("description", "Профиль настроек Vesuvio");
     }
 }

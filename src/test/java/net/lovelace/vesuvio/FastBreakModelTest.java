@@ -21,6 +21,21 @@ final class FastBreakModelTest {
     private static final double DIAMOND = 8.0;
     private static final double HAND = 1.0;
 
+    @Test void instantBreakAndSameTickPacketsNeverLookLikeFastBreak() {
+        assertEquals(0, WorldInteractionListener.minimumBreakMillis(1.0));
+        assertEquals(0, WorldInteractionListener.minimumBreakMillis(3.0));
+        assertEquals(1.0, WorldInteractionListener.breakTimeRatio(0, 0));
+        assertEquals(1.0, WorldInteractionListener.breakTimeRatio(0, 50));
+        assertEquals(1.0, WorldInteractionListener.breakTimeRatio(0, 100));
+    }
+
+    @Test void serverProgressHonoursMiningModifiersAndBatchingSlack() {
+        assertEquals(300, WorldInteractionListener.minimumBreakMillis(8.0 / 1.5 / 30));
+        assertEquals(1.0, WorldInteractionListener.breakTimeRatio(200, 300));
+        assertTrue(WorldInteractionListener.breakTimeRatio(4000, 9400) < 0.5);
+        assertEquals(1.0, WorldInteractionListener.breakTimeRatio(-1, 9400));
+    }
+
     @Test
     void modelMatchesVanillaBreakTimes() {
         // hardness, tool speed, expected vanilla milliseconds

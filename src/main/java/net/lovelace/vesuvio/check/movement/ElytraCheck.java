@@ -124,7 +124,7 @@ public final class ElytraCheck {
 
         return CheckResult.flag("Elytra", 0.90, 5.0,
                 String.format(Locale.US,
-                        "Sustained elytra climb with no firework use (+%.2fb over %.1fs)",
+                        "Устойчивый набор высоты на элитрах без фейерверка (+%.2f блока за %.1f с)",
                         netClimb, CLIMB_WINDOW_MS / 1000.0),
                 details);
     }
@@ -169,7 +169,7 @@ public final class ElytraCheck {
 
         return CheckResult.flag("Elytra", confidence, vl,
                 String.format(Locale.US,
-                        "Unboosted glide speed beyond vanilla's terminal dive (%.2fb/t vs %.2fb/t ceiling, debt %.1f)",
+                        "Скорость без ускорения превышает предел пикирования (%.2f блока/такт при максимуме %.2f, накопленное превышение %.1f)",
                         speed, MAX_UNBOOSTED_SPEED_PER_TICK, debt),
                 details);
     }

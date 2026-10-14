@@ -16,6 +16,33 @@ import static org.junit.jupiter.api.Assertions.*;
 public class MLManagerTest {
 
     @Test
+    void concurrentReloadNeverClosesAnActiveInference(@org.junit.jupiter.api.io.TempDir Path dir) throws Exception {
+        Path model = dir.resolve("click.onnx");
+        try (var in = getClass().getResourceAsStream("/models/click_model.onnx")) {
+            assertNotNull(in);
+            Files.copy(in, model);
+        }
+        try (var manager = new MLManager(true, 2)) {
+            manager.registerModel(new ModelConfig("click_model", true, model.toString(), .85, 1.5, "float_input"));
+            manager.loadModel("click_model", model);
+            assertTrue(manager.isModelLoaded("click_model"));
+            var futures = new java.util.ArrayList<java.util.concurrent.CompletableFuture<?>>();
+            for (int i = 0; i < 32; i++) {
+                futures.add(manager.evaluateAsync("click_model", new float[20]).thenAccept(result -> {
+                    assertTrue(result.explanation().startsWith("Уверенность модели ONNX"), "Inference must not silently fall back during reload");
+                    assertTrue(Double.isFinite(result.probability()));
+                }));
+                if (i % 8 == 0) futures.add(manager.hotReload("click_model", model).thenAccept(loaded -> assertTrue(loaded)));
+            }
+            java.util.concurrent.CompletableFuture.allOf(futures.toArray(java.util.concurrent.CompletableFuture[]::new))
+                    .get(15, java.util.concurrent.TimeUnit.SECONDS);
+            manager.stopTasks();
+            assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> manager.evaluateAsync("click_model", new float[20]).join());
+        }
+    }
+
+    @Test
     public void testClickModelAndAimModelInference() throws Exception {
         try (MLManager mlManager = new MLManager()) {
             Path tempDir = Files.createTempDirectory("vesuvio-ml-test");

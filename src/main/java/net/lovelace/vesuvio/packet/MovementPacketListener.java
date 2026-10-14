@@ -91,7 +91,7 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         } catch (Exception e) {
             Player player = (Player) event.getPlayer();
             String playerName = (player != null) ? player.getName() : "unknown";
-            System.err.println("[Vesuvio] Failed to parse " + packetName + " from " + playerName + ": " + e.getMessage());
+            System.err.println("[Vesuvio] Не удалось разобрать " + packetName + " от " + playerName + ": " + e.getMessage());
             e.printStackTrace();
             return;
         }
@@ -108,6 +108,25 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         final boolean finalHasPos = hasPos;
         final long packetReceiptNanos = System.nanoTime();
         final String finalPacketName = packetName;
+        final boolean finalHasRot = hasRot;
+        final float finalYaw = yaw;
+        var capturedPhysics = data.getPhysicsFrame();
+        net.lovelace.vesuvio.engine.physics.ClientWorld.Capture capturedWorld = null;
+        if (data.isPhysicsObserved() && hasPos) {
+            try {
+                var world = data.clientWorld();
+                synchronized (world) {
+                    world.synchronizeDetection(checkPipeline.getDetectionEpoch());
+                    capturedWorld = world.capture(capturedPhysics,
+                            new net.lovelace.vesuvio.engine.physics.MotionVector(x, y, z), packetReceiptNanos);
+                }
+            } catch (IllegalArgumentException invalidCoordinates) {
+                capturedPhysics = net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown("INVALID_INPUT");
+            }
+        }
+        final var physicsAttributes = capturedPhysics;
+        final var physicsWorld = capturedWorld;
+        final long physicsEpoch = data.getPhysicsObservationEpoch();
 
         // Deliberately evaluated here, on the netty thread, and not inside the virtual-thread task
         // below: this is a comparison against the PREVIOUS packet's contents, so it is only correct
@@ -117,9 +136,26 @@ public final class MovementPacketListener extends PacketListenerAbstract {
                 data.noteReportedClientState(hasPos, x, y, z, hasRot, yaw, pitch, onGround);
 
         try {
-            virtualExecutor.execute(() -> checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos, clientHadSomethingToReport));
+            checkPipeline.submitPacketCheck(data, virtualExecutor, () -> {
+                if (data.isPhysicsObserved() && physicsEpoch == data.getPhysicsObservationEpoch()) {
+                    if (data.hasRecentTeleport() || data.hasRecentVelocity() || data.hasRecentGameModeChange()) {
+                        data.physicsSession().reset("SERVER_TRANSITION");
+                    } else {
+                        try {
+                            var position = finalHasPos ? new net.lovelace.vesuvio.engine.physics.MotionVector(finalX, finalY, finalZ) : null;
+                            var physicsFrame = physicsWorld == null ? physicsAttributes : physicsWorld.build(
+                                    id -> net.lovelace.vesuvio.engine.physics.PacketBlockGeometry.resolve(physicsWorld.protocol(), id));
+                            data.physicsSession().observe(new net.lovelace.vesuvio.engine.physics.PhysicsSession.Packet(
+                                    position, finalOnGround, finalHasRot, finalYaw, packetReceiptNanos), physicsFrame, data.getMovementResetNanos());
+                        } catch (IllegalArgumentException invalidInput) {
+                            data.physicsSession().reset("INVALID_INPUT");
+                        }
+                    }
+                }
+                checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos, clientHadSomethingToReport);
+            });
         } catch (Exception e) {
-            System.err.println("[Vesuvio] Failed to queue movement check for " + player.getName() + " (" + finalPacketName + "): " + e.getMessage());
+            System.err.println("[Vesuvio] Не удалось поставить проверку движения в очередь для " + player.getName() + " (" + finalPacketName + "): " + e.getMessage());
             e.printStackTrace();
         }
     }

@@ -101,7 +101,7 @@ public final class BackTrackCheck {
 
         return CheckResult.flag("BackTrack", confidence, vl,
                 String.format(Locale.US,
-                        "Hit only valid against a %.0fms-old position (real RTT %.0fms, allowed %.0fms)",
+                        "Удар возможен только по позиции давностью %.0f мс (реальная задержка %.0f мс, допустимо %.0f мс)",
                         requiredMs, realRtt, allowedMs),
                 details);
     }

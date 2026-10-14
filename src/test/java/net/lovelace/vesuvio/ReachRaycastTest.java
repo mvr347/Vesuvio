@@ -7,6 +7,22 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class ReachRaycastTest {
 
+    @Test void stationaryTargetDoesNotRequireRewindingToItsOldestPosition() {
+        var frames = java.util.List.of(
+                new HitboxHistoryTracker.BoxSnapshot(0, 0, 2, 1, 2, 3, 0),
+                new HitboxHistoryTracker.BoxSnapshot(0, 0, 2, 1, 2, 3, 1_950_000_000L));
+        assertEquals(50, HitboxHistoryTracker.minimumRequiredRewindMs(frames, 0.5, 1.62, 0, 3.05, 2_000_000_000L));
+    }
+
+    @Test void rayUsesTheActualHitPointRatherThanTheNearestFace() {
+        var box = new HitboxHistoryTracker.BoxSnapshot(0, 0, 3, 1, 2, 4, 0);
+        assertEquals(3, box.rayDistance(0.5, 1.62, 0, 0, 0, 1, 0), 1e-8);
+        assertEquals(Double.POSITIVE_INFINITY, box.rayDistance(2, 1.62, 0, 0, 0, 1, 0));
+        assertEquals(Double.POSITIVE_INFINITY, box.rayDistance(0.5, 1.62, 0, 0, 0, -1, 0));
+        assertEquals(0, box.rayDistance(0.5, 1.62, 3.5, 0, 0, 1, 0));
+        assertEquals(3.5 * Math.sqrt(2), box.rayDistance(-3.5, 1, 0, Math.sqrt(0.5), 0, Math.sqrt(0.5), 0), 1e-8);
+    }
+
     @Test
     public void testBoxSnapshotDistanceCalculation() {
         // Target bounding box from [0, 0, 0] to [1, 2, 1]
