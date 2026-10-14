@@ -524,7 +524,7 @@ public final class WorldInteractionListener implements Listener {
         }
     }
 
-    /** Paper's per-tick break progress already includes the complete server mining model. */
+    /** Paper's break progress includes tools, effects and BLOCK_BREAK_SPEED; do not multiply the attribute twice. */
     public static long minimumBreakMillis(double damagePerTick) {
         if (!Double.isFinite(damagePerTick) || damagePerTick <= 0 || damagePerTick >= 1) return 0;
         return (long) Math.ceil(1.0 / damagePerTick) * 50L;
