@@ -149,14 +149,15 @@ public final class PlayerLifecycleListener implements Listener {
 
         if (data != null) {
             // Persist metrics before eviction
-            databaseManager.savePlayerSync(
-                    player.getUniqueId(),
-                    player.getName(),
-                    data.getTrustScore(),
-                    data.getRiskIndex(),
-                    data.getClientBrand(),
-                    data.isManualSuspect()
-            );
+            // Values are read here (main thread, before eviction); only the JDBC write goes
+            // off-thread so quitting never blocks the tick. onDisable saves remaining players.
+            final java.util.UUID quitId = player.getUniqueId();
+            final String quitName = player.getName();
+            final double trust = data.getTrustScore();
+            final double risk = data.getRiskIndex();
+            final String brand = data.getClientBrand();
+            final boolean suspect = data.isManualSuspect();
+            runBackground(() -> databaseManager.savePlayerSync(quitId, quitName, trust, risk, brand, suspect));
         }
 
         if (spectateManager.isSpectating(player.getUniqueId())) {

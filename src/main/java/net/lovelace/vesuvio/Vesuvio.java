@@ -255,6 +255,9 @@ public final class Vesuvio extends JavaPlugin {
         // the world on behalf of the async movement checks, and the transaction is the clock they
         // measure latency against.
         Bukkit.getScheduler().runTaskTimer(this, () -> {
+            try {
+                net.lovelace.vesuvio.engine.TpsCache.update(Bukkit.getTPS());
+            } catch (Throwable ignored) {}
             environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers(), configManager.isAnticheatEnabled());
             if (configManager.isAnticheatEnabled()) aimTrackingService.tick(Bukkit.getOnlinePlayers());
             for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
@@ -384,6 +387,20 @@ public final class Vesuvio extends JavaPlugin {
         // Stop scheduled/manual training and terminate its owned subprocess.
         if (modelAutoTrainer != null) {
             modelAutoTrainer.stop();
+        }
+
+        // Players are not kicked before plugins disable, so their quit events never ran: persist
+        // everyone synchronously while the pool is still open. Stopping the executor below also
+        // drains any async quit saves already queued.
+        if (databaseManager != null && userDataManager != null) {
+            for (net.lovelace.vesuvio.data.UserData u : userDataManager.getAllUsers()) {
+                try {
+                    databaseManager.savePlayerSync(u.getUuid(), u.getUsername(), u.getTrustScore(),
+                            u.getRiskIndex(), u.getClientBrand(), u.isManualSuspect());
+                } catch (Throwable t) {
+                    getLogger().warning("Не удалось сохранить игрока " + u.getUsername() + ": " + t.getMessage());
+                }
+            }
         }
 
         // Drain workers before closing the resources they use.

@@ -1117,6 +1117,9 @@ public final class CheckPipeline {
                         .replace("%vl%", String.format(Locale.US, "%.0f", currentVl))
                         .replace("%risk%", String.format(Locale.US, "%.0f", data.getRiskIndex()))
                         .replace("%ml%", String.format(Locale.US, "%.1f", data.getLastMLProbability() * 100));
+                // Wave mode dedups itself via waveManager.isQueued; every other action fires once per session.
+                boolean waveMode = "ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null;
+                if (!waveMode && !data.tryLatchPunished()) return;
                 if ("ban".equalsIgnoreCase(rule.action())) {
                     selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
                     if (banEvasionManager != null && config.isBanEvasionEnabled()) {
@@ -1134,7 +1137,7 @@ public final class CheckPipeline {
                 }
                 boolean executed;
                 if ("kick".equalsIgnoreCase(rule.action())) {
-                    if (!player.isOnline()) return;
+                    if (!player.isOnline()) { data.resetPunishedLatch(); return; }
                     String reason = formatted;
                     for (String prefix : new String[]{"kick " + player.getName() + " ", "minecraft:kick " + player.getName() + " "}) {
                         if (reason.regionMatches(true, 0, prefix, 0, prefix.length())) { reason = reason.substring(prefix.length()); break; }
@@ -1144,6 +1147,7 @@ public final class CheckPipeline {
                 } else {
                     executed = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), toLegacyCommand(formatted));
                 }
+                if (!executed) data.resetPunishedLatch();
                 if (executed) databaseManager.logPunishmentAsync(new net.lovelace.vesuvio.storage.PunishmentRecord(
                         player.getUniqueId(), player.getName(), rule.action(), formatted, System.currentTimeMillis()));
                 return;

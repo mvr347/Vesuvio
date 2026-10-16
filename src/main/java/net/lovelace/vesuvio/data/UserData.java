@@ -969,6 +969,16 @@ public final class UserData {
         setEnvironment(net.lovelace.vesuvio.engine.EnvironmentSnapshot.EMPTY);
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean punished = new java.util.concurrent.atomic.AtomicBoolean();
+    /**
+     * Per-session latch: true exactly once, so the (non-wave) punishment command is dispatched a
+     * single time instead of on every flag once VL stays over the threshold. UserData is created
+     * per join, so a new session starts unlatched.
+     */
+    public boolean tryLatchPunished() { return punished.compareAndSet(false, true); }
+    public boolean isPunished() { return punished.get(); }
+    public void resetPunishedLatch() { punished.set(false); }
+
     private long lastPunishmentNanos;
     public synchronized boolean tryPunishment(long now) {
         if (lastPunishmentNanos != 0 && now - lastPunishmentNanos < 1_000_000_000L) return false;

@@ -214,14 +214,8 @@ public final class AutoDatasetCollector {
      * pipeline has one (it cannot be spoofed the way Player#getPing() can), TPS from the server.
      */
     private DatasetManager.SampleContext contextOf(Player player, UserData data) {
-        double tps;
-        try {
-            double[] recent = Bukkit.getServer().getTPS();
-            tps = recent.length > 0 ? recent[0] : -1.0;
-        } catch (Throwable t) {
-            // Not all server implementations expose getTPS(); context is diagnostic, never required.
-            tps = -1.0;
-        }
+        // Cached by the main-thread snapshot task; getTPS is main-thread only.
+        double tps = net.lovelace.vesuvio.engine.TpsCache.get();
         int ping = Math.max(-1, player.getPing());
         String brand = data.getClientBrand();
         return new DatasetManager.SampleContext(ping, tps, brand == null ? "" : brand);
