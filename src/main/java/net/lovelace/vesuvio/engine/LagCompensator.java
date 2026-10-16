@@ -61,13 +61,8 @@ public final class LagCompensator {
      * Checks if current server TPS is under the acceptable threshold.
      */
     public boolean isServerLagging() {
-        try {
-            double[] tps = Bukkit.getTPS();
-            if (tps.length > 0 && tps[0] < config.getMinServerTps()) {
-                return true;
-            }
-        } catch (Throwable ignored) {}
-        return false;
+        // Cached by the main-thread snapshot task; Bukkit#getTPS is main-thread only.
+        return TpsCache.get() < config.getMinServerTps();
     }
 
     /**

@@ -207,11 +207,7 @@ public final class ApiServer implements AutoCloseable {
             return;
         }
 
-        double tps = 20.0;
-        try {
-            double[] tpsArray = Bukkit.getTPS();
-            if (tpsArray.length > 0) tps = tpsArray[0];
-        } catch (Throwable ignored) {}
+        double tps = net.lovelace.vesuvio.engine.TpsCache.get();
 
         int onlineCount = Bukkit.getOnlinePlayers().size();
         int suspectsCount = userDataManager.getSuspects(config.getHighRiskThreshold()).size();
