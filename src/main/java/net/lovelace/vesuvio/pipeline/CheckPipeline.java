@@ -24,6 +24,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
+import java.util.function.Function;
+import net.lovelace.vesuvio.integration.essential.MechanicsState;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -121,6 +123,17 @@ public final class CheckPipeline {
         this.snapAimCheck = new net.lovelace.vesuvio.check.statistical.SnapAimCheck(config);
     }
 
+    private Function<java.util.UUID, MechanicsState> targetMechanics = id -> MechanicsState.NONE;
+
+    public void targetMechanics(Function<java.util.UUID, MechanicsState> resolver) {
+        targetMechanics = java.util.Objects.requireNonNull(resolver);
+    }
+
+    private boolean controlledTarget(org.bukkit.entity.Entity target) {
+        return target instanceof Player player
+                && targetMechanics.apply(player.getUniqueId()).hitbox(System.nanoTime());
+    }
+
     /**
      * Wired after construction because the tracking service needs the plugin's tick scheduler,
      * which is set up later in {@code Vesuvio#onEnable} than the pipeline itself.
@@ -196,7 +209,8 @@ public final class CheckPipeline {
      * Processes click events from a player. Runs asynchronously.
      */
     public void processClick(Player player, UserData data) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
+                || data.mechanics().combat(System.nanoTime())) return;
 
         // -------------------------------------------------------------
         // Layer 1: Statistical Engine (Fast, Heuristic)
@@ -429,6 +443,7 @@ public final class CheckPipeline {
     /** Applies the bounded Risk contribution an above-threshold ensemble score earns. */
     private void applyEnsemble(UserData data, double statConfidence, Double onnxProbability,
                                double selfLearnProbability, float repeatScore, double temporalConfidence) {
+        if (data.mechanics().combat(System.nanoTime())) return;
         EnsembleScorer.Inputs inputs = new EnsembleScorer.Inputs(
                 statConfidence, onnxProbability, selfLearnProbability, repeatScore, temporalConfidence);
         double ensembleScore = EnsembleScorer.score(inputs, config);
@@ -458,7 +473,8 @@ public final class CheckPipeline {
      *                       real signed value.
      */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch, float signedDeltaYaw) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
+                || data.mechanics().combat(System.nanoTime())) return;
 
         // KillauraAngleCheck's ReactionTime sub-check needs to know when the attacker's camera
         // last made a "real" turn, not merely received a rotation packet - tracked here since this
@@ -592,7 +608,8 @@ public final class CheckPipeline {
 
     public void processAttack(Player player, int targetEntityId, UserData data,
                               net.lovelace.vesuvio.engine.AttackSnapshot attack) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
+                || data.mechanics().combat(System.nanoTime())) return;
 
         // A downed/invulnerable attacker or target means a third-party plugin (revive/downed-
         // state mechanics, admin god-mode, spawn protection, etc.) is actively controlling that
@@ -695,7 +712,8 @@ public final class CheckPipeline {
         // survival rules - reach and angle math isn't meaningful against state we don't own.
         // Concretely reported case: finishing off a player mid-revive (temporarily invulnerable,
         // position still settling) false-flagged the finisher for Reach/Angle.
-        if (target == null || target.equals(player) || target.isInvulnerable()) {
+        if (target == null || target.equals(player) || target.isInvulnerable()
+                || controlledTarget(target)) {
             // Reach and the whole killaura family live below this line, so when an operator reports
             // that an attack "was not caught", the first thing that has to be answered is whether
             // the attack reached them at all. Silence here and silence from a check that ran look
@@ -706,6 +724,7 @@ public final class CheckPipeline {
                         player.getName(), targetEntityId,
                         target == null ? "цель отсутствует среди ближайших сущностей"
                                 : target.equals(player) ? "цель совпадает с атакующим"
+                                : controlledTarget(target) ? "поза цели управляется LoveEssential"
                                 : "цель неуязвима"));
             }
             return;
@@ -773,7 +792,8 @@ public final class CheckPipeline {
      * every other combat check relies on.
      */
     public void handleNpcTrapHit(Player player, UserData data) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) return;
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
+                || data.mechanics().combat(System.nanoTime())) return;
 
         if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
 
@@ -807,6 +827,16 @@ public final class CheckPipeline {
      */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos, boolean clientHadSomethingToReport) {
         if (!config.isAnticheatEnabled() || packetReceiptNanos < data.getMovementResetNanos()) return;
+        if (data.mechanics().movement(System.nanoTime())) {
+            data.setLastAnyMovementNanos(packetReceiptNanos);
+            data.resetTimerBalance();
+            if (hasPos) {
+                data.setLastPosition(x, y, z, onGround);
+                data.setLastPositionNanos(packetReceiptNanos);
+            }
+            return;
+        }
+
         if (data.hasRecentTeleport()) {
             data.resetTimerBalance();
             data.setLastAnyMovementNanos(packetReceiptNanos);

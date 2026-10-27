@@ -42,6 +42,21 @@ public final class ConfigManager {
         reload();
     }
 
+    public boolean isLoveEssentialIntegrationEnabled() {
+        return config.getBoolean("integrations.loveessential.enabled", true);
+    }
+
+    public long getLoveEssentialTransitionMs() {
+        return Math.clamp(config.getLong("integrations.loveessential.transition-ms", 500), 0, 2000);
+    }
+
+    public Set<String> getLoveEssentialStates() {
+        return loveEssentialStates;
+    }
+
+    private volatile Set<String> loveEssentialStates =
+            Set.of("SITTING", "LYING", "RIDING", "CARRYING", "DOWNED", "REVIVING", "GOD");
+
     // Executor settings take effect after a plugin/server restart.
     public boolean useVirtualThreads() { return config.getBoolean("settings.virtual-threads", true); }
     public int getWorkerCapacity() { return Math.clamp(config.getInt("settings.max-background-tasks", 2048), 32, 16384); }
@@ -67,6 +82,14 @@ public final class ConfigManager {
         plugin.saveDefaultConfig();
         plugin.reloadConfig();
         this.config = plugin.getConfig();
+        if (config.isList("integrations.loveessential.states"))
+            loveEssentialStates =
+                    config.getStringList("integrations.loveessential.states").stream()
+                            .map(x -> x.toUpperCase(java.util.Locale.ROOT))
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        else
+            loveEssentialStates =
+                    Set.of("SITTING", "LYING", "RIDING", "CARRYING", "DOWNED", "REVIVING", "GOD");
 
         punishmentRules.clear();
         var punishmentsSection = config.getConfigurationSection("punishments.thresholds");

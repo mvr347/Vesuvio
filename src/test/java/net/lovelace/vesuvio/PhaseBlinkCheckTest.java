@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.check.movement.BlinkCheck;
 import net.lovelace.vesuvio.check.movement.PhaseCheck;
@@ -10,8 +12,6 @@ import org.bukkit.Material;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Coverage for the two checks added after comparing our detection surface against the hack
@@ -631,6 +631,11 @@ class PhaseBlinkCheckTest {
         @Override
         public double getMsSinceLastAckSent(UUID uuid) {
             return msSinceLastAckSent;
+        }
+
+        @Override
+        public boolean hasHealthyResponsesDuring(UUID uuid, long from, long to, double maxRttMs) {
+            return true; // this fixture explicitly represents probes flowing during the gap
         }
 
         @Override

@@ -5,6 +5,8 @@ api-version: '1.21'
 author: Lovelace
 description: Гибридный трёхуровневый античит для Paper/Purpur 1.21.11 / 26.2
 softdepend:
+  - LoveEssential
+  - LoveCore
   - PacketEvents
   - PlaceholderAPI
   - LoveHunt

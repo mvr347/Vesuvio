@@ -48,7 +48,7 @@ public final class AimTrackingService {
         long now = System.nanoTime();
         for (Player player : onlinePlayers) {
             UserData data = userDataManager.get(player.getUniqueId());
-            if (data == null || !data.isInCombat()) continue;
+            if (data == null || !data.isInCombat() || data.mechanics().combat(now)) continue;
 
             WeakReference<Entity> ref = targets.get(player.getUniqueId());
             if (ref == null) continue;
@@ -58,6 +58,13 @@ public final class AimTrackingService {
                 continue;
             }
             if (!target.isValid() || !target.getWorld().equals(player.getWorld())) continue;
+            if (target instanceof Player other) {
+                var targetData = userDataManager.get(other.getUniqueId());
+                if (targetData != null && targetData.mechanics().hitbox(now)) {
+                    data.getAimTrackingBuffer().reset();
+                continue;
+                }
+            }
 
             Location eye = player.getEyeLocation();
             Vector toTarget = target.getBoundingBox().getCenter().subtract(eye.toVector());

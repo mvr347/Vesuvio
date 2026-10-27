@@ -80,7 +80,8 @@ public final class AutoDatasetCollector {
      * click and (if available) aim feature vectors as confirmed-cheat samples.
      */
     public void collectCheatSample(Player player, UserData data) {
-        if (!config.isAutoCollectionEnabled() || !config.isAutoCollectCheatOnBan()) return;
+        if (!config.isAutoCollectionEnabled() || !config.isAutoCollectCheatOnBan()
+                || data.mechanics().combat(System.nanoTime())) return;
 
         long now = System.currentTimeMillis();
         DatasetManager.SampleContext context = contextOf(player, data);
@@ -128,7 +129,7 @@ public final class AutoDatasetCollector {
      * have. Collected unconditionally, and never throttled.
      */
     public void collectTrapSample(Player player, UserData data) {
-        if (!config.isAutoCollectionEnabled()) return;
+        if (!config.isAutoCollectionEnabled() || data.mechanics().combat(System.nanoTime())) return;
 
         long now = System.currentTimeMillis();
         DatasetManager.SampleContext context = contextOf(player, data);
@@ -251,7 +252,7 @@ public final class AutoDatasetCollector {
 
         for (Player player : Bukkit.getOnlinePlayers()) {
             UserData data = userDataManager.get(player.getUniqueId());
-            if (data == null) continue;
+            if (data == null || data.mechanics().combat(System.nanoTime())) continue;
 
             // Rolling window capture runs for EVERY player, before the trust filters below: by the
             // time someone is banned it is far too late to start remembering what their session
