@@ -13,7 +13,7 @@ import org.bukkit.Material;
  * through here instead, so adding a field to the snapshot is a one-line change in this file rather
  * than a scavenger hunt through the suite.
  */
-final class TestSnapshots {
+public final class TestSnapshots {
 
     private TestSnapshots() {}
 
@@ -22,11 +22,11 @@ final class TestSnapshots {
         return builder().blockBelow(below).build();
     }
 
-    static Builder builder() {
+    public static Builder builder() {
         return new Builder();
     }
 
-    static final class Builder {
+    public static final class Builder {
         private Material blockBelow = Material.GRASS_BLOCK;
         private boolean solidBelow = true;
         private boolean nearClimbable = false;
@@ -55,7 +55,7 @@ final class TestSnapshots {
         Builder blockedPosZ(boolean v) { this.blockedPosZ = v; return this; }
         Builder blockedNegZ(boolean v) { this.blockedNegZ = v; return this; }
 
-        EnvironmentSnapshot build() {
+        public EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
                     System.currentTimeMillis(), true,
                     0, 64, 0,

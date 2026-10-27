@@ -717,6 +717,13 @@ database:
 # 8. ИНТЕГРАЦИИ С ДРУГИМИ ПЛАГИНАМИ
 # ------------------------------------------------------------------------------
 integrations:
+  loveessential:
+    enabled: true
+    # Период адаптации после посадки, лежания, переноски, ранения и смены способностей.
+    # Фактический RTT может увеличить его максимум до 2000 мс.
+    transition-ms: 500
+    states: [SITTING, LYING, RIDING, CARRYING, DOWNED, REVIVING, GOD]
+
   # Интеграция с LoveHunt для создания ивента "Lava Bounty"
   lovehunt:
     lava-bounty: true

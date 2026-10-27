@@ -100,6 +100,17 @@ public final class DiagnosticService implements AutoCloseable, org.bukkit.event.
             field(out, "Сервер (последний снимок)", serverState);
             field(out, "Движение", motion(data));
             field(out, "Окружение", data.getEnvironment());
+            var mechanics = data.mechanics();
+            field(
+                    out,
+                    "LoveEssential",
+                    "состояния="
+                            + mechanics.states()
+                            + ", переходМс="
+                            + Math.max(
+                                    0,
+                                    (mechanics.transitionUntilNanos() - System.nanoTime())
+                                            / 1_000_000));
             field(out, "Пинг транзакций", transactions.getTransactionPing(data.getUuid()));
             field(out, "Подтверждения", "ожидает=" + transactions.getPendingCount(data.getUuid())
                     + ", возрастМс=" + transactions.getOldestPendingAgeMs(data.getUuid()));

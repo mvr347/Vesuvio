@@ -1,5 +1,6 @@
 package net.lovelace.vesuvio.data;
 
+import net.lovelace.vesuvio.integration.essential.MechanicsState;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.DoubleAdder;
@@ -985,6 +986,30 @@ public final class UserData {
         lastPunishmentNanos = now;
         return true;
     }
+    private volatile MechanicsState mechanics =
+            MechanicsState.NONE;
+
+    public MechanicsState mechanics() {
+        return mechanics;
+    }
+
+    public synchronized void updateMechanics(
+            java.util.Set<String> states, long now, long grace, boolean pulse) {
+        if (!pulse && mechanics.states().equals(states)) return;
+        // Packet work is synchronized on this same object: old queued results cannot cross the
+        // reset.
+        resetMovementTracking();
+        getClickBuffer().reset();
+        getAimBuffer().reset();
+        getAimTrackingBuffer().reset();
+        setInitialRotation(false);
+        resetGcdStreak();
+        resetStrafeReversal();
+        mechanics =
+                new MechanicsState(
+                        states, grace > 0 ? now + grace : 0);
+    }
+
     private volatile long movementResetNanos;
     private final net.lovelace.vesuvio.engine.OrderedTaskQueue packetChecks =
             new net.lovelace.vesuvio.engine.OrderedTaskQueue();

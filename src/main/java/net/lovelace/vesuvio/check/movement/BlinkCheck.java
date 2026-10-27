@@ -223,7 +223,7 @@ public final class BlinkCheck {
         }
 
         double rtt = transactions.getTransactionPing(uuid);
-        if (rtt < 0) {
+        if (!Double.isFinite(rtt) || rtt < 0) {
             // No latency sample yet (the player only just joined) - nothing to compare against.
             return CheckResult.pass("Blink");
         }
@@ -234,7 +234,9 @@ public final class BlinkCheck {
             return CheckResult.pass("Blink");
         }
 
-        boolean connectionWasHealthy = rtt < silenceMs * healthyRttFraction;
+        boolean connectionWasHealthy = rtt < silenceMs * healthyRttFraction
+                        && transactions.hasHealthyResponsesDuring(
+                                uuid, last, nowNanos, silenceMs * healthyRttFraction);
         if (!connectionWasHealthy) {
             return CheckResult.pass("Blink");
         }

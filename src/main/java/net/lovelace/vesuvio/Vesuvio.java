@@ -1,5 +1,7 @@
 package net.lovelace.vesuvio;
 
+import net.lovelace.vesuvio.integration.essential.LoveEssentialHook;
+import net.lovelace.vesuvio.integration.essential.MechanicsState;
 import com.github.retrooper.packetevents.PacketEvents;
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import net.lovelace.vesuvio.api.VesuvioAPI;
@@ -41,6 +43,7 @@ public final class Vesuvio extends JavaPlugin {
     private UserDataManager userDataManager;
     private net.lovelace.vesuvio.engine.TransactionManager transactionManager;
     private net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService;
+    private LoveEssentialHook loveEssentialHook;
     private net.lovelace.vesuvio.engine.AimTrackingService aimTrackingService;
     private MLManager mlManager;
     private SelfLearningManager selfLearningManager;
@@ -130,11 +133,18 @@ public final class Vesuvio extends JavaPlugin {
         // never touch the Bukkit API themselves.
         this.environmentSnapshotService = new net.lovelace.vesuvio.engine.EnvironmentSnapshotService(userDataManager);
         // Per-tick target-relative aim capture, feeding StrafeReversalCheck.
+        this.loveEssentialHook =
+                new LoveEssentialHook(
+                        this, userDataManager, transactionManager, configManager);
+        loveEssentialHook.start();
+        environmentSnapshotService.mechanics(loveEssentialHook);
+        // Per-tick target-relative aim capture, feeding StrafeReversalCheck.
         this.aimTrackingService = new net.lovelace.vesuvio.engine.AimTrackingService(userDataManager);
         var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager, transactionManager);
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
+        loveEssentialHook.invalidateGeometry(hitboxTracker::remove);
         var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
         var npcTrapManager = new net.lovelace.vesuvio.engine.NpcTrapManager(this, configManager);
 
@@ -191,6 +201,13 @@ public final class Vesuvio extends JavaPlugin {
         );
         Bukkit.getPluginManager().registerEvents(diagnostics, this);
         Bukkit.getPluginManager().registerEvents(worldInteractionListener, this);
+        checkPipeline.targetMechanics(
+                id -> {
+                    var data = userDataManager.get(id);
+                    return data == null
+                            ? MechanicsState.NONE
+                            : data.mechanics();
+                });
         Bukkit.getPluginManager().registerEvents(environmentSnapshotService, this);
         Bukkit.getPluginManager().registerEvents(
                 new net.lovelace.vesuvio.listener.PhysicsExemptionListener(userDataManager, configManager),
@@ -362,6 +379,9 @@ public final class Vesuvio extends JavaPlugin {
     public void onDisable() {
         getLogger().info("Остановка Vesuvio 26.2...");
         if (configManager != null) configManager.setAnticheatEnabled(false);
+
+        // Unregister Public API & Expansion
+        if (loveEssentialHook != null) loveEssentialHook.close();
 
         // Unregister Public API & Expansion
         if (papiExpansion != null) {

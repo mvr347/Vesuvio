@@ -60,6 +60,16 @@ public class TransactionManager {
     /** Weight of each new sample in the exponential moving average of the round-trip time. */
     private static final double EMA_ALPHA = 0.20;
 
+    private final java.util.function.LongSupplier clock;
+
+    public TransactionManager() {
+        this(System::nanoTime);
+    }
+
+    TransactionManager(java.util.function.LongSupplier clock) {
+        this.clock = java.util.Objects.requireNonNull(clock);
+    }
+
     private final Map<UUID, PlayerTransactions> players = new ConcurrentHashMap<>();
 
     /** Called on join; also lazily created on first use. */
@@ -83,17 +93,7 @@ public class TransactionManager {
         if (player == null || !player.isOnline()) return 0;
         PlayerTransactions state = players.computeIfAbsent(player.getUniqueId(), u -> new PlayerTransactions());
 
-        int id;
-        synchronized (state) {
-            if (state.pending.size() >= MAX_PENDING) {
-                // The client is not answering. Drop the oldest so the queue stays bounded, and
-                // leave the recorded latency alone - a stalled client should not get to keep
-                // lowering its own measured ping by having us forget the outstanding requests.
-                state.pending.pollFirst();
-            }
-            id = state.nextId();
-            state.pending.addLast(new Pending(id, System.nanoTime(), state.eventSequence));
-        }
+        int id = begin(state);
 
         try {
             User user = PacketEvents.getAPI().getPlayerManager().getUser(player);
@@ -120,6 +120,26 @@ public class TransactionManager {
         return id;
     }
 
+    // Shared production path; package access allows deterministic network-clock regressions.
+    int begin(UUID uuid) {
+        return begin(players.computeIfAbsent(uuid, u -> new PlayerTransactions()));
+    }
+
+    private int begin(PlayerTransactions state) {
+        int id;
+        synchronized (state) {
+            if (state.pending.size() >= MAX_PENDING) {
+                // The client is not answering. Drop the oldest so the queue stays bounded, and
+                // leave the recorded latency alone - a stalled client should not get to keep
+                // lowering its own measured ping by having us forget the outstanding requests.
+                state.pending.pollFirst();
+            }
+            id = state.nextId();
+            state.pending.addLast(new Pending(id, clock.getAsLong(), state.eventSequence));
+        }
+        return id;
+    }
+
     /** Removes a transaction we queued but could not actually send. */
     private void forget(PlayerTransactions state, int id) {
         synchronized (state) {
@@ -137,7 +157,7 @@ public class TransactionManager {
         PlayerTransactions state = players.get(uuid);
         if (state == null) return false;
 
-        long now = System.nanoTime();
+        long now = clock.getAsLong();
         synchronized (state) {
             // Ids are only ever ours if they are in our negative range.
             if (id > ID_START || id < ID_MIN) return false;
@@ -162,6 +182,7 @@ public class TransactionManager {
             state.emaRttMs = state.emaRttMs < 0 ? rttMs : state.emaRttMs + EMA_ALPHA * (rttMs - state.emaRttMs);
             state.acknowledgedSequence = match.eventSequence;
             state.lastResponseNanos = now;
+            state.responses.add(now, rttMs);
             // Packet accounting (see BlinkCheck): the sequence counts answered transactions, and
             // the send time is the SERVER's, so the span between two acks is a quantity the client
             // cannot influence at all - not by lagging, not by jitter, not by holding packets.
@@ -243,7 +264,7 @@ public class TransactionManager {
         if (state == null) return -1;
         synchronized (state) {
             if (state.lastAckSentNanos == 0L) return -1;
-            return (System.nanoTime() - state.lastAckSentNanos) / 1_000_000.0;
+            return (clock.getAsLong() - state.lastAckSentNanos) / 1_000_000.0;
         }
     }
 
@@ -267,13 +288,58 @@ public class TransactionManager {
         synchronized (state) {
             Pending head = state.pending.peekFirst();
             if (head == null) return 0;
-            return (System.nanoTime() - head.sentNanos) / 1_000_000.0;
+            return (clock.getAsLong() - head.sentNanos) / 1_000_000.0;
+        }
+    }
+
+    /**
+     * Evidence that probes actually flowed throughout a movement gap. A stale low EMA or a recovery
+     * flush is not proof of a healthy connection during that gap. Zero RTT is valid.
+     */
+    public boolean hasHealthyResponsesDuring(UUID uuid, long from, long to, double maxRttMs) {
+        PlayerTransactions state = players.get(uuid);
+        if (state == null) return false;
+        synchronized (state) {
+            return state.responses.covers(from, to, maxRttMs);
+        }
+    }
+
+    /** Fixed primitive ring: ~4 KiB per connected player, no retained packets or player objects. */
+    private static final class ResponseWindow {
+        private final long[] times = new long[256];
+        private final double[] rtts = new double[256];
+        private int next, size;
+
+        void add(long time, double rtt) {
+            times[next] = time;
+            rtts[next] = rtt;
+            next = (next + 1) % times.length;
+            size = Math.min(size + 1, times.length);
+        }
+
+        boolean covers(long from, long to, double maxRttMs) {
+            if (to <= from || !Double.isFinite(maxRttMs) || maxRttMs <= 0) return false;
+            long maxGap = (long) (Math.max(250, Math.min(750, maxRttMs)) * 1_000_000);
+            long previous = from;
+            int count = 0;
+            for (int i = 0; i < size; i++) {
+                int index = (next - size + i + times.length) % times.length;
+                long time = times[index];
+                if (time < from || time > to) continue;
+                double rtt = rtts[index];
+                if (!Double.isFinite(rtt) || rtt < 0 || rtt >= maxRttMs) continue;
+                if (time - previous > maxGap) return false;
+                previous = time;
+                count++;
+            }
+            return count >= 3 && to - previous <= maxGap;
         }
     }
 
     private record Pending(int id, long sentNanos, long eventSequence) {}
 
     private static final class PlayerTransactions {
+        final ResponseWindow responses = new ResponseWindow();
         final Deque<Pending> pending = new ArrayDeque<>();
         int lastId = ID_START + 1; // nextId() pre-decrements, so the first id handed out is ID_START
         double lastRttMs = -1;

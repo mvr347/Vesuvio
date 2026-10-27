@@ -54,6 +54,11 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
     private final Map<UUID, BlockCache> blockCaches = new HashMap<>();
 
     private long tick = 0L;
+    private net.lovelace.vesuvio.integration.essential.LoveEssentialHook mechanics;
+
+    public void mechanics(net.lovelace.vesuvio.integration.essential.LoveEssentialHook hook) {
+        this.mechanics = hook;
+    }
 
     public EnvironmentSnapshotService(UserDataManager userDataManager) {
         this.userDataManager = userDataManager;
@@ -71,6 +76,7 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
             try {
                 UserData data = userDataManager.get(player.getUniqueId());
                 if (data == null) continue;
+                if (mechanics != null) mechanics.capture(player, data);
                 EnvironmentSnapshot env = capture(player);
                 data.setEnvironment(env);
                 if (detectionEnabled && data.isPhysicsObserved()) {
@@ -78,7 +84,11 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
                     // Cache retention hint only; server blocks never populate the client replica.
                     data.clientWorld().focus(location.getBlockX() >> 4, location.getBlockZ() >> 4);
                     long reset = data.getMovementResetNanos();
-                    var frame = net.lovelace.vesuvio.engine.physics.PaperPhysicsCapture.capture(player, env, reset);
+                    var frame =
+                            data.mechanics().movement(System.nanoTime())
+                                    ? net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown(
+                                            "LOVEESSENTIAL_CONTROLLED")
+                                    : net.lovelace.vesuvio.engine.physics.PaperPhysicsCapture.capture(player, env, reset);
                     data.setPhysicsFrame(frame); // Epoch is checked at consumption, including reset races.
                 }
             } catch (Throwable t) {
