@@ -140,7 +140,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
     public List<WebPanelModels.PunishmentInfo> getRecentPunishments(int limit) {
         List<WebPanelModels.PunishmentInfo> result = new ArrayList<>();
         if (databaseManager == null) return result;
-        for (PunishmentRecord r : databaseManager.getRecentPunishments(limit)) {
+        for (PunishmentRecord r : databaseManager.getRecentPunishments(Math.clamp(limit,1,200))) {
             result.add(new WebPanelModels.PunishmentInfo(r.uuid(), r.username(), r.action(), r.reason(), r.timestamp()));
         }
         return result;
@@ -150,7 +150,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
     public List<WebPanelModels.ViolationInfo> getRecentViolations(int limit) {
         List<WebPanelModels.ViolationInfo> result = new ArrayList<>();
         if (databaseManager == null) return result;
-        for (ViolationRecord r : databaseManager.getRecentViolations(limit)) {
+        for (ViolationRecord r : databaseManager.getRecentViolations(Math.clamp(limit,1,200))) {
             result.add(new WebPanelModels.ViolationInfo(
                     r.uuid(), r.username(), r.checkName(), r.vl(), r.confidence(), r.explanation(), r.timestamp()
             ));
@@ -163,7 +163,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
         UserData data = userDataManager.get(uuid);
         if (data == null) return null;
 
-        return new WebPanelModels.PlayerDetail(
+        synchronized(data) { return new WebPanelModels.PlayerDetail(
                 data.getUuid(), data.getUsername(), data.getVl(), data.getRiskIndex(), data.getTrustScore(),
                 data.getSensitivityMultiplier(), data.getClientBrand(), data.getLastTriggeredCheck(), data.isManualSuspect(),
                 data.getLastCalculatedCPS(), data.getLastStdDevMs(), data.getLastDupRatio(), data.getLastEntropy(),
@@ -171,7 +171,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
                 data.getAirTicks(), data.getLastDeltaY(), data.isLastOnGround(),
                 data.getClickBuffer().getCount(), data.getAimBuffer().getCount(),
                 data.getGcdSuspiciousStreak(), data.getPerfectAimStreak(), data.isInCombat()
-        );
+        ); }
     }
 
     @Override
@@ -205,7 +205,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
                 datasetSize,
                 trainedSamples,
                 autoCollect,
-                config == null || config.isWebEnabled(),
+                false,
                 databaseManager != null ? databaseManager.getTotalFlagsCount() : 0,
                 config != null ? config.getPunishmentRules().size() : 0
         );
@@ -232,5 +232,46 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
         if (databaseManager != null) {
             databaseManager.setManualSuspect(uuid, suspect);
         }
+    }
+
+    private java.util.concurrent.Executor managementExecutor;
+    private java.nio.file.Path modelDirectory;
+    private final java.util.concurrent.atomic.AtomicLong lastReload=new java.util.concurrent.atomic.AtomicLong();
+
+    public void configureManagement(java.util.concurrent.Executor executor, java.nio.file.Path models) {
+        this.managementExecutor=java.util.Objects.requireNonNull(executor);
+        this.modelDirectory=java.util.Objects.requireNonNull(models);
+    }
+    @Override public int getIntegrationVersion() { return 2; }
+    @Override public java.util.Set<String> getCapabilities() {
+        return java.util.Set.of("overview","players","violations","reviews","reload-models");
+    }
+    @Override public List<WebPanelModels.ReviewInfo> getPendingReviews(int limit) {
+        if(selfLearningManager==null)return List.of();
+        return selfLearningManager.getActiveLearning().getPendingReviews().stream()
+            .sorted(java.util.Comparator.comparingLong(net.lovelace.vesuvio.check.selflearning.ActiveLearning.ReviewSample::timestamp).reversed())
+            .limit(Math.clamp(limit,1,200)).map(sample->{
+                var features=new ArrayList<Float>();for(float feature:sample.features())features.add(Float.isFinite(feature)?feature:0f);
+                return new WebPanelModels.ReviewInfo(sample.id(),sample.playerUuid(),sample.playerName(),sample.domain(),sample.probability(),sample.timestamp(),features);
+            }).toList();
+    }
+    @Override public java.util.concurrent.CompletableFuture<Boolean> submitReview(String id,String verdict,String reviewer) {
+        if(!java.util.Set.of("cheat","legit").contains(verdict)||reviewer==null||reviewer.isBlank())
+            return java.util.concurrent.CompletableFuture.failedFuture(new IllegalArgumentException("Укажите вердикт и сотрудника"));
+        if(managementExecutor==null||selfLearningManager==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Обучение недоступно"));
+        return net.lovelace.vesuvio.engine.AsyncTasks.supply(()->{
+            var learning=selfLearningManager.getActiveLearning();var sample=learning.getSample(id);
+            if(sample==null)return false;
+            var classifier="aim".equals(sample.domain())?selfLearningManager.getAimClassifier():selfLearningManager.getOnlineClassifier();
+            return learning.submitVerdict(id,verdict,reviewer,classifier,selfLearningManager.getDatasetManager(),userDataManager.get(sample.playerUuid()));
+        },managementExecutor);
+    }
+    @Override public java.util.concurrent.CompletableFuture<Boolean> reloadModels() {
+        if(mlManager==null||modelDirectory==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Модели недоступны"));
+        long now=System.nanoTime(),previous=lastReload.get();
+        if(previous!=0&&now-previous<java.util.concurrent.TimeUnit.SECONDS.toNanos(60)||!lastReload.compareAndSet(previous,now))
+            return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Перезагрузка уже выполнялась; повторите через минуту"));
+        return mlManager.hotReload("click_model",modelDirectory.resolve("click_model.onnx"))
+            .thenCombine(mlManager.hotReload("aim_model",modelDirectory.resolve("aim_model.onnx")),(click,aim)->click&&aim);
     }
 }

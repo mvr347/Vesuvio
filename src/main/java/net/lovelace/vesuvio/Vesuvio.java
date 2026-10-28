@@ -21,7 +21,6 @@ import net.lovelace.vesuvio.pipeline.CheckPipeline;
 import net.lovelace.vesuvio.staff.SmartAlertService;
 import net.lovelace.vesuvio.staff.SpectateManager;
 import net.lovelace.vesuvio.storage.DatabaseManager;
-import net.lovelace.vesuvio.web.ApiServer;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -53,7 +52,6 @@ public final class Vesuvio extends JavaPlugin {
     private net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
     private net.lovelace.vesuvio.config.PresetManager presetManager;
     private CheckPipeline checkPipeline;
-    private ApiServer apiServer;
     private net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics;
     private ExecutorService virtualExecutor;
     private net.lovelace.vesuvio.integration.hunt.LoveHuntHook loveHuntHook;
@@ -242,6 +240,7 @@ public final class Vesuvio extends JavaPlugin {
 
         VesuvioAPIImpl apiImpl = new VesuvioAPIImpl(userDataManager, waveManager, configManager.getHighRiskThreshold(),
                 databaseManager, mlManager, selfLearningManager, configManager);
+        apiImpl.configureManagement(virtualExecutor,getDataFolder().toPath().resolve("models"));
         VesuvioProvider.register(apiImpl);
         try {
             getServer().getServicesManager().register(VesuvioAPI.class, apiImpl, this, org.bukkit.plugin.ServicePriority.Normal);
@@ -252,17 +251,6 @@ public final class Vesuvio extends JavaPlugin {
             papiExpansion.register();
             getLogger().info("Подключена интеграция с PlaceholderAPI (VesuvioExpansion зарегистрирован).");
         }
-
-        // 12. Start Embedded Web Server & REST API
-        this.apiServer = new ApiServer(
-                this,
-                configManager,
-                userDataManager,
-                mlManager,
-                selfLearningManager,
-                databaseManager
-        );
-        apiServer.start();
 
         // 13. Schedulers: Hitbox History Bounding Box Capture (1 tick = 50ms)
         Bukkit.getScheduler().runTaskTimer(this, hitboxTracker::recordTick, 1L, 1L);
@@ -390,11 +378,6 @@ public final class Vesuvio extends JavaPlugin {
             } catch (Throwable ignored) {}
         }
         VesuvioProvider.unregister();
-
-        // Stop Web Server
-        if (apiServer != null) {
-            apiServer.close();
-        }
 
         // Clean up spectating staff
         if (spectateManager != null) {

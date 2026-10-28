@@ -87,8 +87,13 @@ public final class WebPanelModels {
             int datasetSize,
             long classifierTrainedSamples,
             boolean autoCollectionEnabled,
-            boolean webEnabled,
+            @Deprecated boolean webEnabled,
             int totalFlagsLogged,
             int punishmentRulesCount
     ) {}
+
+    public record ReviewInfo(String id, UUID uuid, String name, String domain,
+            double probability, long timestamp, java.util.List<Float> features) {
+        public ReviewInfo { features=java.util.List.copyOf(features); }
+    }
 }

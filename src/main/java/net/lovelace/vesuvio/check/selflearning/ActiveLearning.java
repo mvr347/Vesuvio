@@ -118,10 +118,9 @@ public final class ActiveLearning {
      */
     public boolean submitVerdict(String sampleId, String verdict, String reviewer,
                                   OnlineClassifier classifier, DatasetManager dataset, UserData userData) {
-        ReviewSample sample = pendingReviews.getIfPresent(sampleId);
+        if (!Set.of("cheat", "legit").contains(verdict)) throw new IllegalArgumentException("Некорректный вердикт");
+        ReviewSample sample = pendingReviews.asMap().remove(sampleId);
         if (sample == null) return false;
-
-        pendingReviews.invalidate(sampleId);
 
         int label = "cheat".equalsIgnoreCase(verdict) ? 1 : 0;
 
