@@ -666,6 +666,8 @@ punishments:
   wave:
     enabled: true
     interval-minutes: 45
+    # 2026-10-29: объявление об итогах волны видит только персонал (право vesuvio.alerts) и консоль. Публичный текст
+    # «заблокировано N нарушителей» подсказывал читерам, когда прошла волна и сколько их поймали. false = не объявлять вовсе.
     broadcast-announcement: true
   thresholds:
     15:
@@ -719,4 +721,6 @@ integrations:
     lava-bounty: true
     reward-item: "DIAMOND"
     reward-amount: 5
+    # 2026-10-29: объявление об охоте видит только персонал (vesuvio.alerts) и консоль: публично оно называло подозреваемого
+    # до волны банов и выдавало, что античит его видит. Сама охота в LoveHunt по-прежнему создаётся. false = без объявления.
     broadcast: true

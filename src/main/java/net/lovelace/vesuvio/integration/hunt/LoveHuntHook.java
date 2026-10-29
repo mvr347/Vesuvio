@@ -74,11 +74,12 @@ public final class LoveHuntHook {
                 plugin.getLogger().info("Lava Bounty: Объявлена охота в LoveHunt на нарушителя " + suspectName);
 
                 if (plugin.getConfig().getBoolean("integrations.lovehunt.broadcast", true)) {
+                    // Staff only: naming a suspect to the whole server before the ban wave warns him and exposes the detection.
                     Bukkit.broadcast(net.kyori.adventure.text.minimessage.MiniMessage.miniMessage().deserialize(
                             "<newline><gradient:#ff4500:#ff8c00><b>🌋 [Lava Bounty] Объявлена серверная охота!</b></gradient><newline>"
                             + "<gray>Античит зафиксировал софт у <red><b>" + suspectName + "</b></red>. "
                             + "Успейте ликвидировать нарушителя до волны банов и заберите <gold>" + rewardAmount + "x " + rewardMaterial.name() + "</gold>!</gray><newline>"
-                    ));
+                    ), "vesuvio.alerts");
                 }
             } catch (Throwable t) {
                 plugin.getLogger().log(Level.WARNING, "Ошибка создания Lava Bounty в LoveHunt: " + t.getMessage());

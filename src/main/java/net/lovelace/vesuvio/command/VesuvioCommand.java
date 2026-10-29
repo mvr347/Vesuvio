@@ -77,7 +77,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
-            if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+            if (!sender.hasPermission("vesuvio.admin")) {
                 return true;
             }
             sendHelp(sender);
@@ -88,7 +88,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
         switch (sub) {
             case "log" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 String action = args.length == 2 ? args[1].toLowerCase(Locale.ROOT) : "status";
@@ -116,7 +116,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "alerts" -> {
-                if (!sender.hasPermission("vesuvio.alerts") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.alerts") && !sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if (!(sender instanceof Player player)) {
@@ -130,7 +130,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "toggle", "punishment", "status" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if ("status".equals(sub) || ("punishment".equals(sub) && args.length == 1)) {
@@ -162,7 +162,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                         + (enabled ? " включены" : " выключены") + ": " + sender.getName();
                 var component = net.kyori.adventure.text.Component.text(message);
                 for (Player staff : Bukkit.getOnlinePlayers()) {
-                    if (staff.hasPermission("vesuvio.alerts") || staff.hasPermission("vesuvio.admin") || staff.isOp()) staff.sendMessage(component);
+                    if (staff.hasPermission("vesuvio.alerts") || staff.hasPermission("vesuvio.admin")) staff.sendMessage(component);
                 }
                 if (!(sender instanceof Player)) sender.sendMessage(component);
                 plugin.getLogger().warning(message);
@@ -170,7 +170,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "spectate" -> {
-                if (!sender.hasPermission("vesuvio.spectate") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.spectate") && !sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if (!(sender instanceof Player player)) {
@@ -194,7 +194,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "review" -> {
-                if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 // /vesuvio review <sampleId> <legit|cheat>
@@ -295,7 +295,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "debug" -> {
-                if (!sender.hasPermission("vesuvio.debug") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.debug") && !sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if (!(sender instanceof Player staff)) {
@@ -338,7 +338,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "suspect" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if (args.length < 2) {
@@ -402,7 +402,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "retrain" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 modelAutoTrainer.triggerNow();
@@ -412,7 +412,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "model" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if (args.length < 2) {
@@ -486,7 +486,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "wave" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 if (args.length < 2) {
@@ -517,7 +517,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "learn" -> {
-                if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 // /vesuvio learn <player> <legit|cheat>
@@ -582,7 +582,7 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
             }
 
             case "preset" -> {
-                if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
+                if (!sender.hasPermission("vesuvio.admin")) {
                     return true;
                 }
                 // /vesuvio preset <list|apply|save>
