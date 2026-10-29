@@ -78,7 +78,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
             if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                sender.sendMessage(mm.deserialize("<red>У вас нет права выполнять эту команду.</red>"));
                 return true;
             }
             sendHelp(sender);
@@ -90,7 +89,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
         switch (sub) {
             case "log" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(Component.text("Нужно право vesuvio.admin."));
                     return true;
                 }
                 String action = args.length == 2 ? args[1].toLowerCase(Locale.ROOT) : "status";
@@ -119,11 +117,10 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "alerts" -> {
                 if (!sender.hasPermission("vesuvio.alerts") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.alerts).</red>"));
                     return true;
                 }
                 if (!(sender instanceof Player player)) {
-                    sender.sendMessage("Эта команда доступна только игрокам.");
+                    sender.sendMessage(mm.deserialize("<red>Команда доступна только игрокам.</red>"));
                     return true;
                 }
                 boolean enabled = alertService.toggleAlerts(player.getUniqueId());
@@ -134,7 +131,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "toggle", "punishment", "status" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Нужно право vesuvio.admin.</red>"));
                     return true;
                 }
                 if ("status".equals(sub) || ("punishment".equals(sub) && args.length == 1)) {
@@ -175,11 +171,10 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "spectate" -> {
                 if (!sender.hasPermission("vesuvio.spectate") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.spectate).</red>"));
                     return true;
                 }
                 if (!(sender instanceof Player player)) {
-                    sender.sendMessage("Эта команда доступна только игрокам.");
+                    sender.sendMessage(mm.deserialize("<red>Команда доступна только игрокам.</red>"));
                     return true;
                 }
                 if (spectateManager.isSpectating(player.getUniqueId())) {
@@ -200,7 +195,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "review" -> {
                 if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.review).</red>"));
                     return true;
                 }
                 // /vesuvio review <sampleId> <legit|cheat>
@@ -258,7 +252,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "physics" -> {
                 if (!sender.hasPermission("vesuvio.admin")) {
-                    sender.sendMessage(Component.text("Требуется vesuvio.admin."));
                     return true;
                 }
                 String action = args.length == 3 ? args[2].toLowerCase(Locale.ROOT) : "status";
@@ -303,11 +296,10 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "debug" -> {
                 if (!sender.hasPermission("vesuvio.debug") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.debug).</red>"));
                     return true;
                 }
                 if (!(sender instanceof Player staff)) {
-                    sender.sendMessage("Эта команда доступна только игрокам.");
+                    sender.sendMessage(mm.deserialize("<red>Команда доступна только игрокам.</red>"));
                     return true;
                 }
                 if (args.length < 2) {
@@ -347,7 +339,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "suspect" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>У вас нет прав (vesuvio.admin).</red>"));
                     return true;
                 }
                 if (args.length < 2) {
@@ -412,7 +403,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "retrain" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.admin).</red>"));
                     return true;
                 }
                 modelAutoTrainer.triggerNow();
@@ -423,7 +413,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "model" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Недостаточно прав (vesuvio.admin).</red>"));
                     return true;
                 }
                 if (args.length < 2) {
@@ -498,7 +487,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "wave" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>Нужно право vesuvio.admin.</red>"));
                     return true;
                 }
                 if (args.length < 2) {
@@ -530,7 +518,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "learn" -> {
                 if (!sender.hasPermission("vesuvio.review") && !sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>У вас нет прав (vesuvio.review).</red>"));
                     return true;
                 }
                 // /vesuvio learn <player> <legit|cheat>
@@ -596,7 +583,6 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
             case "preset" -> {
                 if (!sender.hasPermission("vesuvio.admin") && !sender.isOp()) {
-                    sender.sendMessage(mm.deserialize("<red>У вас нет прав (vesuvio.admin).</red>"));
                     return true;
                 }
                 // /vesuvio preset <list|apply|save>
@@ -661,27 +647,27 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
 
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(mm.deserialize(
-                "<gradient:#ff4500:#ff8c00><b>================ VESUVIO 26.2 ================</b></gradient><newline>"
-                + "<gold>/vesuvio toggle</gold> <gray>- <red><b>Полностью</b></red> включить/выключить детект (после перезапуска снова включён)</gray><newline>"
-                + "<gold>/vesuvio punishment [toggle|on|off]</gold> <gray>- Наказания при работающих проверках</gray><newline>"
-                + "<gold>/vesuvio status</gold> <gray>- Статус проверок и наказаний</gray><newline>"
-                + "<gold>/vesuvio physics игрок [on|off|status]</gold> <gray>- Диагностика новой физики без наказаний</gray><newline>"
-                + "<gold>/vesuvio log [on|off|status]</gold> <gray>- Подробный журнал срабатываний в файл</gray><newline>"
-                + "<gold>/vesuvio alerts</gold> <gray>- Переключить умные оповещения в чате</gray><newline>"
-                + "<gold>/vesuvio spectate <игрок></gold> <gray>- Наблюдение в реальном времени с оверлеем</gray><newline>"
-                + "<gold>/vesuvio debug <игрок></gold> <gray>- Текущие показатели проверок над панелью предметов</gray><newline>"
-                + "<gold>/vesuvio learn <игрок> <legit|cheat></gold> <gray>- Обучить модель на текущем поведении</gray><newline>"
-                + "<gold>/vesuvio suspect <игрок> [add|remove|check]</gold> <gray>- Установка/снятие подозрения с сохранением в БД</gray><newline>"
-                + "<gold>/vesuvio preset [list|название|save]</gold> <gray>- Управление профилями (balanced, strict, lenient, anarchy)</gray><newline>"
-                + "<gold>/vesuvio review <id> <legit|cheat></gold> <gray>- Вердикт для проверки обучающих образцов</gray><newline>"
-                + "<gold>/vesuvio info <игрок></gold> <gray>- Биометрический профиль угрозы</gray><newline>"
-                + "<gold>/vesuvio reset <игрок></gold> <gray>- Сбросить уровень нарушений (нарушения/риск)</gray><newline>"
-                + "<gold>/vesuvio wave [trigger|list|clear]</gold> <gray>- Управление волной банов волны наказаний</gray><newline>"
-                + "<gold>/vesuvio reload</gold> <gray>- Перезагрузить конфиг и модели ONNX</gray><newline>"
-                + "<gold>/vesuvio retrain</gold> <gray>- Запустить переобучение ONNX-моделей на текущем датасете вручную</gray><newline>"
-                + "<gold>/vesuvio dataset [export|import|stats]</gold> <gray>- Управление датасетом обучения</gray><newline>"
-                + "<gold>/vesuvio model [shadow|promote|discard]</gold> <gray>- Кандидат в теневом режиме: сравнение с боевой моделью и публикация</gray><newline>"
-                + "<gradient:#ff4500:#ff8c00><b>==============================================</b></gradient>"));
+                "<dark_gray>========== <aqua>Vesuvio Помощь</aqua> ==========</dark_gray><newline>"
+                + "<aqua>/vesuvio toggle</aqua> <gray>- <red><b>Полностью</b></red> включить/выключить детект (после перезапуска снова включён)</gray><newline>"
+                + "<aqua>/vesuvio punishment [toggle|on|off]</aqua> <gray>- Наказания при работающих проверках</gray><newline>"
+                + "<aqua>/vesuvio status</aqua> <gray>- Статус проверок и наказаний</gray><newline>"
+                + "<aqua>/vesuvio physics игрок [on|off|status]</aqua> <gray>- Диагностика новой физики без наказаний</gray><newline>"
+                + "<aqua>/vesuvio log [on|off|status]</aqua> <gray>- Подробный журнал срабатываний в файл</gray><newline>"
+                + "<aqua>/vesuvio alerts</aqua> <gray>- Переключить умные оповещения в чате</gray><newline>"
+                + "<aqua>/vesuvio spectate <игрок></aqua> <gray>- Наблюдение в реальном времени с оверлеем</gray><newline>"
+                + "<aqua>/vesuvio debug <игрок></aqua> <gray>- Текущие показатели проверок над панелью предметов</gray><newline>"
+                + "<aqua>/vesuvio learn <игрок> <legit|cheat></aqua> <gray>- Обучить модель на текущем поведении</gray><newline>"
+                + "<aqua>/vesuvio suspect <игрок> [add|remove|check]</aqua> <gray>- Установка/снятие подозрения с сохранением в БД</gray><newline>"
+                + "<aqua>/vesuvio preset [list|название|save]</aqua> <gray>- Управление профилями (balanced, strict, lenient, anarchy)</gray><newline>"
+                + "<aqua>/vesuvio review <id> <legit|cheat></aqua> <gray>- Вердикт для проверки обучающих образцов</gray><newline>"
+                + "<aqua>/vesuvio info <игрок></aqua> <gray>- Биометрический профиль угрозы</gray><newline>"
+                + "<aqua>/vesuvio reset <игрок></aqua> <gray>- Сбросить уровень нарушений (нарушения/риск)</gray><newline>"
+                + "<aqua>/vesuvio wave [trigger|list|clear]</aqua> <gray>- Управление волной банов волны наказаний</gray><newline>"
+                + "<aqua>/vesuvio reload</aqua> <gray>- Перезагрузить конфиг и модели ONNX</gray><newline>"
+                + "<aqua>/vesuvio retrain</aqua> <gray>- Запустить переобучение ONNX-моделей на текущем датасете вручную</gray><newline>"
+                + "<aqua>/vesuvio dataset [export|import|stats]</aqua> <gray>- Управление датасетом обучения</gray><newline>"
+                + "<aqua>/vesuvio model [shadow|promote|discard]</aqua> <gray>- Кандидат в теневом режиме: сравнение с боевой моделью и публикация</gray><newline>"
+                + "<dark_gray>=========================================</dark_gray>"));
     }
 
     @Override

@@ -15,6 +15,7 @@ commands:
   vesuvio:
     description: Главная команда античита Vesuvio
     permission: vesuvio.admin
+    permission-message: ""
     aliases: [vs, veso]
 
 permissions:
