@@ -107,7 +107,7 @@ public final class ActiveLearning {
 
         // Broadcast to all online staff with permission
         for (Player staff : Bukkit.getOnlinePlayers()) {
-            if (staff.hasPermission("vesuvio.review") || staff.isOp()) {
+            if (staff.hasPermission("vesuvio.review")) {
                 staff.sendMessage(component);
             }
         }

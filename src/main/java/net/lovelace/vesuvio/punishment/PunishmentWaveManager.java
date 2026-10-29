@@ -113,7 +113,8 @@ public final class PunishmentWaveManager {
                         "<newline><gradient:#ff4500:#ff8c00><b>🌋 [Vesuvio] Волна банов Lava Wave изверглась!</b></gradient><newline>"
                         + "<gray>Массовая зачистка античита заблокировала <red><b>%d</b></red> нарушителей. Играйте честно!</gray><newline>",
                         executed);
-                Bukkit.broadcast(mm.deserialize(announcement));
+                // Staff only: the public text told every player how many were banned and when, which only helps cheaters time their next wave.
+                Bukkit.broadcast(mm.deserialize(announcement), "vesuvio.alerts");
             }
         });
 

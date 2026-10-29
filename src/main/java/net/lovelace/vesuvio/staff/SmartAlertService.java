@@ -93,7 +93,7 @@ public final class SmartAlertService {
         Component component = mm.deserialize(alertMsg);
 
         for (Player staff : Bukkit.getOnlinePlayers()) {
-            if ((staff.hasPermission("vesuvio.alerts") || staff.isOp()) && hasAlertsEnabled(staff.getUniqueId())) {
+            if (staff.hasPermission("vesuvio.alerts") && hasAlertsEnabled(staff.getUniqueId())) {
                 staff.sendMessage(component);
             }
         }
