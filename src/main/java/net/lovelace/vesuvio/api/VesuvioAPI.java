@@ -106,4 +106,14 @@ public interface VesuvioAPI {
      * Management action - callers should gate this behind their own "manage" permission tier.
      */
     void setManualSuspect(UUID uuid, boolean suspect);
+
+    default int getIntegrationVersion() { return 1; }
+    default java.util.Set<String> getCapabilities() { return java.util.Set.of("overview", "players", "violations"); }
+    default List<WebPanelModels.ReviewInfo> getPendingReviews(int limit) { throw new UnsupportedOperationException("Reviews require API v2"); }
+    default java.util.concurrent.CompletableFuture<Boolean> submitReview(String sampleId, String verdict, String reviewer) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Reviews require API v2"));
+    }
+    default java.util.concurrent.CompletableFuture<Boolean> reloadModels() {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Model reload requires API v2"));
+    }
 }

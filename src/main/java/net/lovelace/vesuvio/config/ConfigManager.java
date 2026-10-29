@@ -12,7 +12,6 @@ import java.util.*;
  */
 public final class ConfigManager {
 
-    public static final String DEFAULT_WEB_BEARER_TOKEN = "vesuvio-secret-token-change-me";
 
     private final Plugin plugin;
     private FileConfiguration config;
@@ -1031,21 +1030,7 @@ public final class ConfigManager {
     }
 
     // Web
-    public boolean isWebEnabled() {
-        return config.getBoolean("web.enabled", true);
-    }
 
-    public String getWebHost() {
-        return config.getString("web.host", "0.0.0.0");
-    }
-
-    public int getWebPort() {
-        return config.getInt("web.port", 8085);
-    }
-
-    public String getWebBearerToken() {
-        return config.getString("web.bearer-token", DEFAULT_WEB_BEARER_TOKEN);
-    }
 
     // Database
     public String getDatabaseType() {
