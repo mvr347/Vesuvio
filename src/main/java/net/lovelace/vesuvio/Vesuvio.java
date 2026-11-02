@@ -140,6 +140,7 @@ public final class Vesuvio extends JavaPlugin {
         this.aimTrackingService = new net.lovelace.vesuvio.engine.AimTrackingService(userDataManager);
         var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager, transactionManager);
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
+        waveManager.start();
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
         loveEssentialHook.invalidateGeometry(hitboxTracker::remove);

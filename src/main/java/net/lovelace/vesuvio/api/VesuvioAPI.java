@@ -116,4 +116,9 @@ public interface VesuvioAPI {
     default java.util.concurrent.CompletableFuture<Boolean> reloadModels() {
         return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Model reload requires API v2"));
     }
+    default java.util.List<net.lovelace.vesuvio.punishment.WaveStore.Entry> getModerationWave(){return java.util.List.of();}
+    default boolean editModerationWave(String event,String reason,long seconds){throw new UnsupportedOperationException();}
+    default boolean removeModerationWave(String event){throw new UnsupportedOperationException();}
+    default int executeModerationWave(){throw new UnsupportedOperationException();}
+
 }

@@ -177,6 +177,16 @@ public final class LoveEssentialHook implements Listener, AutoCloseable {
             } catch (ReflectiveOperationException error) {
                 warn(error);
             }
+        // Administrative checks use the same immutable packet snapshot as other forced mechanics.
+        var admin=Bukkit.getPluginManager().getPlugin("LoveWebAdmin");
+        if(admin!=null&&admin.isEnabled()) {
+            try {
+                var moderation=admin.getClass().getMethod("getModerationService").invoke(admin);
+                if(moderation!=null&&Boolean.TRUE.equals(moderation.getClass().getMethod("isFrozen",UUID.class).invoke(moderation,player.getUniqueId()))) {
+                    var combined=new HashSet<String>(states);combined.add("FROZEN");states=Set.copyOf(combined);
+                }
+            }catch(ReflectiveOperationException ignored) { /* Optional integration unavailable. */ }
+        }
         apply(data, states, false);
     }
 

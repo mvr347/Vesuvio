@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RuntimeControlsTest {
-    @Test void pausedWaveDoesNotReachTheServerOrScheduleCommands() {
+    @Test void pausedWaveDoesNotReachTheServerOrScheduleCommands(@org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws Exception {
         var yaml = new org.bukkit.configuration.file.YamlConfiguration();
         var plugin = (org.bukkit.plugin.Plugin) java.lang.reflect.Proxy.newProxyInstance(
                 getClass().getClassLoader(), new Class<?>[]{org.bukkit.plugin.Plugin.class},
@@ -15,7 +15,7 @@ class RuntimeControlsTest {
                     default -> throw new AssertionError("Unexpected plugin access: " + method.getName());
                 });
         var config = new net.lovelace.vesuvio.config.ConfigManager(plugin);
-        var wave = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(plugin, config, null);
+        var wave = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(plugin, config, null, new net.lovelace.vesuvio.punishment.WaveStore(root.resolve("wave.db")));
         var id = java.util.UUID.randomUUID();
         wave.queuePunishment(id, "Player", "ban Player", "test");
         assertEquals(1, wave.getQueueSize());
