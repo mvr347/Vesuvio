@@ -274,4 +274,9 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
         return mlManager.hotReload("click_model",modelDirectory.resolve("click_model.onnx"))
             .thenCombine(mlManager.hotReload("aim_model",modelDirectory.resolve("aim_model.onnx")),(click,aim)->click&&aim);
     }
+    @Override public java.util.List<net.lovelace.vesuvio.punishment.WaveStore.Entry> getModerationWave(){return waveManager==null?java.util.List.of():waveManager.panelQueue();}
+    @Override public boolean editModerationWave(String event,String reason,long seconds){return waveManager!=null&&waveManager.edit(event,reason,seconds);}
+    @Override public boolean removeModerationWave(String event){return waveManager!=null&&waveManager.remove(event);}
+    @Override public int executeModerationWave(){return waveManager==null?0:waveManager.executeWave();}
+
 }
