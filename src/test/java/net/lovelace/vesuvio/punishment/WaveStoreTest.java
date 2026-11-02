@@ -31,6 +31,8 @@ class WaveStoreTest {
       store.add(
           new WaveStore.Entry("two", "uuid", "Ada123", "ban Ada123", "Причина", 1, -1, "QUEUED"));
       assertTrue(store.edit("two", "Пересмотр", 3600));
+      assertEquals(3600, store.find("two").orElseThrow().duration());
+      assertTrue(store.find("missing").isEmpty());
       assertTrue(store.transition("two", "QUEUED", "REMOVED"));
       assertFalse(store.transition("two", "QUEUED", "APPLYING"));
       assertThrows(IllegalArgumentException.class, () -> store.edit("two", "", 1));

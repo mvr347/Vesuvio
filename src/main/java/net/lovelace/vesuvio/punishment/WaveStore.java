@@ -46,6 +46,26 @@ public final class WaveStore implements AutoCloseable {
     }
   }
 
+  public synchronized Optional<Entry> find(String event) throws SQLException {
+    try (var q = db.prepareStatement("SELECT * FROM moderation_wave WHERE event=?")) {
+      q.setString(1, event);
+      try (var r = q.executeQuery()) {
+        return r.next()
+            ? Optional.of(
+                new Entry(
+                    r.getString(1),
+                    r.getString(2),
+                    r.getString(3),
+                    r.getString(4),
+                    r.getString(5),
+                    r.getLong(6),
+                    r.getLong(7),
+                    r.getString(8)))
+            : Optional.empty();
+      }
+    }
+  }
+
   public synchronized List<Entry> list() throws SQLException {
     var out = new ArrayList<Entry>();
     try (var q = db.createStatement();

@@ -110,7 +110,7 @@ public final class PunishmentWaveManager implements org.bukkit.event.Listener {
                 try {
                     if(!store.transition(entry.event(),"QUEUED","APPLYING"))continue;
                     // Read current values after the CAS: staff may have edited a queued entry.
-                    var current=store.list().stream().filter(e->e.event().equals(entry.event())).findFirst().orElseThrow();
+                    var current=store.find(entry.event()).orElseThrow();
                     var admin=Bukkit.getPluginManager().getPlugin("LoveWebAdmin");
                     boolean applied;
                     if(admin!=null&&admin.isEnabled()) {
