@@ -108,6 +108,7 @@ public final class Vesuvio extends JavaPlugin {
 
         // 5. Self-Learning Layer
         this.selfLearningManager = new SelfLearningManager(getDataFolder().toPath(), configManager);
+        this.mlManager.bindTrainingRevision(selfLearningManager.getDatasetManager()::trainingRevision);
 
         // 5b. Fully-automatic ONNX retraining from the live dataset (see ModelAutoTrainer).
         // Extracted/started after models are registered below so it can hot-reload into an

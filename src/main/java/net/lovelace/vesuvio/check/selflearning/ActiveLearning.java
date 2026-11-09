@@ -32,8 +32,12 @@ public final class ActiveLearning {
             float[] features,
             double probability,
             long timestamp,
-            String domain // "click" or "aim" - must follow the sample into DatasetManager
+            String domain, // "click" or "aim" - must follow the sample into DatasetManager
+            DatasetManager.SampleContext context
     ) {
+        public ReviewSample(String id, UUID uuid, String name, float[] features, double probability, long timestamp, String domain) {
+            this(id,uuid,name,features,probability,timestamp,domain,DatasetManager.SampleContext.UNKNOWN);
+        }
         /** Legacy 6-arg constructor, defaults to the click domain. */
         public ReviewSample(String id, UUID playerUuid, String playerName, float[] features,
                             double probability, long timestamp) {
@@ -71,7 +75,8 @@ public final class ActiveLearning {
                 features.clone(),
                 result.probability(),
                 System.currentTimeMillis(),
-                domain
+                domain,
+                new DatasetManager.SampleContext(-1, -1, data.getClientBrand(), data.getLearningSessionId(), data.getLearningClientVersion())
         );
         pendingReviews.put(sampleId, sample);
 
@@ -116,44 +121,26 @@ public final class ActiveLearning {
     /**
      * Submits a staff verdict for a sample.
      */
-    public boolean submitVerdict(String sampleId, String verdict, String reviewer,
-                                  OnlineClassifier classifier, DatasetManager dataset, UserData userData) {
-        if (!Set.of("cheat", "legit").contains(verdict)) throw new IllegalArgumentException("Некорректный вердикт");
+    /** Compatibility entry point for worker callers. Commands use the non-blocking variant. */
+    public boolean submitVerdict(String id, String verdict, String reviewer,
+        OnlineClassifier classifier, DatasetManager dataset, UserData userData) {
+        if(!Set.of("cheat","legit").contains(verdict))throw new IllegalArgumentException("Некорректный вердикт");
+        return submitVerdictAsync(id,verdict,reviewer,dataset).join();
+    }
+
+    public java.util.concurrent.CompletableFuture<Boolean> submitVerdictAsync(
+        String sampleId,String verdict,String reviewer,DatasetManager dataset) {
+        if (!Set.of("cheat", "legit").contains(verdict) || reviewer==null || reviewer.isBlank())
+            return java.util.concurrent.CompletableFuture.failedFuture(new IllegalArgumentException("Некорректный вердикт"));
         ReviewSample sample = pendingReviews.asMap().remove(sampleId);
-        if (sample == null) return false;
-
-        int label = "cheat".equalsIgnoreCase(verdict) ? 1 : 0;
-
-        // 1. Train online classifier
-        classifier.train(sample.features(), label);
-
-        // 2. Persist to training dataset, under the domain the sample actually came from and
-        // marked as a human verdict - the training script holds these out as validation rather
-        // than training on them, since they are the only non-self-confirming signal available.
-        dataset.addSample(new DatasetManager.LabeledSample(
-                sample.playerUuid(),
-                sample.playerName(),
-                sample.features(),
-                label,
-                System.currentTimeMillis(),
-                reviewer,
-                sample.domain(),
-                DatasetManager.LabelSource.STAFF
-        ));
-
-        // 3. Adjust player's Trust/Risk if online
-        if (userData != null) {
-            if (label == 1) {
-                userData.adjustRisk(25.0);
-                userData.adjustTrust(-20.0);
-                userData.addVl(10.0);
-            } else {
-                userData.adjustTrust(15.0);
-                userData.adjustRisk(-15.0);
-            }
-        }
-
-        return true;
+        if(sample==null || System.currentTimeMillis()-sample.timestamp()>=600000)return java.util.concurrent.CompletableFuture.completedFuture(false);
+        return dataset.submitSample(new DatasetManager.LabeledSample(sample.playerUuid(),sample.playerName(),sample.features(),
+            "cheat".equals(verdict)?1:0,sample.timestamp(),reviewer,sample.domain(),DatasetManager.LabelSource.STAFF,sample.context()))
+            .whenComplete((accepted,failure)-> {
+                // Keep the original capture timestamp and expiry when retrying after a storage error.
+                if((failure!=null || !Boolean.TRUE.equals(accepted)) && System.currentTimeMillis()-sample.timestamp()<600000)
+                    pendingReviews.asMap().putIfAbsent(sampleId,sample);
+            });
     }
 
     public Collection<ReviewSample> getPendingReviews() {

@@ -25,6 +25,7 @@ public final class DatabaseManager implements AutoCloseable {
     private static final Logger LOGGER = Logger.getLogger("Vesuvio-Database");
 
     private final HikariDataSource dataSource;
+    private final ViolationReviews violationReviews;
     private final Queue<ViolationRecord> violationQueue = new ConcurrentLinkedQueue<>();
     private final Queue<PunishmentRecord> punishmentQueue = new ConcurrentLinkedQueue<>();
     private final ScheduledExecutorService batchExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -63,8 +64,12 @@ public final class DatabaseManager implements AutoCloseable {
         this.dataSource = new HikariDataSource(hikari);
 
         initSchema();
+        try { this.violationReviews = new ViolationReviews(dataSource); }
+        catch (RuntimeException error) { dataSource.close(); batchExecutor.shutdownNow(); throw error; }
         batchExecutor.scheduleWithFixedDelay(this::flushBatch, 5, 5, TimeUnit.SECONDS);
     }
+
+    public ViolationReviews getViolationReviews() { return violationReviews; }
 
     private void initSchema() {
         try (Connection conn = dataSource.getConnection();

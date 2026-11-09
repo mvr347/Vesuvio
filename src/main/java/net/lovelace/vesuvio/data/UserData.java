@@ -31,6 +31,12 @@ public final class UserData {
 
     // Client Brand (e.g. vanilla, fabric, lunar, or cheat signature)
     private volatile String clientBrand = "unknown";
+    private final String learningSessionId = UUID.randomUUID().toString();
+    private volatile String learningClientVersion = "unknown";
+    public String getLearningSessionId() { return learningSessionId; }
+    public String getLearningClientVersion() { return learningClientVersion; }
+    public void setLearningClientVersion(String value) { learningClientVersion = value == null ? "unknown" : value; }
+
 
     // Playstyle Fingerprinting: baseline signature established across trusted sessions
     private volatile long[] baselineSignature = null;

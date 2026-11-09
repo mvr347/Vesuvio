@@ -121,4 +121,24 @@ public interface VesuvioAPI {
     default boolean removeModerationWave(String event){throw new UnsupportedOperationException();}
     default int executeModerationWave(){throw new UnsupportedOperationException();}
 
+    default List<net.lovelace.vesuvio.storage.ViolationReviews.Event> getReviewableViolations(int limit) {
+        throw new UnsupportedOperationException("Violation reviews require an updated integration");
+    }
+    default java.util.concurrent.CompletableFuture<Boolean> submitViolationReview(long id, String verdict, String reviewer, String reason, long revision) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Violation reviews unavailable"));
+    }
+
+    default java.util.concurrent.CompletableFuture<java.util.List<java.util.Map<String,Object>>> getTrainingWindows(int limit) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Контроль обучения недоступен"));
+    }
+    default java.util.concurrent.CompletableFuture<Boolean> reviewTrainingWindow(long id,long revision,String verdict,String actor,String reason,String reference) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Контроль обучения недоступен"));
+    }
+    default java.util.concurrent.CompletableFuture<Integer> verifyTrainingFragment(java.util.List<Long> ids,String actor,String reason,String reference) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Контроль обучения недоступен"));
+    }
+    default java.util.concurrent.CompletableFuture<Integer> revokeTrainingReference(String reference,String actor,String reason) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Контроль обучения недоступен"));
+    }
+
 }

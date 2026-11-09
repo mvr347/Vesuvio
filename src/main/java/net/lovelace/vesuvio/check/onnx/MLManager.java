@@ -37,6 +37,10 @@ public final class MLManager implements AutoCloseable {
     private final java.util.concurrent.locks.ReentrantReadWriteLock sessionLock =
             new java.util.concurrent.locks.ReentrantReadWriteLock(true);
     private boolean closed;
+    private volatile java.util.function.LongSupplier trainingRevision = () -> -1L;
+    private final Map<String,Long> modelTrainingRevisions = new ConcurrentHashMap<>();
+    public void bindTrainingRevision(java.util.function.LongSupplier revision) { trainingRevision = Objects.requireNonNull(revision); }
+
 
     public MLManager() { this(true, Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2))); }
 
@@ -70,6 +74,8 @@ public final class MLManager implements AutoCloseable {
             return;
         }
 
+        long before;
+        try{before=ModelProvenance.revision(path);}catch(java.io.IOException error){throw new IllegalStateException(error);}
         OrtSession session;
         try (OrtSession.SessionOptions opts = new OrtSession.SessionOptions()) {
             opts.setIntraOpNumThreads(1);
@@ -78,6 +84,10 @@ public final class MLManager implements AutoCloseable {
             session = env.createSession(path.toString(), opts);
         }
 
+        long labelRevision;
+        try { labelRevision=ModelProvenance.revision(path);if(before!=labelRevision)throw new java.io.IOException("Модель изменилась при загрузке"); }
+        catch(Exception error){try{session.close();}catch(OrtException ignored){}throw new IllegalStateException("Некорректная версия обучающих меток",error);}
+        if(labelRevision>=0) modelTrainingRevisions.put(name,labelRevision); else modelTrainingRevisions.remove(name);
         OrtSession old = sessions.put(name, session);
         inputWidths.remove(name); // a retrained model may have a different feature width
         if (old != null) {
@@ -138,6 +148,8 @@ public final class MLManager implements AutoCloseable {
             String inputName = (cfg != null && cfg.inputName() != null) ? cfg.inputName() : "float_input";
 
             OrtSession session = sessions.get(modelName);
+            Long labelRevision=modelTrainingRevisions.get(modelName);
+            if(labelRevision!=null && labelRevision.longValue()!=trainingRevision.getAsLong())session=null;
             if (session != null && env != null) {
                 // Fit the vector to whatever width this particular model was trained with, read
                 // from the model itself. Feature sets grow over time, and a model exported before
