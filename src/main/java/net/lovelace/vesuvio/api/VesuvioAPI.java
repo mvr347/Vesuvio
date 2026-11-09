@@ -121,4 +121,11 @@ public interface VesuvioAPI {
     default boolean removeModerationWave(String event){throw new UnsupportedOperationException();}
     default int executeModerationWave(){throw new UnsupportedOperationException();}
 
+    default List<net.lovelace.vesuvio.storage.ViolationReviews.Event> getReviewableViolations(int limit) {
+        throw new UnsupportedOperationException("Violation reviews require an updated integration");
+    }
+    default java.util.concurrent.CompletableFuture<Boolean> submitViolationReview(long id, String verdict, String reviewer, String reason, long revision) {
+        return java.util.concurrent.CompletableFuture.failedFuture(new UnsupportedOperationException("Violation reviews unavailable"));
+    }
+
 }

@@ -244,7 +244,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
     }
     @Override public int getIntegrationVersion() { return 2; }
     @Override public java.util.Set<String> getCapabilities() {
-        return java.util.Set.of("overview","players","violations","reviews","reload-models");
+        return java.util.Set.of("overview","players","violations","reviews","reload-models","violation-reviews");
     }
     @Override public List<WebPanelModels.ReviewInfo> getPendingReviews(int limit) {
         if(selfLearningManager==null)return List.of();
@@ -278,5 +278,13 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
     @Override public boolean editModerationWave(String event,String reason,long seconds){return waveManager!=null&&waveManager.edit(event,reason,seconds);}
     @Override public boolean removeModerationWave(String event){return waveManager!=null&&waveManager.remove(event);}
     @Override public int executeModerationWave(){return waveManager==null?0:waveManager.executeWave();}
+
+    @Override public List<net.lovelace.vesuvio.storage.ViolationReviews.Event> getReviewableViolations(int limit) {
+        return databaseManager == null ? List.of() : databaseManager.getViolationReviews().recent(limit);
+    }
+    @Override public java.util.concurrent.CompletableFuture<Boolean> submitViolationReview(long id,String verdict,String reviewer,String reason,long revision) {
+        if(databaseManager==null||managementExecutor==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Разбор срабатываний недоступен"));
+        return net.lovelace.vesuvio.engine.AsyncTasks.supply(()->databaseManager.getViolationReviews().review(id,revision,verdict,reviewer,reason),managementExecutor);
+    }
 
 }
