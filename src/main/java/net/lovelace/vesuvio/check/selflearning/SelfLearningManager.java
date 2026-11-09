@@ -25,6 +25,7 @@ public final class SelfLearningManager {
     public SelfLearningManager(Path pluginFolder, ConfigManager config) {
         this.datasetManager = new DatasetManager(pluginFolder.resolve("datasets"));
         this.datasetManager.setMaxSize(config.getMaxDatasetSize());
+        this.datasetManager.enableGovernance(TrainingSettings.load(pluginFolder), onlineClassifier, aimClassifier);
         this.autoDatasetCollector = new AutoDatasetCollector(config, datasetManager, onlineClassifier, aimClassifier);
     }
 

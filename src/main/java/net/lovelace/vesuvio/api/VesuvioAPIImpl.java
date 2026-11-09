@@ -244,7 +244,7 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
     }
     @Override public int getIntegrationVersion() { return 2; }
     @Override public java.util.Set<String> getCapabilities() {
-        return java.util.Set.of("overview","players","violations","reviews","reload-models","violation-reviews");
+        return java.util.Set.of("overview","players","violations","reviews","reload-models","violation-reviews","training-governance");
     }
     @Override public List<WebPanelModels.ReviewInfo> getPendingReviews(int limit) {
         if(selfLearningManager==null)return List.of();
@@ -259,13 +259,9 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
         if(!java.util.Set.of("cheat","legit").contains(verdict)||reviewer==null||reviewer.isBlank())
             return java.util.concurrent.CompletableFuture.failedFuture(new IllegalArgumentException("Укажите вердикт и сотрудника"));
         if(managementExecutor==null||selfLearningManager==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Обучение недоступно"));
-        return net.lovelace.vesuvio.engine.AsyncTasks.supply(()->{
-            var learning=selfLearningManager.getActiveLearning();var sample=learning.getSample(id);
-            if(sample==null)return false;
-            var classifier="aim".equals(sample.domain())?selfLearningManager.getAimClassifier():selfLearningManager.getOnlineClassifier();
-            return learning.submitVerdict(id,verdict,reviewer,classifier,selfLearningManager.getDatasetManager(),userDataManager.get(sample.playerUuid()));
-        },managementExecutor);
+        return selfLearningManager.getActiveLearning().submitVerdictAsync(id,verdict,reviewer,selfLearningManager.getDatasetManager());
     }
+
     @Override public java.util.concurrent.CompletableFuture<Boolean> reloadModels() {
         if(mlManager==null||modelDirectory==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Модели недоступны"));
         long now=System.nanoTime(),previous=lastReload.get();
@@ -285,6 +281,26 @@ public final class VesuvioAPIImpl implements VesuvioAPI {
     @Override public java.util.concurrent.CompletableFuture<Boolean> submitViolationReview(long id,String verdict,String reviewer,String reason,long revision) {
         if(databaseManager==null||managementExecutor==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Разбор срабатываний недоступен"));
         return net.lovelace.vesuvio.engine.AsyncTasks.supply(()->databaseManager.getViolationReviews().review(id,revision,verdict,reviewer,reason),managementExecutor);
+    }
+
+    @Override public java.util.concurrent.CompletableFuture<List<java.util.Map<String,Object>>> getTrainingWindows(int limit) {
+        if(selfLearningManager==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Контроль обучения недоступен"));
+        return selfLearningManager.getDatasetManager().trainingTask(ledger->ledger.recent(limit));
+    }
+    @Override public java.util.concurrent.CompletableFuture<Boolean> reviewTrainingWindow(long id,long revision,String verdict,String actor,String reason,String reference) {
+        if(selfLearningManager==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Контроль обучения недоступен"));
+        var dataset=selfLearningManager.getDatasetManager();
+        return dataset.trainingTask(ledger->{boolean changed=ledger.review(id,revision,verdict,actor,reason,reference);if(changed)dataset.rebuildClassifiers();return changed;});
+    }
+    @Override public java.util.concurrent.CompletableFuture<Integer> verifyTrainingFragment(List<Long> ids,String actor,String reason,String reference) {
+        if(selfLearningManager==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Контроль обучения недоступен"));
+        var dataset=selfLearningManager.getDatasetManager();
+        return dataset.trainingTask(ledger->{int changed=ledger.verify(ids,actor,reason,reference);if(changed>0)dataset.rebuildClassifiers();return changed;});
+    }
+    @Override public java.util.concurrent.CompletableFuture<Integer> revokeTrainingReference(String reference,String actor,String reason) {
+        if(selfLearningManager==null)return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("Контроль обучения недоступен"));
+        var dataset=selfLearningManager.getDatasetManager();
+        return dataset.trainingTask(ledger->{int changed=ledger.revoke(reference,actor,reason);if(changed>0)dataset.rebuildClassifiers();return changed;});
     }
 
 }

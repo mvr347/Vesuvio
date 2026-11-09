@@ -74,6 +74,15 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
         this.debugOverlayManager = debugOverlayManager;
     }
 
+    private void trainingReply(CommandSender sender,Boolean accepted,Throwable failure) {
+        if(!plugin.isEnabled())return;
+        try { Bukkit.getScheduler().runTask(plugin,()->sender.sendMessage(mm.deserialize(
+            failure!=null?"<red>Образец не сохранён: хранилище недоступно или очередь заполнена.</red>":
+            Boolean.TRUE.equals(accepted)?"<green>Вердикт сохранён для этого фрагмента. Классификатор обновлён.</green>":
+            "<yellow>Образец уже обработан, повторяется или исчерпан суточный лимит игрока.</yellow>"))); }
+        catch(org.bukkit.plugin.IllegalPluginAccessException ignored) { }
+    }
+
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
@@ -208,20 +217,8 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                 ActiveLearning.ReviewSample sample = selfLearning.getActiveLearning().getSample(sampleId);
                 UserData targetData = (sample != null) ? userDataManager.get(sample.playerUuid()) : null;
 
-                boolean success = selfLearning.getActiveLearning().submitVerdict(
-                        sampleId, verdict, sender.getName(),
-                        selfLearning.getOnlineClassifier(),
-                        selfLearning.getDatasetManager(),
-                        targetData
-                );
-
-                if (success) {
-                    sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio]</b></gradient> <green>Вердикт <gold>%s</gold> записан для образца <yellow>%s</yellow>. Веса модели обновлены.</green>",
-                            Russian.label(verdict), sampleId)));
-                } else {
-                    sender.sendMessage(mm.deserialize("<red>Образец не найден или устарел.</red>"));
-                }
+                selfLearning.getActiveLearning().submitVerdictAsync(sampleId,verdict,sender.getName(),selfLearning.getDatasetManager())
+                    .whenComplete((accepted,failure)->trainingReply(sender,accepted,failure));
             }
 
             case "info" -> {
@@ -535,50 +532,15 @@ public final class VesuvioCommand implements CommandExecutor, TabCompleter {
                     return true;
                 }
 
-                int targetLabel = ("cheat".equals(verdict) || "чит".equals(verdict)) ? 1 : 0;
-                float[] features = net.lovelace.vesuvio.feature.ClickFeatureExtractor.extract(data.getClickBuffer());
-
-                // 1. Train online classifier via SGD
-                selfLearning.getOnlineClassifier().train(features, targetLabel);
-
-                // 2. Persist to training dataset
-                selfLearning.getDatasetManager().addSample(new net.lovelace.vesuvio.check.selflearning.DatasetManager.LabeledSample(
-                        data.getUuid(),
-                        data.getUsername(),
-                        features,
-                        targetLabel,
-                        System.currentTimeMillis(),
-                        sender.getName()
-                ));
-
-                // 3. Adjust player state
-                if (targetLabel == 0) {
-                    data.adjustTrust(20.0);
-                    data.adjustRisk(-25.0);
-                    data.resetGcdStreak();
-                    data.resetVl();
-                    data.setManualSuspect(false);
-                    databaseManager.setManualSuspect(data.getUuid(), false);
-                    sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio: обучение]</b></gradient> <green>Образец игрока <gold>%s</gold> помечен как <white><b>ЧЕСТНАЯ ИГРА</b></white>. Веса модели адаптированы (SGD), подозрительность снята.</green>",
-                            data.getUsername())));
-                } else {
-                    data.adjustRisk(30.0);
-                    data.adjustTrust(-30.0);
-                    data.addVl(20.0);
-                    data.setManualSuspect(true);
-                    databaseManager.savePlayerSync(
-                            data.getUuid(),
-                            data.getUsername(),
-                            data.getTrustScore(),
-                            data.getRiskIndex(),
-                            data.getClientBrand(),
-                            true
-                    );
-                    sender.sendMessage(mm.deserialize(String.format(
-                            "<gradient:#ff4500:#ff8c00><b>[Vesuvio: обучение]</b></gradient> <red>Образец игрока <gold>%s</gold> помечен как <white><b>ЧИТ</b></white>. Модель обучена, Индекс риска повышен до %.0f, статус сохранен в БД.</red>",
-                            data.getUsername(), data.getRiskIndex())));
+                if(!Set.of("cheat","legit","чит","чистый").contains(verdict)) {
+                    sender.sendMessage(mm.deserialize("<red>Выберите cheat / legit (чит / чистый).</red>"));return true;
                 }
+                int trainingLabel=Set.of("cheat","чит").contains(verdict)?1:0;
+                var context=new net.lovelace.vesuvio.check.selflearning.DatasetManager.SampleContext(-1,-1,data.getClientBrand(),data.getLearningSessionId(),data.getLearningClientVersion());
+                selfLearning.getDatasetManager().submitSample(new net.lovelace.vesuvio.check.selflearning.DatasetManager.LabeledSample(
+                    data.getUuid(),data.getUsername(),net.lovelace.vesuvio.feature.ClickFeatureExtractor.extract(data.getClickBuffer()),trainingLabel,
+                    System.currentTimeMillis(),sender.getName(),"click",net.lovelace.vesuvio.check.selflearning.DatasetManager.LabelSource.STAFF,context))
+                    .whenComplete((accepted,failure)->trainingReply(sender,accepted,failure));
             }
 
             case "preset" -> {

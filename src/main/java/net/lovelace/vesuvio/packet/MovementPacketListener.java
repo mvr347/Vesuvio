@@ -100,6 +100,8 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         if (player == null || player.hasMetadata("NPC")) return;
 
         UserData data = userDataManager.getOrCreate(player);
+        if (event.getUser() != null && event.getUser().getClientVersion() != null)
+            data.setLearningClientVersion(event.getUser().getClientVersion().name());
 
         final double finalX = x;
         final double finalY = y;

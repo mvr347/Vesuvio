@@ -67,7 +67,10 @@ public final class DatasetManager {
      * dip, that is visible in the report instead of being an unexplained regression. The client
      * brand serves the same purpose for a mod-pack-specific input pattern.
      */
-    public record SampleContext(int pingMs, double tps, String clientBrand) {
+    public record SampleContext(int pingMs, double tps, String clientBrand, String sessionId, String clientVersion) {
+        public SampleContext(int pingMs, double tps, String clientBrand) {
+            this(pingMs, tps, clientBrand, "", "unknown");
+        }
         public static final SampleContext UNKNOWN = new SampleContext(-1, -1.0, "");
 
         /** Strips anything that would break a CSV row or a header-driven column index. */
@@ -114,10 +117,85 @@ public final class DatasetManager {
     private volatile int maxSize = 50_000;
 
     private final Queue<LabeledSample> dataset = new ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.atomic.AtomicInteger memorySize = new java.util.concurrent.atomic.AtomicInteger();
+    private void remember(LabeledSample sample) {
+        dataset.add(sample);memorySize.incrementAndGet();trimMemory();
+    }
+    private void trimMemory() {
+        while(memorySize.get()>maxSize) {
+            if(dataset.poll()==null)return;
+            memorySize.decrementAndGet();
+        }
+    }
     private final Path dataDirectory;
     private final Path autoPersistFile;
     private final Object writeLock = new Object();
     private BufferedWriter persistWriter;
+    private TrainingGovernance governance;
+    private OnlineClassifier governedClick, governedAim;
+    private final java.util.concurrent.ThreadPoolExecutor trainingWorker = new java.util.concurrent.ThreadPoolExecutor(
+        1, 1, 0, java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.ArrayBlockingQueue<>(128),
+        Thread.ofVirtual().name("Vesuvio-TrainingLedger-", 0).factory(), new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+    private volatile boolean closed;
+    private volatile long approvedRevision = -1;
+
+    public void enableGovernance(TrainingGovernance.Limits limits, OnlineClassifier click, OnlineClassifier aim) {
+        governance = new TrainingGovernance(dataDirectory.resolve("training.sqlite"), limits);
+        governedClick = click; governedAim = aim;
+        rebuildClassifiers();
+    }
+
+    /** FIFO worker: no filesystem or database access on packet/server threads; bounded admission. */
+    public <T> java.util.concurrent.CompletableFuture<T> trainingTask(java.util.function.Function<TrainingGovernance,T> action) {
+        var result = new java.util.concurrent.CompletableFuture<T>();
+        class Work extends java.util.concurrent.FutureTask<Void> {
+            Work() { super(() -> { try {
+                if (governance == null) throw new IllegalStateException("Контроль обучения недоступен");
+                result.complete(action.apply(governance));
+            } catch (Throwable failure) { result.completeExceptionally(failure); } return null; }); }
+            @Override protected void done() { if (isCancelled()) result.cancel(false); }
+        }
+        try { if(closed) throw new java.util.concurrent.RejectedExecutionException("Обучение остановлено"); trainingWorker.execute(new Work()); }
+        catch (java.util.concurrent.RejectedExecutionException failure) { result.completeExceptionally(failure); }
+        return result;
+    }
+
+    public java.util.concurrent.CompletableFuture<Boolean> submitSample(LabeledSample sample) {
+        var copy = new LabeledSample(sample.playerUuid(), sample.playerName(), sample.features().clone(), sample.label(),
+            sample.timestamp(), sample.reviewer(), sample.domain(), sample.source(), sample.context());
+        return trainingTask(ledger -> {
+            if (!ledger.record(copy)) return false;
+            addSample(copy); // Raw export remains available, but is NEVER the training input.
+            if (copy.source() == LabelSource.STAFF) rebuildClassifiers();
+            return true;
+        });
+    }
+
+    private OnlineClassifier classifier(String domain) { return "aim".equals(domain) ? governedAim : governedClick; }
+
+    public void rebuildClassifiers() {
+        if(governance == null) return;
+        approvedRevision=governance.revision();
+        var samples=governance.approved();
+        governedClick.rebuild(samples.stream().filter(s -> "click".equals(s.domain())).toList());
+        governedAim.rebuild(samples.stream().filter(s -> "aim".equals(s.domain())).toList());
+    }
+
+    public java.util.List<LabeledSample> trainingSamples() {
+        return governance == null ? java.util.List.of() : governance.approved();
+    }
+    public long trainingRevision() { return approvedRevision; }
+    public int countTrainingSamples(String domain, int label) {
+        return (int) trainingSamples().stream().filter(s -> domain.equals(s.domain()) && label == s.label()).count();
+    }
+    public boolean exportTrainingSnapshot(Path destination) {
+        try(var writer=Files.newBufferedWriter(destination,StandardCharsets.UTF_8)) {
+            writer.write(csvHeader());writer.newLine();
+            for(var sample:trainingSamples()){writer.write(csvLine(sample));writer.newLine();}
+            return true;
+        } catch(IOException e){LOGGER.log(Level.WARNING,"Не удалось подготовить подтверждённую выборку",e);return false;}
+    }
+
 
     public DatasetManager(Path dataDirectory) {
         this.dataDirectory = dataDirectory;
@@ -151,13 +229,11 @@ public final class DatasetManager {
 
     public void setMaxSize(int maxSize) {
         this.maxSize = Math.max(1000, maxSize);
+        trimMemory();
     }
 
     public void addSample(LabeledSample sample) {
-        dataset.add(sample);
-        while (dataset.size() > maxSize) {
-            dataset.poll();
-        }
+        remember(sample);
 
         if (persistWriter != null) {
             synchronized (writeLock) {
@@ -173,7 +249,7 @@ public final class DatasetManager {
     }
 
     public int getDatasetSize() {
-        return dataset.size();
+        return memorySize.get();
     }
 
     /** Path to the continuously-updated on-disk dataset, for external tooling (e.g. the auto-retrain script). */
@@ -306,7 +382,7 @@ public final class DatasetManager {
                             parts[sourceIdx + 3]);
                 }
 
-                dataset.add(new LabeledSample(uuid, name, features, label, time, reviewer, domain, labelSource, context));
+                remember(new LabeledSample(uuid, name, features, label, time, reviewer, domain, labelSource, context));
                 imported++;
             }
         } catch (Exception e) {
@@ -377,6 +453,19 @@ public final class DatasetManager {
 
     /** Flushes and closes the persistent-append writer. Call from plugin onDisable. */
     public void close() {
+        closed = true;
+        trainingWorker.shutdown();
+        try {
+            if (!trainingWorker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                for(Runnable pending:trainingWorker.shutdownNow()) if(pending instanceof java.util.concurrent.Future<?> task)task.cancel(false);
+                trainingWorker.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } catch(InterruptedException interrupted) {
+            for(Runnable pending:trainingWorker.shutdownNow()) if(pending instanceof java.util.concurrent.Future<?> task)task.cancel(false);
+            Thread.currentThread().interrupt();
+        }
+        if (!trainingWorker.isTerminated()) throw new IllegalStateException("Работник обучения ещё использует хранилище");
+        if(governance != null) governance.close();
         synchronized (writeLock) {
             if (persistWriter != null) {
                 try {

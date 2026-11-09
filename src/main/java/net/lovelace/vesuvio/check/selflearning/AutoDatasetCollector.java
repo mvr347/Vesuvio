@@ -15,32 +15,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
-/**
- * Fully automatic dataset collection and online training - no staff interaction required.
- *
- * Two label sources, both considered "ground truth" strong enough to train on directly:
- *  - CHEAT: a player's click/aim features are captured automatically the moment they cross the
- *    "ban" punishment threshold - by then the pipeline (statistical + ONNX + streak checks) is
- *    already confident, so this sample is a safe positive.
- *  - LEGIT: periodically sampled from players with high Trust, low Risk and zero current VL -
- *    a good proxy for "definitely not cheating right now".
- *
- * Every collected sample is (a) persisted into DatasetManager for later export/analysis and
- * (b) immediately used to train the matching in-process OnlineClassifier (click or aim; pure-Java
- * SGD logistic regression, see OnlineClassifier) - so the self-learning layer keeps adapting to
- * this specific server's playerbase and current cheat landscape without any manual step or
- * external ONNX export/import cycle.
- *
- * Class balance: bans are naturally much rarer than "currently trustworthy" sessions, so without
- * a guard the auto-collected dataset would skew overwhelmingly legit over time and the
- * classifier would learn "almost everything is legit" rather than a useful boundary. legitToCheatRatioCap
- * throttles further automatic LEGIT collection once legit samples outnumber cheat samples by
- * more than that ratio - CHEAT collection is never throttled.
- *
- * Author: Lovelace
- */
+/** Captures candidate feature windows. Automatic labels remain quarantined until staff review. */
 public final class AutoDatasetCollector {
 
+    private final java.util.concurrent.atomic.AtomicLong lastStorageWarning = new java.util.concurrent.atomic.AtomicLong();
+    private void collect(DatasetManager.LabeledSample sample) {
+        datasetManager.submitSample(sample).whenComplete((accepted,failure)->{
+            if(failure==null)return;
+            long now=System.currentTimeMillis(),previous=lastStorageWarning.get();
+            if(now-previous>60000 && lastStorageWarning.compareAndSet(previous,now))
+                LOGGER.warning("Кандидат обучения не сохранён: очередь заполнена или хранилище недоступно ("+failure.getClass().getSimpleName()+")");
+        });
+    }
     private static final Logger LOGGER = Logger.getLogger("Vesuvio-AutoLearn");
     private static final long LEGIT_COOLDOWN_MS = 60_000L; // hard floor, config interval also applies
     private static final double LEGIT_TO_CHEAT_RATIO_CAP = 3.0;
@@ -89,20 +75,20 @@ public final class AutoDatasetCollector {
 
         if (data.getClickBuffer().getCount() >= 16) {
             float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean()).clone();
-            datasetManager.addSample(new DatasetManager.LabeledSample(
+            collect(new DatasetManager.LabeledSample(
                     player.getUniqueId(), player.getName(), features, 1,
                     now, "AutoCollector(ban)", "click", DatasetManager.LabelSource.BAN, context
             ));
-            clickClassifier.train(features, 1);
+
             collected = true;
         }
         if (data.getAimBuffer().getCount() >= 16) {
             float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer()).clone();
-            datasetManager.addSample(new DatasetManager.LabeledSample(
+            collect(new DatasetManager.LabeledSample(
                     player.getUniqueId(), player.getName(), aimFeatures, 1,
                     now, "AutoCollector(ban)", "aim", DatasetManager.LabelSource.BAN, context
             ));
-            aimClassifier.train(aimFeatures, 1);
+
             collected = true;
         }
 
@@ -111,7 +97,7 @@ public final class AutoDatasetCollector {
         if (collected || historySamples > 0) {
             autoCheatCount.incrementAndGet();
             LOGGER.info(String.format(
-                    "[Vesuvio Автообучение] При блокировке %s автоматически собраны образцы ЧИТА и %d предыдущих окон сессии "
+                    "[Vesuvio Автообучение] При блокировке %s отправлены на сохранение кандидаты в карантин и %d предыдущих окон сессии "
                             + "(классификатор кликов: %d образцов, прицеливания: %d образцов)",
                     player.getName(), historySamples,
                     clickClassifier.getTrainedSamplesCount(), aimClassifier.getTrainedSamplesCount()));
@@ -137,20 +123,20 @@ public final class AutoDatasetCollector {
 
         if (data.getClickBuffer().getCount() >= 16) {
             float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean()).clone();
-            datasetManager.addSample(new DatasetManager.LabeledSample(
+            collect(new DatasetManager.LabeledSample(
                     player.getUniqueId(), player.getName(), features, 1,
                     now, "NpcTrap", "click", DatasetManager.LabelSource.TRAP, context
             ));
-            clickClassifier.train(features, 1);
+
             collected = true;
         }
         if (data.getAimBuffer().getCount() >= 16) {
             float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer()).clone();
-            datasetManager.addSample(new DatasetManager.LabeledSample(
+            collect(new DatasetManager.LabeledSample(
                     player.getUniqueId(), player.getName(), aimFeatures, 1,
                     now, "NpcTrap", "aim", DatasetManager.LabelSource.TRAP, context
             ));
-            aimClassifier.train(aimFeatures, 1);
+
             collected = true;
         }
 
@@ -191,17 +177,17 @@ public final class AutoDatasetCollector {
             String stamp = reviewer + "@t-" + ageSeconds + "s";
 
             if (snapshot.click() != null) {
-                datasetManager.addSample(new DatasetManager.LabeledSample(
+                collect(new DatasetManager.LabeledSample(
                         player.getUniqueId(), player.getName(), snapshot.click(), label,
                         snapshot.timestampMillis(), stamp, "click", source, context));
-                clickClassifier.train(snapshot.click(), label);
+
                 recorded++;
             }
             if (snapshot.aim() != null) {
-                datasetManager.addSample(new DatasetManager.LabeledSample(
+                collect(new DatasetManager.LabeledSample(
                         player.getUniqueId(), player.getName(), snapshot.aim(), label,
                         snapshot.timestampMillis(), stamp, "aim", source, context));
-                aimClassifier.train(snapshot.aim(), label);
+
                 recorded++;
             }
         }
@@ -219,7 +205,7 @@ public final class AutoDatasetCollector {
         double tps = net.lovelace.vesuvio.engine.TpsCache.get();
         int ping = Math.max(-1, player.getPing());
         String brand = data.getClientBrand();
-        return new DatasetManager.SampleContext(ping, tps, brand == null ? "" : brand);
+        return new DatasetManager.SampleContext(ping, tps, brand == null ? "" : brand, data.getLearningSessionId(), data.getLearningClientVersion());
     }
 
     /**
@@ -269,20 +255,20 @@ public final class AutoDatasetCollector {
             boolean collected = false;
             if (data.getClickBuffer().getCount() >= 16) {
                 float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean()).clone();
-                datasetManager.addSample(new DatasetManager.LabeledSample(
+                collect(new DatasetManager.LabeledSample(
                         player.getUniqueId(), player.getName(), features, 0, now, "AutoCollector(trusted)", "click",
                         DatasetManager.LabelSource.TRUSTED, context
                 ));
-                clickClassifier.train(features, 0);
+
                 collected = true;
             }
             if (data.isInCombat() && data.getAimBuffer().getCount() >= 16) {
                 float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer()).clone();
-                datasetManager.addSample(new DatasetManager.LabeledSample(
+                collect(new DatasetManager.LabeledSample(
                         player.getUniqueId(), player.getName(), aimFeatures, 0, now, "AutoCollector(trusted)", "aim",
                         DatasetManager.LabelSource.TRUSTED, context
                 ));
-                aimClassifier.train(aimFeatures, 0);
+
                 collected = true;
             }
 

@@ -20,6 +20,8 @@ public final class OnlineClassifier {
     private final int featureCount;
     private final double[] weights;
     private double bias;
+    private final double[] initialWeights;
+    private final double initialBias;
 
     private double learningRate = 0.05;
     private double l2Regularization = 0.001;
@@ -81,6 +83,8 @@ public final class OnlineClassifier {
             biasAdjustment += rawWeights[i] * c;
         }
         this.bias = priorBias + biasAdjustment;
+        this.initialWeights = this.weights.clone();
+        this.initialBias = this.bias;
     }
 
     // Domain priors for ClickFeatureExtractor's 16-feature layout (positive = more suspect):
@@ -153,6 +157,13 @@ public final class OnlineClassifier {
         }
 
         trainedSamples.incrementAndGet();
+    }
+
+    /** Rebuild atomically: revoked labels cannot remain in the online weights. */
+    public synchronized void rebuild(java.util.List<DatasetManager.LabeledSample> samples) {
+        System.arraycopy(initialWeights,0,weights,0,weights.length);
+        bias=initialBias;trainedSamples.set(0);
+        for(var sample:samples) train(sample.features(),sample.label());
     }
 
     public synchronized double[] getWeights() {

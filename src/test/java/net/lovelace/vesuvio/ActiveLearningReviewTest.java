@@ -25,7 +25,7 @@ class ActiveLearningReviewTest {
                 "S101",
                 UUID.randomUUID(),
                 "Test",
-                new float[] {1, 2, 3},
+                new float[16],
                 0.65,
                 System.currentTimeMillis(),
                 "aim"));
@@ -44,8 +44,9 @@ class ActiveLearningReviewTest {
   @Test
   void concurrentReviewsTrainExactlyOnce() throws Exception {
     var learning = sample();
-    var classifier = new OnlineClassifier(3);
+    var classifier = new OnlineClassifier(16);
     var dataset = new DatasetManager(folder);
+    dataset.enableGovernance(TrainingGovernance.Limits.defaults(),new OnlineClassifier(16),classifier);
     try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
       var results = new ArrayList<Future<Boolean>>();
       for (int i = 0; i < 30; i++)

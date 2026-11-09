@@ -147,8 +147,8 @@ public final class ModelAutoTrainer {
 
         List<String> readyDomains = new ArrayList<>();
         for (String domain : DOMAINS) {
-            int cheat = datasetManager.countSamples(domain, 1);
-            int legit = datasetManager.countSamples(domain, 0);
+            int cheat = datasetManager.countTrainingSamples(domain, 1);
+            int legit = datasetManager.countTrainingSamples(domain, 0);
             if (cheat >= minSamples && legit >= minSamples) {
                 readyDomains.add(domain);
             } else {
@@ -176,11 +176,14 @@ public final class ModelAutoTrainer {
             return;
         }
 
+        Path approvedDataset=stagingDir.resolve("approved_dataset.csv");
+        long trainingRevision=datasetManager.trainingRevision();
+        if(!datasetManager.exportTrainingSnapshot(approvedDataset))return;
         List<String> command = new ArrayList<>();
         command.add(pythonExe);
         command.add(scriptPath.toString());
         command.add("--dataset");
-        command.add(datasetManager.getAutoPersistFile().toString());
+        command.add(approvedDataset.toString());
         command.add("--output-dir");
         command.add(stagingDir.toString());
         command.add("--domains");
@@ -259,6 +262,9 @@ public final class ModelAutoTrainer {
         logScriptOutput(outputLines);
 
         for (String domain : readyDomains) {
+            if(trainingRevision!=datasetManager.trainingRevision()) {
+                LOGGER.warning("Обучающие метки пересмотрены во время обучения; результат не установлен.");return;
+            }
             String modelFile = domain + "_model.onnx";
             Path staged = stagingDir.resolve(modelFile);
             if (!Files.exists(staged)) {
@@ -271,7 +277,7 @@ public final class ModelAutoTrainer {
             }
 
             if (config.isShadowModeEnabled()) {
-                installAsShadowCandidate(domain, staged, stagingDir);
+                installAsShadowCandidate(domain, staged, stagingDir, trainingRevision);
                 continue;
             }
 
@@ -281,10 +287,9 @@ public final class ModelAutoTrainer {
                 // Keep the outgoing model so a bad retrain can be undone without waiting for the
                 // next cycle - see /vesuvio model rollback.
                 if (Files.exists(live)) {
-                    Files.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"),
-                            StandardCopyOption.REPLACE_EXISTING);
+                    ModelProvenance.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"));
                 }
-                Files.copy(staged, live, StandardCopyOption.REPLACE_EXISTING);
+                ModelProvenance.copy(staged, live, trainingRevision);
             } catch (IOException e) {
                 LOGGER.log(Level.WARNING, "[Vesuvio] Автообучение: не удалось установить обученную модель " + modelFile, e);
                 continue;
@@ -311,14 +316,14 @@ public final class ModelAutoTrainer {
      * production model, its verdicts are recorded and never acted on, and an operator promotes it
      * once {@code /vesuvio model shadow} shows what it would actually have done.
      */
-    private void installAsShadowCandidate(String domain, Path staged, Path stagingDir) {
+    private void installAsShadowCandidate(String domain, Path staged, Path stagingDir, long trainingRevision) {
         String modelName = domain + "_model";
         String shadowName = modelName + ShadowEvaluator.SHADOW_SUFFIX;
         Path candidate = modelsDir.resolve(domain + "_model.onnx.candidate");
 
         try {
             Files.createDirectories(modelsDir);
-            Files.copy(staged, candidate, StandardCopyOption.REPLACE_EXISTING);
+            ModelProvenance.copy(staged, candidate, trainingRevision);
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "[Vesuvio] Автообучение: не удалось подготовить теневого кандидата для " + domain, e);
             return;
@@ -374,12 +379,13 @@ public final class ModelAutoTrainer {
         String modelName = domain + "_model";
         Path live = modelsDir.resolve(domain + "_model.onnx");
         try {
+            if(ModelProvenance.revision(candidate)!=datasetManager.trainingRevision())return "Метки кандидата пересмотрены. Подготовьте нового кандидата.";
             if (Files.exists(live)) {
-                Files.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"),
-                        StandardCopyOption.REPLACE_EXISTING);
+                ModelProvenance.copy(live, modelsDir.resolve(domain + "_model.onnx.previous"));
             }
-            Files.copy(candidate, live, StandardCopyOption.REPLACE_EXISTING);
+            ModelProvenance.copy(candidate, live);
             Files.deleteIfExists(candidate);
+            ModelProvenance.delete(candidate);
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "[Vesuvio] Не удалось опубликовать теневого кандидата для " + domain, e);
             return "Не удалось опубликовать кандидата «" + domain + "» — подробности в консоли.";
@@ -403,6 +409,7 @@ public final class ModelAutoTrainer {
         shadowEvaluator.clear(modelName);
         try {
             boolean existed = Files.deleteIfExists(candidate);
+            ModelProvenance.delete(candidate);
             return existed ? "Удалён теневой кандидат «" + domain + "»."
                     : "Нет теневого кандидата для «" + domain + "».";
         } catch (IOException e) {
