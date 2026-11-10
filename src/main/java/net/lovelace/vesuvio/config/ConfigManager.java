@@ -21,6 +21,8 @@ public final class ConfigManager {
     private final List<PunishmentRule> punishmentRules = new ArrayList<>();
     private final Set<String> suspiciousBrands = new HashSet<>();
     private final Map<String, Boolean> silentChecks = new HashMap<>();
+    /** Checks whose flags are logged and shown to staff but add no violation level (so they can never reach a kick or ban). */
+    private final java.util.Set<String> punishmentExcludedChecks = new java.util.HashSet<>();
 
     /**
      * Global runtime kill-switch (/vesuvio toggle). Deliberately NOT read from config.yml and NOT
@@ -113,6 +115,12 @@ public final class ConfigManager {
 
         suspiciousBrands.clear();
         suspiciousBrands.addAll(config.getStringList("mechanics.client-brand.suspicious-brands"));
+
+        punishmentExcludedChecks.clear();
+        java.util.List<String> excluded = config.contains("punishments.excluded-checks")
+                ? config.getStringList("punishments.excluded-checks")
+                : java.util.List.of("phase", "invmove");
+        for (String name : excluded) punishmentExcludedChecks.add(normalizeCheckName(name));
 
         silentChecks.clear();
         var silentSection = config.getConfigurationSection("mechanics.silent-checks");
@@ -997,6 +1005,12 @@ public final class ConfigManager {
 
     public double getDiscordMinRisk() {
         return config.getDouble("staff.discord.min-risk-to-send", 70.0);
+    }
+
+    /** True when flags of this check are recorded for staff but must not add violation level or risk. */
+    public boolean isExcludedFromPunishment(String checkName) {
+        if (checkName == null) return false;
+        return punishmentExcludedChecks.contains(normalizeCheckName(checkName));
     }
 
     public boolean isSilent(String checkName) {

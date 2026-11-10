@@ -19,36 +19,64 @@ import java.util.Map;
  */
 public final class InvMoveCheck {
 
+    /** Evidence needed (a tick of moving with the container open is worth 1.0); replaces the old "3 in a row" streak. */
+    private static final double REQUIRED_SCORE = 2.7;
+    private static final int REQUIRED_EVENTS = 3;
+    private static final double HALF_LIFE_MS = 1500.0;
+
+    /** Momentum from before the window opened (a sprint, a jump) carries on for a moment; it is not moving "with" the menu. */
+    private static final long OPEN_GRACE_MS = 400L;
+
     public CheckResult check(UserData data, double deltaX, double deltaZ, double deltaY) {
         if (data == null) return CheckResult.pass("InvMove");
 
+        long nowMillis = System.currentTimeMillis();
         EnvironmentSnapshot env = data.getEnvironment();
-        if (!env.isFresh(System.currentTimeMillis(), 500L)) {
+        if (!env.isFresh(nowMillis, 500L)) {
             return CheckResult.pass("InvMove");
         }
 
         if (env.isMovementExempt() || data.hasRecentVelocity()) {
-            data.resetInvMoveStreak();
+            data.getInvMoveEvidence().reset();
             return CheckResult.pass("InvMove");
         }
 
         if (!env.containerOpen()) {
-            data.resetInvMoveStreak();
+            data.setContainerOpenSinceMillis(0L);
+            data.getInvMoveEvidence().reset();
             return CheckResult.pass("InvMove");
         }
 
-        double horizontalSq = deltaX * deltaX + deltaZ * deltaZ;
-        boolean isMoving = horizontalSq > 0.04 || env.sprinting() || Math.abs(deltaY) > 0.2;
+        long openSince = data.getContainerOpenSinceMillis();
+        if (openSince == 0L) {
+            data.setContainerOpenSinceMillis(nowMillis);
+            return CheckResult.pass("InvMove");
+        }
+        if (nowMillis - openSince < OPEN_GRACE_MS) {
+            return CheckResult.pass("InvMove");
+        }
 
-        if (isMoving) {
-            data.incrementInvMoveStreak();
-            if (data.getInvMoveStreak() >= 3) {
+        // The environment moves a player on its own: currents, ice, falling. None of it is the player moving with a menu open.
+        if (env.inWater() || env.inLava() || env.swimming() || env.climbing() || isSlippery(env.blockBelow())
+                || Math.abs(deltaY) > 0.2) {
+            return CheckResult.pass("InvMove");
+        }
+
+        // Moving is judged by the distance covered, not by the sprint flag: the flag stays set on the server for a few ticks
+        // after the client has already stopped.
+        double horizontalSq = deltaX * deltaX + deltaZ * deltaZ;
+        long nowNanos = System.nanoTime();
+        if (horizontalSq > 0.04) {
+            double score = data.getInvMoveEvidence().reward(1.0, nowNanos, HALF_LIFE_MS);
+            if (score >= REQUIRED_SCORE && data.getInvMoveEvidence().events() >= REQUIRED_EVENTS) {
+                data.getInvMoveEvidence().reset();
                 Map<String, Object> details = new HashMap<>();
                 details.put("invType", env.openInventoryType());
                 details.put("horizontalSpeed", Math.sqrt(horizontalSq));
                 details.put("deltaY", deltaY);
                 details.put("sprinting", env.sprinting());
-                details.put("streak", data.getInvMoveStreak());
+                details.put("evidence", score);
+                details.put("openForMs", nowMillis - openSince);
 
                 return CheckResult.flag(
                         "InvMove",
@@ -60,9 +88,17 @@ public final class InvMoveCheck {
                 );
             }
         } else {
-            data.resetInvMoveStreak();
+            data.getInvMoveEvidence().relieve(0.5, nowNanos, HALF_LIFE_MS);
         }
 
         return CheckResult.pass("InvMove");
+    }
+
+    /** Surfaces a player keeps sliding on after they stop pressing keys. */
+    private static boolean isSlippery(org.bukkit.Material below) {
+        return switch (below) {
+            case ICE, PACKED_ICE, BLUE_ICE, FROSTED_ICE, SLIME_BLOCK, HONEY_BLOCK -> true;
+            default -> false;
+        };
     }
 }

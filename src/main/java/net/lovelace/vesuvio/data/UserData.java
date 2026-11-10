@@ -746,6 +746,27 @@ public final class UserData {
     // -------------------------------------------------------------
     // Phase / Clip (see check.movement.PhaseCheck)
     // -------------------------------------------------------------
+    /**
+     * Phase evidence: a time-decaying accumulator instead of a "N ticks in a row" counter (see DecayingEvidence), one flag per
+     * episode (a cooldown after each flag), and a grace window after any block changed near the player.
+     */
+    private final DecayingEvidence phaseEvidence = new DecayingEvidence();
+    public DecayingEvidence getPhaseEvidence() { return phaseEvidence; }
+    private volatile long phaseCooldownUntilMillis = 0L;
+    public long getPhaseCooldownUntilMillis() { return phaseCooldownUntilMillis; }
+    public void setPhaseCooldownUntilMillis(long millis) { this.phaseCooldownUntilMillis = millis; }
+    private volatile long lastNearbyBlockChangeMillis = 0L;
+    public long getLastNearbyBlockChangeMillis() { return lastNearbyBlockChangeMillis; }
+    /** A block changed near this player (any cause, including a cancelled break): block data read before is stale. */
+    public void markNearbyBlockChange(long nowMillis) { this.lastNearbyBlockChangeMillis = nowMillis; }
+
+    /** InvMove evidence and the moment the open container was first seen (momentum right after opening is not a cheat). */
+    private final DecayingEvidence invMoveEvidence = new DecayingEvidence();
+    public DecayingEvidence getInvMoveEvidence() { return invMoveEvidence; }
+    private volatile long containerOpenSinceMillis = 0L;
+    public long getContainerOpenSinceMillis() { return containerOpenSinceMillis; }
+    public void setContainerOpenSinceMillis(long millis) { this.containerOpenSinceMillis = millis; }
+
     private volatile int phaseTicks = 0;
     public int getPhaseTicks() { return phaseTicks; }
     public void incrementPhaseTicks() { this.phaseTicks++; }
@@ -1045,6 +1066,8 @@ public final class UserData {
         resetStepStreak();
         resetInvMoveStreak();
         resetPhaseTicks();
+        phaseEvidence.reset();
+        invMoveEvidence.reset();
         resetTimerBalance();
         resetMovementAckBucket();
         clearBlinkFlushWindow();
