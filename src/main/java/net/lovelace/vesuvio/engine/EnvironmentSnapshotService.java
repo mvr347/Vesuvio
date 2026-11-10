@@ -105,13 +105,63 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
         blockCaches.remove(uuid);
     }
 
-    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    // A cancelled break/place is not ignored on purpose: the cancelling plugin (claims, regeneration) often restores the block a
+    // moment later, so the cached scan next to the player is just as stale as after a real change.
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
     public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
         invalidateNear(event.getBlock());
     }
 
-    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
     public void onBlockPlace(org.bukkit.event.block.BlockPlaceEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    /** Cobblestone/stone/obsidian generators and other blocks that form on their own. */
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockForm(org.bukkit.event.block.BlockFormEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent event) {
+        for (org.bukkit.block.Block b : event.blockList()) invalidateNear(b);
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent event) {
+        for (org.bukkit.block.Block b : event.blockList()) invalidateNear(b);
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPistonExtend(org.bukkit.event.block.BlockPistonExtendEvent event) {
+        invalidateNear(event.getBlock());
+        for (org.bukkit.block.Block b : event.getBlocks()) invalidateNear(b.getRelative(event.getDirection()));
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPistonRetract(org.bukkit.event.block.BlockPistonRetractEvent event) {
+        invalidateNear(event.getBlock());
+        for (org.bukkit.block.Block b : event.getBlocks()) invalidateNear(b);
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityChangeBlock(org.bukkit.event.entity.EntityChangeBlockEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockBurn(org.bukkit.event.block.BlockBurnEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBlockFade(org.bukkit.event.block.BlockFadeEvent event) {
+        invalidateNear(event.getBlock());
+    }
+
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onLeavesDecay(org.bukkit.event.block.LeavesDecayEvent event) {
         invalidateNear(event.getBlock());
     }
 
@@ -127,6 +177,7 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
             if (near) {
                 UserData data = userDataManager.get(entry.getKey());
                 if (data != null) {
+                    data.markNearbyBlockChange(System.currentTimeMillis());
                     data.setEnvironment(EnvironmentSnapshot.EMPTY);
                     // Client-world geometry changes only through outgoing block packets and Pong.
                 }

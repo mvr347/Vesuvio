@@ -54,6 +54,11 @@ public final class TestSnapshots {
         Builder blockedNegX(boolean v) { this.blockedNegX = v; return this; }
         Builder blockedPosZ(boolean v) { this.blockedPosZ = v; return this; }
         Builder blockedNegZ(boolean v) { this.blockedNegZ = v; return this; }
+        private boolean inWater = false;
+        private boolean containerOpen = false;
+        private String openInventoryType = "CRAFTING";
+        Builder inWater(boolean v) { this.inWater = v; return this; }
+        Builder container(String type) { this.containerOpen = true; this.openInventoryType = type; return this; }
 
         public EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
@@ -65,7 +70,7 @@ public final class TestSnapshots {
                     // sneaking, swimming, dead, fallDistance
                     false, false, false, 0f,
                     // inWater, inLava, climbing, inCobweb
-                    false, false, false, false,
+                    inWater, false, false, false,
                     nearClimbable, solidBelow, insideSolidBlock, blockBelow,
                     // blockedPosX, blockedNegX, blockedPosZ, blockedNegZ
                     blockedPosX, blockedNegX, blockedPosZ, blockedNegZ,
@@ -76,7 +81,7 @@ public final class TestSnapshots {
                     // jumpStrength
                     movementSpeed, jumpStrength,
                     // containerOpen, openInventoryType
-                    false, "CRAFTING");
+                    containerOpen, openInventoryType);
         }
     }
 }

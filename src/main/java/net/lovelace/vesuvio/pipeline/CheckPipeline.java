@@ -1022,8 +1022,10 @@ public final class CheckPipeline {
         if (config.isPhaseEnabled()) {
             CheckResult phaseResult = phaseCheck.check(data, deltaX, deltaZ);
             if (phaseResult.isFlag()) {
-                data.addVl(phaseResult.vl());
-                data.adjustRisk(phaseResult.confidence() * 12.0);
+                if (countsTowardPunishment(data, phaseResult)) {
+                    data.addVl(phaseResult.vl());
+                    data.adjustRisk(phaseResult.confidence() * 12.0);
+                }
                 data.setLastTriggeredCheck(phaseResult.checkName());
                 handleFlag(player, data, phaseResult);
             }
@@ -1083,12 +1085,25 @@ public final class CheckPipeline {
         if (config.isInvMoveEnabled()) {
             CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY);
             if (invMoveResult.isFlag()) {
-                data.addVl(invMoveResult.vl());
-                data.adjustRisk(invMoveResult.confidence() * 8.0);
+                if (countsTowardPunishment(data, invMoveResult)) {
+                    data.addVl(invMoveResult.vl());
+                    data.adjustRisk(invMoveResult.confidence() * 8.0);
+                }
                 data.setLastTriggeredCheck(invMoveResult.checkName());
                 handleFlag(player, data, invMoveResult);
             }
         }
+    }
+
+    /**
+     * Whether a flag may add violation level and risk. Not when checks are off or the player just teleported (handleFlag drops
+     * such a flag, and its VL must not stay behind), and not for checks listed in {@code punishments.excluded-checks}: those are
+     * still logged and shown to staff, but can never push a player towards a kick or ban.
+     */
+    private boolean countsTowardPunishment(UserData data, CheckResult result) {
+        return config.isAnticheatEnabled()
+                && !data.hasRecentTeleport()
+                && !config.isExcludedFromPunishment(result.checkName());
     }
 
     public void handleFlag(Player player, UserData data, CheckResult result) {
