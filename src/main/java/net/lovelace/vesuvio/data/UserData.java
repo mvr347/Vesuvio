@@ -139,6 +139,54 @@ public final class UserData {
 
     public synchronized void adjustRisk(double delta) {
         this.riskIndex = Math.max(0.0, Math.min(100.0, this.riskIndex + delta));
+        if (delta > 0) lastRiskRaiseMillis = System.currentTimeMillis();
+    }
+
+    private long lastRiskRaiseMillis = System.currentTimeMillis();
+    private long lastCleanDecayMillis = System.currentTimeMillis();
+
+    /**
+     * Passive recovery for a player who has not been flagged for {@code cleanMillis}: risk drops by
+     * {@code riskPerMinute} down to {@code riskFloor}, trust grows by 1.0 per {@code trustHours} of clean time.
+     * Without this the risk only ever grew and trust only ever fell, which tightened every threshold
+     * through {@link #getSensitivityMultiplier()} and produced yet more flags.
+     */
+    public synchronized void applyCleanDecay(long nowMillis, long cleanMillis, double riskPerMinute,
+                                             double riskFloor, double trustHours) {
+        long elapsed = Math.max(0L, nowMillis - lastCleanDecayMillis);
+        lastCleanDecayMillis = nowMillis;
+        long lastBad = Math.max(lastViolationTime.get(), lastRiskRaiseMillis);
+        if (nowMillis - lastBad < cleanMillis) return;
+        // Only the time past the clean threshold counts, otherwise the first tick after it would back-pay it.
+        long counted = Math.min(elapsed, nowMillis - lastBad - cleanMillis);
+        if (counted <= 0) return;
+        double minutes = counted / 60_000.0;
+        if (riskIndex > riskFloor) {
+            riskIndex = Math.max(riskFloor, riskIndex - riskPerMinute * minutes);
+        }
+        if (trustHours > 0) {
+            trustScore = Math.min(100.0, trustScore + minutes / (trustHours * 60.0));
+        }
+    }
+
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastReflagMillis = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Rate limit for window-based checks: they re-evaluate the same 64-sample window on every packet, so
+     * one real anomaly would otherwise flag 10-20 times a second. True when a flag for {@code check} may
+     * be reported now; records the time when it does.
+     */
+    public boolean tryReflag(String check, long nowMillis, long intervalMillis) {
+        if (intervalMillis <= 0) return true;
+        final boolean[] allowed = {false};
+        lastReflagMillis.compute(check, (k, last) -> {
+            if (last == null || nowMillis - last >= intervalMillis || nowMillis < last) {
+                allowed[0] = true;
+                return nowMillis;
+            }
+            return last;
+        });
+        return allowed[0];
     }
 
     // Manual Suspect flag (persists across reboots and reconnects)
@@ -176,7 +224,14 @@ public final class UserData {
         double trustFactor = (60.0 - trust) / 60.0; // trust=50 -> +0.17 (slightly harsh), trust=100 -> -0.67 (lenient), trust=0 -> +1.0
         double riskFactor = risk / 100.0;            // risk=10 -> +0.10, risk=100 -> +1.0, risk=0 -> 0.0
         double sensitivity = 1.0 + (trustFactor * 0.6) + (riskFactor * 0.8);
-        return Math.max(0.6, Math.min(2.5, sensitivity));
+        return Math.max(0.6, Math.min(sensitivityCap, sensitivity));
+    }
+
+    private static volatile double sensitivityCap = 1.3;
+
+    /** Upper bound of {@link #getSensitivityMultiplier()} (scoring.sensitivity.max-multiplier). */
+    public static void setSensitivityCap(double cap) {
+        sensitivityCap = Math.max(1.0, cap);
     }
 
     public String getClientBrand() {

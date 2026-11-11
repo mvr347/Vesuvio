@@ -290,7 +290,9 @@ public final class Vesuvio extends JavaPlugin {
         // Schedulers: Passive VL Decay
         long decayTicks = (long) (configManager.getVlDecaySeconds() * 20.0);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
-            userDataManager.performDecay(configManager.getVlDecayAmount());
+            userDataManager.performDecay(configManager.getVlDecayAmount(),
+                    (long) (configManager.getRiskCleanSeconds() * 1000.0), configManager.getRiskDecayPerMinute(),
+                    configManager.getRiskFloor(), configManager.getTrustDecayCleanHours());
         }, decayTicks, decayTicks);
 
         // Schedulers: Automatic self-learning dataset collection (legit samples from trusted

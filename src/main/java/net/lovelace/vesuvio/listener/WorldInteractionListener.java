@@ -125,9 +125,7 @@ public final class WorldInteractionListener implements Listener {
                     "Установка блока в воздухе без соседней опоры",
                     details
             );
-            data.addVl(result.vl());
-            pipeline.handleFlag(player, data, result);
-            data.adjustRisk(20.0);
+            pipeline.report(player, data, result, result.vl(), 20.0);
             return;
         }
 
@@ -157,9 +155,7 @@ public final class WorldInteractionListener implements Listener {
                         String.format(Locale.US, "Недопустимый угол установки вниз (наклон: %.1f° при минимуме 40°)", pitch),
                         details
                 );
-                data.addVl(result.vl());
-                pipeline.handleFlag(player, data, result);
-                data.adjustRisk(18.0);
+                pipeline.report(player, data, result, result.vl(), 18.0);
             }
         }
         }
@@ -186,9 +182,7 @@ public final class WorldInteractionListener implements Listener {
                                 String.format(Locale.US, "Слишком быстрая установка блоков (%.0f мс, минимум около 200 мс)", elapsedMs),
                                 Map.of("elapsedMs", elapsedMs, "streak", count)
                         );
-                        data.addVl(result.vl());
-                        pipeline.handleFlag(player, data, result);
-                        data.adjustRisk(16.0);
+                        pipeline.report(player, data, result, result.vl(), 16.0);
                     }
                 } else {
                     streak.set(0);
@@ -221,9 +215,7 @@ public final class WorldInteractionListener implements Listener {
                                 String.format(Locale.US, "Постройка столба быстрее допустимой физики прыжка (%.0f мс между блоками, минимум около 250 мс)", elapsedMs),
                                 Map.of("elapsedMs", elapsedMs, "streak", count)
                         );
-                        data.addVl(result.vl());
-                        pipeline.handleFlag(player, data, result);
-                        data.adjustRisk(17.0);
+                        pipeline.report(player, data, result, result.vl(), 17.0);
                     }
                 } else {
                     streak.set(0);
@@ -310,9 +302,7 @@ public final class WorldInteractionListener implements Listener {
                         String.format(Locale.US, "Действие с блоком (%s) за пределами досягаемости (%.2f м, максимум %.2f м)", net.lovelace.vesuvio.i18n.Russian.label(action), distance, allowedReach),
                         Map.of("distance", distance, "maxAllowed", allowedReach, "action", action)
                 );
-                data.addVl(result.vl());
-                pipeline.handleFlag(player, data, result);
-                data.adjustRisk(15.0);
+                pipeline.report(player, data, result, result.vl(), 15.0);
                 return;
             }
         }
@@ -331,9 +321,7 @@ public final class WorldInteractionListener implements Listener {
                             String.format(Locale.US, "Действие с блоком (%s) сквозь сплошную преграду %s", net.lovelace.vesuvio.i18n.Russian.label(action), obstruction.getType().name()),
                             Map.of("obstruction", obstruction.getType().name(), "action", action, "distance", distance)
                     );
-                    data.addVl(result.vl());
-                    pipeline.handleFlag(player, data, result);
-                    data.adjustRisk(18.0);
+                    pipeline.report(player, data, result, result.vl(), 18.0);
                 }
             }
         }
@@ -455,9 +443,7 @@ public final class WorldInteractionListener implements Listener {
                         "Сломан неразрушаемый блок " + block.getType().name(),
                         Map.of("block", block.getType().name())
                 );
-                data.addVl(result.vl());
-                pipeline.handleFlag(player, data, result);
-                data.adjustRisk(50.0);
+                pipeline.report(player, data, result, result.vl(), 50.0);
             }
             return;
         }
@@ -585,9 +571,7 @@ public final class WorldInteractionListener implements Listener {
         details.put("tool", player.getInventory().getItemInMainHand().getType().name());
 
         CheckResult result = CheckResult.flag("FastBreak", confidence, vl, explanation, details);
-        data.addVl(result.vl());
-        pipeline.handleFlag(player, data, result);
-        data.adjustRisk(20.0);
+        pipeline.report(player, data, result, result.vl(), 20.0);
     }
 
     private static final class MiningProfile {
@@ -636,9 +620,7 @@ public final class WorldInteractionListener implements Listener {
                         String.format(Locale.US, "Слишком частые находки редкой руды (%d блоков %s за менее чем 60 с)", profile.burstOreCount, mat.name()),
                         Map.of("ore", mat.name(), "burstCount", profile.burstOreCount)
                 );
-                data.addVl(result.vl());
-                pipeline.handleFlag(player, data, result);
-                data.adjustRisk(25.0);
+                pipeline.report(player, data, result, result.vl(), 25.0);
             }
 
             // Statistical ratio check: when >= 4 rare ores mined, ratio > 25% is abnormal
@@ -653,9 +635,7 @@ public final class WorldInteractionListener implements Listener {
                             String.format(Locale.US, "Аномальная доля руды среди добытых блоков: %.1f%% (прокоп прямо к руде)", ratio * 100),
                             Map.of("oreCount", profile.diamondOreCount, "stoneCount", profile.stoneCount, "ratio", ratio)
                     );
-                    data.addVl(result.vl());
-                    pipeline.handleFlag(player, data, result);
-                    data.adjustRisk(30.0);
+                    pipeline.report(player, data, result, result.vl(), 30.0);
                 }
             }
         }
@@ -713,9 +693,7 @@ public final class WorldInteractionListener implements Listener {
                                 String.format(Locale.US, "Подъём в воздухе верхом на %s (ΔY: %.2f)", vehicle.getType().name(), deltaY),
                                 details
                         );
-                        data.addVl(result.vl());
-                        pipeline.handleFlag(player, data, result);
-                        data.adjustRisk(25.0);
+                        pipeline.report(player, data, result, result.vl(), 25.0);
 
                         // Eject player from hacked flying vehicle
                         vehicle.eject();
@@ -772,9 +750,7 @@ public final class WorldInteractionListener implements Listener {
                         vehicle.getType().name(), horizontal, VEHICLE_CLIP_REQUIRED_TICKS),
                 details
         );
-        data.addVl(result.vl());
-        pipeline.handleFlag(player, data, result);
-        data.adjustRisk(22.0);
+        pipeline.report(player, data, result, result.vl(), 22.0);
     }
 
     // -------------------------------------------------------------
@@ -839,9 +815,7 @@ public final class WorldInteractionListener implements Listener {
                             event.getItem().getType().name(), elapsed, MIN_EAT_MS),
                     Map.of("item", event.getItem().getType().name(), "elapsedMs", elapsed)
             );
-            data.addVl(result.vl());
-            pipeline.handleFlag(player, data, result);
-            data.adjustRisk(14.0);
+            pipeline.report(player, data, result, result.vl(), 14.0);
         }
     }
 
@@ -869,9 +843,7 @@ public final class WorldInteractionListener implements Listener {
                             force, elapsed, MIN_FULL_CHARGE_MS),
                     Map.of("force", force, "elapsedMs", elapsed)
             );
-            data.addVl(result.vl());
-            pipeline.handleFlag(player, data, result);
-            data.adjustRisk(13.0);
+            pipeline.report(player, data, result, result.vl(), 13.0);
         }
     }
 }

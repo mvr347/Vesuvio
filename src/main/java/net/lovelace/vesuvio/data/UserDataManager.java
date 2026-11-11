@@ -72,7 +72,14 @@ public final class UserDataManager {
      * Periodic decay for all active users.
      */
     public void performDecay(double decayAmount) {
+        performDecay(decayAmount, 60_000L, 1.0, 10.0, 1.5);
+    }
+
+    public void performDecay(double decayAmount, long cleanMillis, double riskPerMinute,
+                             double riskFloor, double trustHours) {
+        long now = System.currentTimeMillis();
         for (UserData data : users.values()) {
+            data.applyCleanDecay(now, cleanMillis, riskPerMinute, riskFloor, trustHours);
             if (data.getVl() > 0) {
                 data.decayVl(decayAmount);
             }

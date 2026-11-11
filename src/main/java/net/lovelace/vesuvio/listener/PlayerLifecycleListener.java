@@ -125,7 +125,6 @@ public final class PlayerLifecycleListener implements Listener {
                     var match = banEvasionManager.findIpMatch(finalIp);
                     match.ifPresent(m -> {
                         if (!config.isAnticheatEnabled() || userDataManager.get(playerId) != data) return;
-                        data.adjustRisk(config.getBanEvasionIpMatchRisk());
                         Map<String, Object> details = new HashMap<>();
                         details.put("bannedUsername", m.bannedUsername());
                         details.put("banReason", m.reason());
@@ -134,7 +133,9 @@ public final class PlayerLifecycleListener implements Listener {
                                 String.format(Locale.US, "IP совпадает с заблокированным игроком «%s»", m.bannedUsername()),
                                 details);
                         if (checkPipeline != null) {
-                            checkPipeline.handleFlag(player, data, result);
+                            checkPipeline.report(player, data, result, 0.0, config.getBanEvasionIpMatchRisk());
+                        } else {
+                            data.adjustRisk(config.getBanEvasionIpMatchRisk());
                         }
                     });
                 });

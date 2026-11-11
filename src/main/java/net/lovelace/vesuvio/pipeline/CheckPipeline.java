@@ -221,11 +221,7 @@ public final class CheckPipeline {
             statResult = clickCheck.check(data);
             if (statResult.isFlag()) {
                 double addedVl = (statResult.vl() * config.getStatisticalWeight()) / lagTolerance;
-                data.addVl(addedVl);
-                data.adjustRisk((statResult.confidence() * 8.0) / lagTolerance);
-                data.setLastTriggeredCheck(statResult.checkName());
-
-                handleFlag(player, data, statResult);
+                reportWindowed(player, data, statResult, addedVl, (statResult.confidence() * 8.0) / lagTolerance);
 
                 // If certainty is overwhelmingly high (> 0.92), flag without wasting ML inference cycles
                 if (statResult.confidence() >= config.getStatisticalCutoff() && lagTolerance <= 1.1) {
@@ -240,9 +236,7 @@ public final class CheckPipeline {
             CheckResult tempResult = temporalCheck.check(data);
             temporalConfidence = tempResult.confidence();
             if (tempResult.isFlag()) {
-                data.addVl(tempResult.vl());
-                data.adjustRisk(15.0);
-                handleFlag(player, data, tempResult);
+                reportWindowed(player, data, tempResult, tempResult.vl(), 15.0);
             }
         }
 
@@ -269,15 +263,12 @@ public final class CheckPipeline {
                 recordShadowVerdict("click_model", featuresCopy, mlResult.probability());
 
                 if (mlResult.isFlag()) {
-                    data.addVl(mlResult.vl() * config.getOnnxWeight());
-                    data.adjustRisk(mlResult.probability() * 12.0);
-                    data.adjustTrust(-5.0);
-                    data.setLastTriggeredCheck("ClickML");
-
                     CheckResult res = CheckResult.flag("ClickML", mlResult.probability(), mlResult.vl(),
                             String.format(Locale.US, "Уверенность модели кликов: %.1f%%", mlResult.probability() * 100),
                             mlResult.details());
-                    handleFlag(player, data, res);
+                    if (reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 12.0)) {
+                        data.adjustTrust(-5.0);
+                    }
 
                 } else if (mlResult.probability() >= config.getActiveLearningMinProb()
                         && mlResult.probability() <= config.getActiveLearningMaxProb()) {
@@ -303,10 +294,6 @@ public final class CheckPipeline {
                 data.setLastSelfLearnProbability(selfLearnProb);
 
                 if (selfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
-                    data.addVl(1.6 * config.getSelfLearningWeight());
-                    data.adjustRisk(selfLearnProb * 9.0);
-                    data.setLastTriggeredCheck("ClickSelfLearn");
-
                     Map<String, Object> slDetails = new HashMap<>();
                     slDetails.put("probability", selfLearnProb);
                     slDetails.put("trainedSamples", classifier.getTrainedSamplesCount());
@@ -315,7 +302,7 @@ public final class CheckPipeline {
                             String.format(Locale.US, "Уверенность самообучающегося классификатора: %.1f%% (обучен на %d образцах)",
                                     selfLearnProb * 100, classifier.getTrainedSamplesCount()),
                             slDetails);
-                    handleFlag(player, data, slResult);
+                    reportWindowed(player, data, slResult, 1.6 * config.getSelfLearningWeight(), selfLearnProb * 9.0);
                 } else if (selfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
                     // Below the confident-flag bar but still elevated - contribute to Risk only,
                     // silently, without a chat alert. This is the model corroborating other
@@ -368,7 +355,6 @@ public final class CheckPipeline {
                         signatureSnapshot, config.getBanEvasionSignatureThreshold(), config.getBanEvasionSignatureScanLimit());
                 match.ifPresent(m -> {
                     if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
-                    data.adjustRisk(config.getBanEvasionSignatureMatchRisk());
                     Map<String, Object> details = new HashMap<>();
                     details.put("bannedUsername", m.bannedUsername());
                     details.put("similarity", m.similarity());
@@ -376,7 +362,7 @@ public final class CheckPipeline {
                             String.format(Locale.US, "Стиль игры совпадает с заблокированным игроком «%s» (сходство %.0f%%)",
                                     m.bannedUsername(), m.similarity() * 100),
                             details);
-                    handleFlag(player, data, result);
+                    report(player, data, result, 0.0, config.getBanEvasionSignatureMatchRisk());
                 });
             }, backgroundExecutor).exceptionally(ex -> {
                 // altCheckDone is already set above (this check only ever needs to run once per
@@ -493,10 +479,7 @@ public final class CheckPipeline {
         if (config.isSnapAimEnabled()) {
             CheckResult snapResult = snapAimCheck.check(data, signedDeltaYaw, nowNanos);
             if (snapResult.isFlag()) {
-                data.addVl(snapResult.vl() * config.getStatisticalWeight());
-                data.adjustRisk(snapResult.confidence() * 9.0);
-                data.setLastTriggeredCheck(snapResult.checkName());
-                handleFlag(player, data, snapResult);
+                report(player, data, snapResult, snapResult.vl() * config.getStatisticalWeight(), snapResult.confidence() * 9.0);
             }
         }
 
@@ -504,10 +487,7 @@ public final class CheckPipeline {
         if (config.isBadPacketsEnabled() && config.isBadPacketsPitchBounds()) {
             CheckResult pitchResult = badPacketsCheck.checkPitch(data.getLastPitch());
             if (pitchResult.isFlag()) {
-                data.addVl(pitchResult.vl());
-                data.adjustRisk(20.0);
-                data.setLastTriggeredCheck(pitchResult.checkName());
-                handleFlag(player, data, pitchResult);
+                report(player, data, pitchResult, pitchResult.vl(), 20.0);
             }
         }
 
@@ -515,10 +495,7 @@ public final class CheckPipeline {
         if (config.isGcdAimEnabled() && (deltaYaw > 0 || deltaPitch > 0)) {
             CheckResult gcdResult = gcdAimCheck.check(data, deltaYaw, deltaPitch, (float) config.getGcdAimMinRotation());
             if (gcdResult.isFlag()) {
-                data.addVl(gcdResult.vl() * config.getStatisticalWeight());
-                data.adjustRisk(gcdResult.confidence() * 7.0);
-                data.setLastTriggeredCheck(gcdResult.checkName());
-                handleFlag(player, data, gcdResult);
+                report(player, data, gcdResult, gcdResult.vl() * config.getStatisticalWeight(), gcdResult.confidence() * 7.0);
             }
         }
 
@@ -527,10 +504,7 @@ public final class CheckPipeline {
         if (data.getAimBuffer().isFull()) {
             CheckResult result = aimCheck.check(data);
             if (result.isFlag()) {
-                data.addVl(result.vl() * config.getStatisticalWeight());
-                data.adjustRisk(result.confidence() * 6.0);
-                data.setLastTriggeredCheck(result.checkName());
-                handleFlag(player, data, result);
+                reportWindowed(player, data, result, result.vl() * config.getStatisticalWeight(), result.confidence() * 6.0);
             }
         }
 
@@ -547,15 +521,12 @@ public final class CheckPipeline {
                     if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
                     recordShadowVerdict("aim_model", featuresCopy, mlResult.probability());
                     if (mlResult.isFlag()) {
-                        data.addVl(mlResult.vl() * config.getOnnxWeight());
-                        data.adjustRisk(mlResult.probability() * 10.0);
-                        data.adjustTrust(-4.0);
-                        data.setLastTriggeredCheck("AimML");
-
                         CheckResult res = CheckResult.flag("AimML", mlResult.probability(), mlResult.vl(),
                                 String.format(Locale.US, "Уверенность модели прицеливания: %.1f%%", mlResult.probability() * 100),
                                 mlResult.details());
-                        handleFlag(player, data, res);
+                        if (reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 10.0)) {
+                            data.adjustTrust(-4.0);
+                        }
                     }
                 });
             }
@@ -575,10 +546,6 @@ public final class CheckPipeline {
                 data.setLastAimSelfLearnProbability(aimSelfLearnProb);
 
                 if (aimSelfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
-                    data.addVl(1.6 * config.getSelfLearningWeight());
-                    data.adjustRisk(aimSelfLearnProb * 9.0);
-                    data.setLastTriggeredCheck("AimSelfLearn");
-
                     Map<String, Object> slDetails = new HashMap<>();
                     slDetails.put("probability", aimSelfLearnProb);
                     slDetails.put("trainedSamples", aimClassifier.getTrainedSamplesCount());
@@ -587,7 +554,7 @@ public final class CheckPipeline {
                             String.format(Locale.US, "Уверенность самообучающегося классификатора прицеливания: %.1f%% (обучен на %d образцах)",
                                     aimSelfLearnProb * 100, aimClassifier.getTrainedSamplesCount()),
                             slDetails);
-                    handleFlag(player, data, slResult);
+                    reportWindowed(player, data, slResult, 1.6 * config.getSelfLearningWeight(), aimSelfLearnProb * 9.0);
                 } else if (aimSelfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
                     data.adjustRisk((aimSelfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
                 }
@@ -631,10 +598,7 @@ public final class CheckPipeline {
                         || !player.isOnline() || data.hasRecentTeleport() || data.hasSwingNear(attack.receivedNanos())) return;
                 CheckResult result = CheckResult.flag("BadPackets", 0.95, 3.0,
                         "Атака без соответствующей анимации руки", Map.of("windowMs", 150));
-                data.addVl(result.vl());
-                data.adjustRisk(18);
-                data.setLastTriggeredCheck(result.checkName());
-                handleFlag(player, data, result);
+                report(player, data, result, result.vl(), 18);
             }, 3L);
         }
 
@@ -642,10 +606,7 @@ public final class CheckPipeline {
         if (config.isBadPacketsEnabled() && config.isBadPacketsInventoryAttack()) {
             CheckResult invResult = badPacketsCheck.checkInventoryAttack(data);
             if (invResult.isFlag()) {
-                data.addVl(invResult.vl());
-                data.adjustRisk(15.0);
-                data.setLastTriggeredCheck(invResult.checkName());
-                handleFlag(player, data, invResult);
+                report(player, data, invResult, invResult.vl(), 15.0);
             }
         }
 
@@ -653,10 +614,7 @@ public final class CheckPipeline {
         if (config.isAutoCriticalsEnabled()) {
             CheckResult critResult = autoCriticalsCheck.check(data);
             if (critResult.isFlag()) {
-                data.addVl(critResult.vl());
-                data.adjustRisk(critResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(critResult.checkName());
-                handleFlag(player, data, critResult);
+                report(player, data, critResult, critResult.vl(), critResult.confidence() * 10.0);
             }
         }
 
@@ -667,10 +625,7 @@ public final class CheckPipeline {
         if (config.isStrafeReversalEnabled() && data.shouldRunStrafeReversal(config.getStrafeReversalIntervalMs())) {
             CheckResult reversalResult = strafeReversalCheck.check(data);
             if (reversalResult.isFlag()) {
-                data.addVl(reversalResult.vl());
-                data.adjustRisk(reversalResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(reversalResult.checkName());
-                handleFlag(player, data, reversalResult);
+                report(player, data, reversalResult, reversalResult.vl(), reversalResult.confidence() * 10.0);
             }
         }
 
@@ -733,10 +688,7 @@ public final class CheckPipeline {
         if (config.isReachEnabled()) {
             CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator, attack);
             if (reachResult.isFlag()) {
-                data.addVl(reachResult.vl() * config.getStatisticalWeight());
-                data.adjustRisk(reachResult.confidence() * 8.0);
-                data.setLastTriggeredCheck(reachResult.checkName());
-                handleFlag(player, data, reachResult);
+                report(player, data, reachResult, reachResult.vl() * config.getStatisticalWeight(), reachResult.confidence() * 8.0);
             }
         }
 
@@ -749,30 +701,21 @@ public final class CheckPipeline {
         if (config.isKillauraAngleEnabled()) {
             CheckResult angleResult = angleCheck.check(player, target, data, attack);
             if (angleResult.isFlag()) {
-                data.addVl(angleResult.vl());
-                data.adjustRisk(angleResult.confidence() * 9.0);
-                data.setLastTriggeredCheck(angleResult.checkName());
-                handleFlag(player, data, angleResult);
+                report(player, data, angleResult, angleResult.vl(), angleResult.confidence() * 9.0);
             }
         }
 
         if (config.isBackTrackEnabled() && hitboxTracker != null && transactionManager != null) {
             CheckResult backTrackResult = backTrackCheck.check(player, target, data, hitboxTracker, transactionManager, config.getMaxReach());
             if (backTrackResult.isFlag()) {
-                data.addVl(backTrackResult.vl());
-                data.adjustRisk(backTrackResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(backTrackResult.checkName());
-                handleFlag(player, data, backTrackResult);
+                report(player, data, backTrackResult, backTrackResult.vl(), backTrackResult.confidence() * 10.0);
             }
         }
 
         if (config.isMoveDirectionEnabled()) {
             CheckResult moveDirResult = moveDirectionCheck.check(player, target, data);
             if (moveDirResult.isFlag()) {
-                data.addVl(moveDirResult.vl());
-                data.adjustRisk(moveDirResult.confidence() * 8.0);
-                data.setLastTriggeredCheck(moveDirResult.checkName());
-                handleFlag(player, data, moveDirResult);
+                report(player, data, moveDirResult, moveDirResult.vl(), moveDirResult.confidence() * 8.0);
             }
         }
 
@@ -807,10 +750,7 @@ public final class CheckPipeline {
 
         CheckResult result = CheckResult.flag("NpcTrap", 1.0, 25.0,
                 "Атака персональной пакетной сущности-ловушки, недоступной при обычной игре", details);
-        data.addVl(result.vl());
-        data.adjustRisk(60.0);
-        data.setLastTriggeredCheck(result.checkName());
-        handleFlag(player, data, result);
+        report(player, data, result, result.vl(), 60.0);
     }
 
     /**
@@ -909,10 +849,7 @@ public final class CheckPipeline {
         if (config.isTimerEnabled()) {
             CheckResult timerResult = timerCheck.check(data, lagTolerance, packetReceiptNanos);
             if (timerResult.isFlag()) {
-                data.addVl(timerResult.vl());
-                data.adjustRisk(timerResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(timerResult.checkName());
-                handleFlag(player, data, timerResult);
+                report(player, data, timerResult, timerResult.vl(), timerResult.confidence() * 10.0);
             }
         }
 
@@ -923,10 +860,7 @@ public final class CheckPipeline {
             CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager,
                     packetReceiptNanos, hasPos, clientHadSomethingToReport);
             if (blinkResult.isFlag()) {
-                data.addVl(blinkResult.vl());
-                data.adjustRisk(blinkResult.confidence() * 12.0);
-                data.setLastTriggeredCheck(blinkResult.checkName());
-                handleFlag(player, data, blinkResult);
+                report(player, data, blinkResult, blinkResult.vl(), blinkResult.confidence() * 12.0);
             }
         }
 
@@ -962,10 +896,7 @@ public final class CheckPipeline {
         if (config.isBlinkEnabled() && transactionManager != null) {
             CheckResult burstResult = blinkCheck.checkReleaseBurst(data, deltaX, deltaY, deltaZ, elapsedMs, nowNanos);
             if (burstResult.isFlag()) {
-                data.addVl(burstResult.vl());
-                data.adjustRisk(burstResult.confidence() * 12.0);
-                data.setLastTriggeredCheck(burstResult.checkName());
-                handleFlag(player, data, burstResult);
+                report(player, data, burstResult, burstResult.vl(), burstResult.confidence() * 12.0);
             }
         }
 
@@ -989,20 +920,14 @@ public final class CheckPipeline {
         if (config.isElytraEnabled()) {
             CheckResult elytraResult = elytraCheck.check(data, deltaX, deltaY, deltaZ);
             if (elytraResult.isFlag()) {
-                data.addVl(elytraResult.vl());
-                data.adjustRisk(elytraResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(elytraResult.checkName());
-                handleFlag(player, data, elytraResult);
+                report(player, data, elytraResult, elytraResult.vl(), elytraResult.confidence() * 10.0);
             }
         }
 
         if (config.isBaritoneEnabled()) {
             CheckResult baritoneResult = baritoneCheck.check(player, data, deltaX, deltaZ);
             if (baritoneResult.isFlag()) {
-                data.addVl(baritoneResult.vl());
-                data.adjustRisk(baritoneResult.confidence() * 7.0);
-                data.setLastTriggeredCheck(baritoneResult.checkName());
-                handleFlag(player, data, baritoneResult);
+                report(player, data, baritoneResult, baritoneResult.vl(), baritoneResult.confidence() * 7.0);
             }
         }
 
@@ -1011,10 +936,7 @@ public final class CheckPipeline {
         if (config.isVelocityEnabled() && transactionManager != null) {
             CheckResult velocityResult = velocityCheck.check(player.getUniqueId(), data, transactionManager, deltaX, deltaZ);
             if (velocityResult.isFlag()) {
-                data.addVl(velocityResult.vl());
-                data.adjustRisk(velocityResult.confidence() * 11.0);
-                data.setLastTriggeredCheck(velocityResult.checkName());
-                handleFlag(player, data, velocityResult);
+                report(player, data, velocityResult, velocityResult.vl(), velocityResult.confidence() * 11.0);
             }
         }
 
@@ -1022,12 +944,7 @@ public final class CheckPipeline {
         if (config.isPhaseEnabled()) {
             CheckResult phaseResult = phaseCheck.check(data, deltaX, deltaZ);
             if (phaseResult.isFlag()) {
-                if (countsTowardPunishment(data, phaseResult)) {
-                    data.addVl(phaseResult.vl());
-                    data.adjustRisk(phaseResult.confidence() * 12.0);
-                }
-                data.setLastTriggeredCheck(phaseResult.checkName());
-                handleFlag(player, data, phaseResult);
+                report(player, data, phaseResult, phaseResult.vl(), phaseResult.confidence() * 12.0);
             }
         }
 
@@ -1035,10 +952,7 @@ public final class CheckPipeline {
         if (config.isFlyEnabled()) {
             CheckResult flyResult = flyCheck.check(data, deltaX, deltaY, deltaZ, onGround);
             if (flyResult.isFlag()) {
-                data.addVl(flyResult.vl());
-                data.adjustRisk(flyResult.confidence() * 12.0);
-                data.setLastTriggeredCheck(flyResult.checkName());
-                handleFlag(player, data, flyResult);
+                report(player, data, flyResult, flyResult.vl(), flyResult.confidence() * 12.0);
 
                 // Fly is one of the fastest and hardest checks - on a high-confidence flag there is
                 // little value in also running Speed/NoFall/StepUp/InvMove this same tick.
@@ -1052,10 +966,7 @@ public final class CheckPipeline {
         if (config.isSpeedEnabled()) {
             CheckResult speedResult = speedCheck.check(data, deltaX, deltaZ, elapsedMs, lagTolerance);
             if (speedResult.isFlag()) {
-                data.addVl(speedResult.vl());
-                data.adjustRisk(speedResult.confidence() * 8.0);
-                data.setLastTriggeredCheck(speedResult.checkName());
-                handleFlag(player, data, speedResult);
+                report(player, data, speedResult, speedResult.vl(), speedResult.confidence() * 8.0);
             }
         }
 
@@ -1063,10 +974,7 @@ public final class CheckPipeline {
         if (config.isNoFallEnabled()) {
             CheckResult noFallResult = noFallCheck.check(data, deltaY, onGround);
             if (noFallResult.isFlag()) {
-                data.addVl(noFallResult.vl());
-                data.adjustRisk(noFallResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(noFallResult.checkName());
-                handleFlag(player, data, noFallResult);
+                report(player, data, noFallResult, noFallResult.vl(), noFallResult.confidence() * 10.0);
             }
         }
 
@@ -1074,10 +982,7 @@ public final class CheckPipeline {
         if (config.isStepEnabled()) {
             CheckResult stepResult = stepUpCheck.check(data, deltaY, onGround);
             if (stepResult.isFlag()) {
-                data.addVl(stepResult.vl());
-                data.adjustRisk(stepResult.confidence() * 10.0);
-                data.setLastTriggeredCheck(stepResult.checkName());
-                handleFlag(player, data, stepResult);
+                report(player, data, stepResult, stepResult.vl(), stepResult.confidence() * 10.0);
             }
         }
 
@@ -1085,25 +990,46 @@ public final class CheckPipeline {
         if (config.isInvMoveEnabled()) {
             CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY);
             if (invMoveResult.isFlag()) {
-                if (countsTowardPunishment(data, invMoveResult)) {
-                    data.addVl(invMoveResult.vl());
-                    data.adjustRisk(invMoveResult.confidence() * 8.0);
-                }
-                data.setLastTriggeredCheck(invMoveResult.checkName());
-                handleFlag(player, data, invMoveResult);
+                report(player, data, invMoveResult, invMoveResult.vl(), invMoveResult.confidence() * 8.0);
             }
         }
     }
 
     /**
-     * Whether a flag may add violation level and risk. Not when checks are off or the player just teleported (handleFlag drops
-     * such a flag, and its VL must not stay behind), and not for checks listed in {@code punishments.excluded-checks}: those are
-     * still logged and shown to staff, but can never push a player towards a kick or ban.
+     * Single entry point for a flag: every place that used to call addVl + adjustRisk + handleFlag goes through here.
+     * Order matters. Checks disabled or a recent teleport: diagnostics only, no VL (the flag is dropped, so its VL must not
+     * stay behind). Windowed checks (see {@link #reportWindowed}) are re-reported at most once per
+     * layers.statistical.reflag-interval-ms. Checks in punishments.excluded-checks are still logged and shown to staff,
+     * but add neither VL nor risk. Only then the regular handleFlag (alert, Discord, database, punishments).
+     *
+     * @return whether the flag was accepted (reached handleFlag)
      */
-    private boolean countsTowardPunishment(UserData data, CheckResult result) {
-        return config.isAnticheatEnabled()
-                && !data.hasRecentTeleport()
-                && !config.isExcludedFromPunishment(result.checkName());
+    public boolean report(Player player, UserData data, CheckResult result, double vl, double risk) {
+        return reportInternal(player, data, result, vl, risk, false);
+    }
+
+    /** Same as {@link #report}, for checks that re-evaluate one sliding window on every packet. */
+    public boolean reportWindowed(Player player, UserData data, CheckResult result, double vl, double risk) {
+        return reportInternal(player, data, result, vl, risk, true);
+    }
+
+    private boolean reportInternal(Player player, UserData data, CheckResult result, double vl, double risk, boolean windowed) {
+        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) {
+            diagnostics.flag(data, result, !config.isAnticheatEnabled() ? "отклонено: проверки выключены"
+                    : "отклонено: защита после телепортации");
+            return false;
+        }
+        if (windowed && !data.tryReflag(result.checkName(), System.currentTimeMillis(), config.getStatisticalReflagIntervalMs())) {
+            diagnostics.flag(data, result, "отклонено: повторный флаг оконной проверки");
+            return false;
+        }
+        if (!config.isExcludedFromPunishment(result.checkName())) {
+            data.addVl(vl);
+            data.adjustRisk(risk);
+        }
+        data.setLastTriggeredCheck(result.checkName());
+        handleFlag(player, data, result);
+        return true;
     }
 
     public void handleFlag(Player player, UserData data, CheckResult result) {

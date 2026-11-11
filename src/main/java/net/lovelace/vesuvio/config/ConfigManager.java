@@ -116,6 +116,7 @@ public final class ConfigManager {
         suspiciousBrands.clear();
         suspiciousBrands.addAll(config.getStringList("mechanics.client-brand.suspicious-brands"));
 
+        net.lovelace.vesuvio.data.UserData.setSensitivityCap(getSensitivityMaxMultiplier());
         punishmentExcludedChecks.clear();
         java.util.List<String> excluded = config.contains("punishments.excluded-checks")
                 ? config.getStringList("punishments.excluded-checks")
@@ -1034,6 +1035,13 @@ public final class ConfigManager {
     public double getHighRiskThreshold() {
         return config.getDouble("scoring.risk.high-risk-threshold", 75.0);
     }
+
+    public double getRiskCleanSeconds() { return config.getDouble("scoring.risk.clean-seconds", 60.0); }
+    public double getRiskDecayPerMinute() { return config.getDouble("scoring.risk.decay-per-minute", 1.0); }
+    public double getRiskFloor() { return config.getDouble("scoring.risk.floor", 10.0); }
+    public double getTrustDecayCleanHours() { return config.getDouble("scoring.trust.decay-clean-hours", 1.5); }
+    public double getSensitivityMaxMultiplier() { return config.getDouble("scoring.sensitivity.max-multiplier", 1.3); }
+    public long getStatisticalReflagIntervalMs() { return config.getLong("layers.statistical.reflag-interval-ms", 4000L); }
 
     public double getVlDecayAmount() {
         return config.getDouble("scoring.vl.decay-amount", 1.0);
