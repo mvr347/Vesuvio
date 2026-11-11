@@ -99,7 +99,12 @@ public final class StatisticalReachCheck {
         if (System.nanoTime() - received > 500_000_000L) return CheckResult.pass("Reach");
         java.util.List<HitboxHistoryTracker.BoxSnapshot> boxes;
         if (target instanceof Player targetPlayer && hitboxTracker != null) {
-            boxes = hitboxTracker.attackCandidates(targetPlayer, ping, received);
+            // A single attack can have travelled more slowly than the smoothed RTT says: widen the window by the spike of the last
+            // sample over the average and by how long the oldest transaction has been waiting for its answer.
+            double lastRtt = transactionManager != null ? transactionManager.getLastPing(attacker.getUniqueId()) : -1;
+            double pendingAge = transactionManager != null ? transactionManager.getOldestPendingAgeMs(attacker.getUniqueId()) : 0;
+            double extraMs = Math.max(0.0, lastRtt - transactionRtt) + Math.max(0.0, pendingAge);
+            boxes = hitboxTracker.attackCandidates(targetPlayer, ping, received, extraMs);
         } else {
             var bb = target.getBoundingBox();
             boxes = java.util.List.of(new HitboxHistoryTracker.BoxSnapshot(bb.getMinX(), bb.getMinY(), bb.getMinZ(),
@@ -108,10 +113,27 @@ public final class StatisticalReachCheck {
         if (boxes.isEmpty()) return CheckResult.pass("Reach");
         Location eyeLoc = attack == null ? attacker.getEyeLocation() : attack.eyeLocation(attacker);
         var direction = eyeLoc.getDirection();
+        // The client sends the attack before the rotation of the same tick: judge by the better of the attack angle and the
+        // first rotation received within 150 ms after it.
+        java.util.List<org.bukkit.util.Vector> directions = new java.util.ArrayList<>(2);
+        directions.add(direction);
+        if (attack != null && attackerData != null) {
+            var later = attackerData.firstRotationAfter(received, 150_000_000L);
+            if (later.present()) {
+                Location laterLoc = eyeLoc.clone();
+                laterLoc.setYaw(later.yaw());
+                laterLoc.setPitch(later.pitch());
+                directions.add(laterLoc.getDirection());
+            }
+        }
         double distance = Double.POSITIVE_INFINITY;
+        double nearestPoint = Double.POSITIVE_INFINITY;
         for (var box : boxes) {
-            distance = Math.min(distance, box.rayDistance(eyeLoc.getX(), eyeLoc.getY(), eyeLoc.getZ(),
-                    direction.getX(), direction.getY(), direction.getZ(), 0.03));
+            nearestPoint = Math.min(nearestPoint, box.distanceTo(eyeLoc.getX(), eyeLoc.getY(), eyeLoc.getZ()));
+            for (var dir : directions) {
+                distance = Math.min(distance, box.rayDistance(eyeLoc.getX(), eyeLoc.getY(), eyeLoc.getZ(),
+                        dir.getX(), dir.getY(), dir.getZ(), 0.03));
+            }
         }
         // A complete ray miss is the Hitbox/KillAura check's evidence, not infinite reach.
         if (!Double.isFinite(distance)) return CheckResult.pass("Reach");
@@ -119,7 +141,9 @@ public final class StatisticalReachCheck {
         double allowedReach = Math.max(maxBaseReach, attribute == null ? 3.0 : attribute.getValue()) + 0.03;
         double lagTolerance = 1.0; // Latency selects historical frames; it does not multiply legal range.
         long now = System.nanoTime();
-        if (distance <= allowedReach) {
+        // Evidence needs BOTH: the aim ray reaches the box beyond the allowed range AND the nearest point of the box is
+        // beyond it too (minus 0.15). A ray that grazes a far corner while the box itself is within range is aim noise.
+        if (distance <= allowedReach || nearestPoint <= allowedReach - 0.15) {
             if (attackerData != null) attackerData.reachEvidence().relieve(0.25, now, 4000);
             return CheckResult.pass("Reach");
         }
