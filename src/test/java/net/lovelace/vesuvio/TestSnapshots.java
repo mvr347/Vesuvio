@@ -57,6 +57,8 @@ public final class TestSnapshots {
         private boolean inWater = false;
         private boolean containerOpen = false;
         private String openInventoryType = "CRAFTING";
+        private double x = 0, y = 64, z = 0;
+        Builder position(double x, double y, double z) { this.x = x; this.y = y; this.z = z; return this; }
         private double stepHeight = 0.6;
         private boolean nearLiquid = false;
         private boolean nearStuck = false;
@@ -78,7 +80,7 @@ public final class TestSnapshots {
         public EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
                     System.currentTimeMillis(), true,
-                    0, 64, 0,
+                    x, y, z,
                     // exemptGameMode, allowFlight, flying, gliding, insideVehicle
                     false, false, false, gliding, false,
                     sprinting,

@@ -989,7 +989,8 @@ public final class CheckPipeline {
 
         // 6. InvMove check
         if (config.isInvMoveEnabled()) {
-            CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY);
+            CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY,
+                    transactionManager != null ? transactionManager.getTransactionPing(player.getUniqueId()) : -1.0);
             if (invMoveResult.isFlag()) {
                 report(player, data, invMoveResult, invMoveResult.vl(), invMoveResult.confidence() * 8.0);
             }

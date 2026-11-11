@@ -859,6 +859,43 @@ public final class UserData {
     public void setContainerOpenSinceMillis(long millis) { this.containerOpenSinceMillis = millis; }
 
     private volatile int phaseTicks = 0;
+    // Phase "buried" state: the player found themselves inside a block without having walked into it (a block appeared on
+    // them, a teleport, a reset of a mine), which is not phasing until they have left the block again.
+    private boolean phaseWasInside;
+    private boolean phaseBuried;
+    private boolean phaseHasPrevBlock;
+    private int phasePrevX, phasePrevY, phasePrevZ;
+    /**
+     * Records this tick's block cell and inside state and returns whether the player is "buried": entered a block without
+     * changing block coordinates, right after a teleport, or inside the window of a nearby block change.
+     */
+    public synchronized boolean updatePhaseEntry(boolean inside, int bx, int by, int bz, boolean suspiciousEntry) {
+        boolean sameCell = phaseHasPrevBlock && phasePrevX == bx && phasePrevY == by && phasePrevZ == bz;
+        phaseHasPrevBlock = true;
+        phasePrevX = bx;
+        phasePrevY = by;
+        phasePrevZ = bz;
+        if (!inside) {
+            phaseWasInside = false;
+            phaseBuried = false;
+            return false;
+        }
+        if (!phaseWasInside) {
+            phaseWasInside = true;
+            phaseBuried = sameCell || suspiciousEntry;
+        }
+        return phaseBuried;
+    }
+    public synchronized void resetPhaseEntry() {
+        phaseWasInside = false;
+        phaseBuried = false;
+        phaseHasPrevBlock = false;
+    }
+
+    private volatile double invMovePrevHorizontal = 0.0;
+    public double getInvMovePrevHorizontal() { return invMovePrevHorizontal; }
+    public void setInvMovePrevHorizontal(double v) { this.invMovePrevHorizontal = v; }
+
     public int getPhaseTicks() { return phaseTicks; }
     public void incrementPhaseTicks() { this.phaseTicks++; }
     public void decrementPhaseTicks() { this.phaseTicks = Math.max(0, this.phaseTicks - 1); }
@@ -1157,6 +1194,7 @@ public final class UserData {
         resetStepStreak(); stepEvidence.reset();
         resetInvMoveStreak();
         resetPhaseTicks();
+        resetPhaseEntry();
         phaseEvidence.reset();
         invMoveEvidence.reset();
         resetTimerBalance();

@@ -28,6 +28,13 @@ public final class InvMoveCheck {
     private static final long OPEN_GRACE_MS = 400L;
 
     public CheckResult check(UserData data, double deltaX, double deltaZ, double deltaY) {
+        return check(data, deltaX, deltaZ, deltaY, -1.0);
+    }
+
+    /**
+     * @param rttMs transaction round-trip time (never {@code Player#getPing()}, which a client can spoof), or negative if unknown
+     */
+    public CheckResult check(UserData data, double deltaX, double deltaZ, double deltaY, double rttMs) {
         if (data == null) return CheckResult.pass("InvMove");
 
         long nowMillis = System.currentTimeMillis();
@@ -41,8 +48,12 @@ public final class InvMoveCheck {
             return CheckResult.pass("InvMove");
         }
 
-        if (!env.containerOpen()) {
+        // The server applies a close at once but the snapshot is a tick old; the CLOSE_WINDOW packet / InventoryCloseEvent mark
+        // it the moment it happens.
+        boolean closedAfterSnapshot = data.containerClosedAfter(env.captureMillis());
+        if (!env.containerOpen() || closedAfterSnapshot) {
             data.setContainerOpenSinceMillis(0L);
+            data.setInvMovePrevHorizontal(Math.hypot(deltaX, deltaZ));
             data.getInvMoveEvidence().reset();
             return CheckResult.pass("InvMove");
         }
@@ -52,7 +63,12 @@ public final class InvMoveCheck {
             data.setContainerOpenSinceMillis(nowMillis);
             return CheckResult.pass("InvMove");
         }
-        if (nowMillis - openSince < OPEN_GRACE_MS) {
+        if (env.containerOpenSinceMillis() != 0L) openSince = Math.min(openSince, env.containerOpenSinceMillis());
+        // The jump or sprint that began before the menu opened keeps going for the time it takes the client to learn it
+        // opened: grace of at least 400 ms, longer for a high round-trip time.
+        double graceMs = Math.max(OPEN_GRACE_MS, 2.0 * Math.max(0.0, rttMs) + 150.0);
+        if (nowMillis - openSince < graceMs) {
+            data.setInvMovePrevHorizontal(Math.hypot(deltaX, deltaZ));
             return CheckResult.pass("InvMove");
         }
 
@@ -66,6 +82,15 @@ public final class InvMoveCheck {
         // after the client has already stopped.
         double horizontalSq = deltaX * deltaX + deltaZ * deltaZ;
         long nowNanos = System.nanoTime();
+        // Evidence only when the speed is NOT falling: leftover inertia decays every tick (ground friction 0.546, air 0.91),
+        // while a player who is steering keeps it up. Falling speed counts as nothing in either direction.
+        double horizontal = Math.sqrt(horizontalSq);
+        double previousHorizontal = data.getInvMovePrevHorizontal();
+        data.setInvMovePrevHorizontal(horizontal);
+        boolean slowing = horizontal < previousHorizontal * 0.97;
+        if (horizontalSq > 0.04 && slowing) {
+            return CheckResult.pass("InvMove");
+        }
         if (horizontalSq > 0.04) {
             double score = data.getInvMoveEvidence().reward(1.0, nowNanos, HALF_LIFE_MS);
             if (score >= REQUIRED_SCORE && data.getInvMoveEvidence().events() >= REQUIRED_EVENTS) {

@@ -78,13 +78,19 @@ public final class PhaseCheck {
             return CheckResult.pass("Phase");
         }
 
+        boolean blockChangedRecently = nowMillis - data.getLastNearbyBlockChangeMillis() < BLOCK_CHANGE_GRACE_MS;
+        boolean buried = data.updatePhaseEntry(env.insideSolidBlock(),
+                (int) Math.floor(env.x()), (int) Math.floor(env.y()), (int) Math.floor(env.z()),
+                blockChangedRecently || data.hasRecentTeleport());
         if (!env.insideSolidBlock()) {
             data.getPhaseEvidence().reset();
             return CheckResult.pass("Phase");
         }
 
         // A block changed near the player a moment ago: the "inside" reading may come from a scan taken before the change.
-        if (nowMillis - data.getLastNearbyBlockChangeMillis() < BLOCK_CHANGE_GRACE_MS) {
+        // "Buried" (2026-11-11): a block that appeared on the player without any change of their block cell, a teleport, a reset
+        // of a mine, WorldEdit. That is not phasing - evidence does not accumulate until they have left the block.
+        if (blockChangedRecently || buried) {
             data.getPhaseEvidence().reset();
             return CheckResult.pass("Phase");
         }
