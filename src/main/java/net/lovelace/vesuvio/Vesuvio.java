@@ -28,6 +28,39 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.logging.Level;
+import java.io.InputStream;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import net.lovelace.vesuvio.check.movement.BlinkCheck;
+import net.lovelace.vesuvio.check.onnx.ModelAutoTrainer;
+import net.lovelace.vesuvio.config.PresetManager;
+import net.lovelace.vesuvio.data.UserData;
+import net.lovelace.vesuvio.diagnostics.DiagnosticService;
+import net.lovelace.vesuvio.engine.AimTrackingService;
+import net.lovelace.vesuvio.engine.EnvironmentSnapshotService;
+import net.lovelace.vesuvio.engine.HitboxHistoryTracker;
+import net.lovelace.vesuvio.engine.LagCompensator;
+import net.lovelace.vesuvio.engine.ManagedExecutor;
+import net.lovelace.vesuvio.engine.NpcTrapManager;
+import net.lovelace.vesuvio.engine.ServerHitch;
+import net.lovelace.vesuvio.engine.StateJanitor;
+import net.lovelace.vesuvio.engine.TpsCache;
+import net.lovelace.vesuvio.engine.TransactionManager;
+import net.lovelace.vesuvio.evasion.BanEvasionManager;
+import net.lovelace.vesuvio.integration.hunt.LoveHuntHook;
+import net.lovelace.vesuvio.integration.papi.VesuvioExpansion;
+import net.lovelace.vesuvio.listener.PhysicsExemptionListener;
+import net.lovelace.vesuvio.listener.WorldInteractionListener;
+import net.lovelace.vesuvio.packet.ClientWorldPacketListener;
+import net.lovelace.vesuvio.packet.MovementPacketListener;
+import net.lovelace.vesuvio.packet.TransactionPacketListener;
+import net.lovelace.vesuvio.punishment.PunishmentWaveManager;
+import net.lovelace.vesuvio.staff.DebugOverlayManager;
+import net.lovelace.vesuvio.staff.DiscordWebhookService;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.ServicePriority;
 
 /**
  * Vesuvio 26.2 AntiCheat
@@ -40,23 +73,31 @@ public final class Vesuvio extends JavaPlugin {
     private ConfigManager configManager;
     private DatabaseManager databaseManager;
     private UserDataManager userDataManager;
-    private net.lovelace.vesuvio.engine.TransactionManager transactionManager;
-    private net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService;
+    private TransactionManager transactionManager;
+    private EnvironmentSnapshotService environmentSnapshotService;
     private LoveEssentialHook loveEssentialHook;
-    private net.lovelace.vesuvio.engine.AimTrackingService aimTrackingService;
+    private AimTrackingService aimTrackingService;
     private MLManager mlManager;
     private SelfLearningManager selfLearningManager;
-    private net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
+    private ModelAutoTrainer modelAutoTrainer;
     private SmartAlertService alertService;
     private SpectateManager spectateManager;
-    private net.lovelace.vesuvio.staff.DiscordWebhookService discordWebhookService;
-    private net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
-    private net.lovelace.vesuvio.config.PresetManager presetManager;
+    private DiscordWebhookService discordWebhookService;
+    private DebugOverlayManager debugOverlayManager;
+    private PresetManager presetManager;
     private CheckPipeline checkPipeline;
-    private net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics;
+    private DiagnosticService diagnostics;
     private ExecutorService virtualExecutor;
-    private net.lovelace.vesuvio.integration.hunt.LoveHuntHook loveHuntHook;
-    private net.lovelace.vesuvio.integration.papi.VesuvioExpansion papiExpansion;
+    private LoveHuntHook loveHuntHook;
+    private VesuvioExpansion papiExpansion;
+    private LagCompensator lagCompensator;
+    private PunishmentWaveManager waveManager;
+    private HitboxHistoryTracker hitboxTracker;
+    private BanEvasionManager banEvasionManager;
+    private NpcTrapManager npcTrapManager;
+    private ClientWorldPacketListener clientWorldListener;
+    private WorldInteractionListener worldInteractionListener;
+    private BrandPacketListener brandListener;
 
     @Override
     public void onLoad() {
@@ -82,9 +123,23 @@ public final class Vesuvio extends JavaPlugin {
         // 1. PacketEvents initialization
         PacketEvents.getAPI().init();
 
+        initStorage();
+        initDetection();
+        registerListeners();
+        registerCommandsAndIntegrations();
+        startTasks();
+
+        long elapsed = System.currentTimeMillis() - startMs;
+        getLogger().info(String.format("Vesuvio 26.2 (автор: Lovelace) запущен за %d мс. Трёхуровневая система проверок активна.", elapsed));
+        getLogger().info("[Диагностика] Пороги проверки задержки движения: "
+                + BlinkCheck.fromConfig(configManager).describeThresholds());
+    }
+
+    /** Configuration, worker pool, presets, database and the per-player data registry. */
+    private void initStorage() {
         ClassLoader pluginClassLoader = getClass().getClassLoader();
         this.configManager = new ConfigManager(this);
-        this.virtualExecutor = new net.lovelace.vesuvio.engine.ManagedExecutor(
+        this.virtualExecutor = new ManagedExecutor(
                 "Vesuvio-Worker-", configManager.useVirtualThreads(), configManager.getWorkerCapacity(),
                 Math.max(2, Runtime.getRuntime().availableProcessors()), pluginClassLoader);
 
@@ -99,10 +154,13 @@ public final class Vesuvio extends JavaPlugin {
         } catch (ClassNotFoundException ignored) {}
 
         // 3. Configuration & Database
-        this.presetManager = new net.lovelace.vesuvio.config.PresetManager(this, configManager);
+        this.presetManager = new PresetManager(this, configManager);
         this.databaseManager = new DatabaseManager(configManager, getDataFolder().toPath());
         this.userDataManager = new UserDataManager();
+    }
 
+    /** ML models, self-learning, staff services, latency and snapshot services, and the check pipeline. */
+    private void initDetection() {
         // 4. ML Manager & Model Registration
         this.mlManager = new MLManager(configManager.useVirtualThreads(), configManager.getInferenceParallelism());
         initModels();
@@ -114,7 +172,7 @@ public final class Vesuvio extends JavaPlugin {
         // 5b. Fully-automatic ONNX retraining from the live dataset (see ModelAutoTrainer).
         // Extracted/started after models are registered below so it can hot-reload into an
         // MLManager that already knows about click_model/aim_model.
-        this.modelAutoTrainer = new net.lovelace.vesuvio.check.onnx.ModelAutoTrainer(
+        this.modelAutoTrainer = new ModelAutoTrainer(
                 configManager,
                 selfLearningManager.getDatasetManager(),
                 mlManager,
@@ -125,13 +183,13 @@ public final class Vesuvio extends JavaPlugin {
         // 6. Staff Services, Live Overlay & Spartan Enhancements
         this.alertService = new SmartAlertService(configManager);
         this.spectateManager = new SpectateManager(userDataManager);
-        this.debugOverlayManager = new net.lovelace.vesuvio.staff.DebugOverlayManager(userDataManager);
+        this.debugOverlayManager = new DebugOverlayManager(userDataManager);
         // Transaction-based latency: the unspoofable ping source every check's lag tolerance is
         // scaled by, and the acknowledgement clock the Velocity check waits on.
-        this.transactionManager = new net.lovelace.vesuvio.engine.TransactionManager();
+        this.transactionManager = new TransactionManager();
         // Main-thread world/player snapshots, so the movement checks running on virtual threads
         // never touch the Bukkit API themselves.
-        this.environmentSnapshotService = new net.lovelace.vesuvio.engine.EnvironmentSnapshotService(userDataManager);
+        this.environmentSnapshotService = new EnvironmentSnapshotService(userDataManager);
         // Per-tick target-relative aim capture, feeding StrafeReversalCheck.
         this.loveEssentialHook =
                 new LoveEssentialHook(
@@ -139,18 +197,17 @@ public final class Vesuvio extends JavaPlugin {
         loveEssentialHook.start();
         environmentSnapshotService.mechanics(loveEssentialHook);
         // Per-tick target-relative aim capture, feeding StrafeReversalCheck.
-        this.aimTrackingService = new net.lovelace.vesuvio.engine.AimTrackingService(userDataManager);
-        var lagCompensator = new net.lovelace.vesuvio.engine.LagCompensator(configManager, transactionManager);
-        var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
+        this.aimTrackingService = new AimTrackingService(userDataManager);
+        this.lagCompensator = new LagCompensator(configManager, transactionManager);
+        this.waveManager = new PunishmentWaveManager(this, configManager, databaseManager);
         waveManager.start();
-        var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
-        this.discordWebhookService = discordService;
-        var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
+        this.discordWebhookService = new DiscordWebhookService(configManager, virtualExecutor);
+        this.hitboxTracker = new HitboxHistoryTracker();
         loveEssentialHook.invalidateGeometry(hitboxTracker::remove);
-        var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
-        var npcTrapManager = new net.lovelace.vesuvio.engine.NpcTrapManager(this, configManager);
+        this.banEvasionManager = new BanEvasionManager(databaseManager);
+        this.npcTrapManager = new NpcTrapManager(this, configManager);
 
-        this.diagnostics = new net.lovelace.vesuvio.diagnostics.DiagnosticService(this, configManager, userDataManager, transactionManager);
+        this.diagnostics = new DiagnosticService(this, configManager, userDataManager, transactionManager);
 
         // 7. Check Pipeline
         this.checkPipeline = new CheckPipeline(
@@ -162,7 +219,7 @@ public final class Vesuvio extends JavaPlugin {
                 databaseManager,
                 lagCompensator,
                 waveManager,
-                discordService,
+                discordWebhookService,
                 hitboxTracker,
                 banEvasionManager,
                 transactionManager,
@@ -176,9 +233,12 @@ public final class Vesuvio extends JavaPlugin {
         // skips the mirror when no candidate is loaded, which is the case unless shadow mode is on
         // and a retrain has produced one.
         this.checkPipeline.setShadowEvaluator(modelAutoTrainer.getShadowEvaluator());
+    }
 
+    /** PacketEvents and Bukkit listeners. */
+    private void registerListeners() {
         // 8. Register Packet Listeners
-        BrandPacketListener brandListener = new BrandPacketListener(userDataManager, configManager);
+        this.brandListener = new BrandPacketListener(userDataManager, configManager);
         PacketEvents.getAPI().getEventManager().registerListener(
                 new ClickPacketListener(userDataManager, checkPipeline, virtualExecutor)
         );
@@ -186,17 +246,17 @@ public final class Vesuvio extends JavaPlugin {
                 new AimPacketListener(userDataManager, checkPipeline, virtualExecutor)
         );
         PacketEvents.getAPI().getEventManager().registerListener(
-                new net.lovelace.vesuvio.packet.MovementPacketListener(userDataManager, checkPipeline, virtualExecutor)
+                new MovementPacketListener(userDataManager, checkPipeline, virtualExecutor)
         );
         PacketEvents.getAPI().getEventManager().registerListener(
-                new net.lovelace.vesuvio.packet.TransactionPacketListener(userDataManager, transactionManager, configManager)
+                new TransactionPacketListener(userDataManager, transactionManager, configManager)
         );
         PacketEvents.getAPI().getEventManager().registerListener(brandListener);
-        var clientWorldListener = new net.lovelace.vesuvio.packet.ClientWorldPacketListener(userDataManager, configManager);
+        this.clientWorldListener = new ClientWorldPacketListener(userDataManager, configManager);
         PacketEvents.getAPI().getEventManager().registerListener(clientWorldListener);
 
         // 9. Register Bukkit Events
-        var worldInteractionListener = new net.lovelace.vesuvio.listener.WorldInteractionListener(userDataManager, checkPipeline, configManager);
+        this.worldInteractionListener = new WorldInteractionListener(userDataManager, checkPipeline, configManager);
         Bukkit.getPluginManager().registerEvents(
                 new PlayerLifecycleListener(userDataManager, databaseManager, spectateManager, brandListener, lagCompensator, hitboxTracker, transactionManager, environmentSnapshotService, worldInteractionListener, selfLearningManager, banEvasionManager, checkPipeline, configManager, virtualExecutor),
                 this
@@ -212,10 +272,13 @@ public final class Vesuvio extends JavaPlugin {
                 });
         Bukkit.getPluginManager().registerEvents(environmentSnapshotService, this);
         Bukkit.getPluginManager().registerEvents(
-                new net.lovelace.vesuvio.listener.PhysicsExemptionListener(userDataManager, configManager),
+                new PhysicsExemptionListener(userDataManager, configManager),
                 this
         );
+    }
 
+    /** The /vesuvio command, the public API and optional integrations. */
+    private void registerCommandsAndIntegrations() {
         // 10. Register Commands
         VesuvioCommand cmdExecutor = new VesuvioCommand(
                 this,
@@ -239,7 +302,7 @@ public final class Vesuvio extends JavaPlugin {
         }
 
         // 11. Register Integrations & Public Java API
-        this.loveHuntHook = new net.lovelace.vesuvio.integration.hunt.LoveHuntHook(this);
+        this.loveHuntHook = new LoveHuntHook(this);
         waveManager.setLoveHuntHook(loveHuntHook);
 
         VesuvioAPIImpl apiImpl = new VesuvioAPIImpl(userDataManager, waveManager, configManager.getHighRiskThreshold(),
@@ -247,35 +310,34 @@ public final class Vesuvio extends JavaPlugin {
         apiImpl.configureManagement(virtualExecutor,getDataFolder().toPath().resolve("models"));
         VesuvioProvider.register(apiImpl);
         try {
-            getServer().getServicesManager().register(VesuvioAPI.class, apiImpl, this, org.bukkit.plugin.ServicePriority.Normal);
+            getServer().getServicesManager().register(VesuvioAPI.class, apiImpl, this, ServicePriority.Normal);
         } catch (Throwable ignored) {}
 
         if (Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI")) {
-            this.papiExpansion = new net.lovelace.vesuvio.integration.papi.VesuvioExpansion(this);
+            this.papiExpansion = new VesuvioExpansion(this);
             papiExpansion.register();
             getLogger().info("Подключена интеграция с PlaceholderAPI (VesuvioExpansion зарегистрирован).");
         }
+    }
 
+    /** Every scheduler: janitor, per-tick capture, decay, waves, dataset collection, retraining. */
+    private void startTasks() {
         // State janitor (every 30 s, main thread): per-player state of everybody who is offline is dropped. See StateJanitor.
-        final var janitorLag = lagCompensator;
-        final var janitorHitbox = hitboxTracker;
-        final var janitorTraps = npcTrapManager;
-        final var janitorWorld = worldInteractionListener;
-        final var janitor = new net.lovelace.vesuvio.engine.StateJanitor(
+        final var janitor = new StateJanitor(
                 () -> {
-                    java.util.Set<java.util.UUID> ids = new java.util.HashSet<>();
-                    for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) ids.add(p.getUniqueId());
+                    Set<UUID> ids = new HashSet<>();
+                    for (Player p : Bukkit.getOnlinePlayers()) ids.add(p.getUniqueId());
                     return ids;
                 },
-                java.util.List.of(
+                List.of(
                         userDataManager::retainOnline,
-                        janitorLag::retainOnline,
+                        lagCompensator::retainOnline,
                         transactionManager::retainOnline,
-                        janitorHitbox::retainOnline,
+                        hitboxTracker::retainOnline,
                         environmentSnapshotService::retainOnline,
-                        janitorWorld::retainOnline,
+                        worldInteractionListener::retainOnline,
                         aimTrackingService::retainOnline,
-                        janitorTraps::retainOnline,
+                        npcTrapManager::retainOnline,
                         ids -> { if (selfLearningManager != null) selfLearningManager.getAutoDatasetCollector().retainOnline(ids); }));
         Bukkit.getScheduler().runTaskTimer(this, janitor, 600L, 600L);
 
@@ -288,12 +350,12 @@ public final class Vesuvio extends JavaPlugin {
         // measure latency against.
         Bukkit.getScheduler().runTaskTimer(this, () -> {
             try {
-                net.lovelace.vesuvio.engine.TpsCache.update(Bukkit.getTPS());
+                TpsCache.update(Bukkit.getTPS());
             } catch (Throwable ignored) {}
-            net.lovelace.vesuvio.engine.ServerHitch.tick(System.currentTimeMillis());
+            ServerHitch.tick(System.currentTimeMillis());
             environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers(), configManager.isAnticheatEnabled());
             if (configManager.isAnticheatEnabled()) aimTrackingService.tick(Bukkit.getOnlinePlayers());
-            for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
+            for (Player online : Bukkit.getOnlinePlayers()) {
                 transactionManager.tick(online);
                 clientWorldListener.tick(online);
             }
@@ -331,11 +393,6 @@ public final class Vesuvio extends JavaPlugin {
         // Schedulers: fully-automatic ONNX retraining (extracts the bundled Python script and,
         // if enabled, schedules the periodic retrain cycle - see ModelAutoTrainer).
         modelAutoTrainer.start();
-
-        long elapsed = System.currentTimeMillis() - startMs;
-        getLogger().info(String.format("Vesuvio 26.2 (автор: Lovelace) запущен за %d мс. Трёхуровневая система проверок активна.", elapsed));
-        getLogger().info("[Диагностика] Пороги проверки задержки движения: "
-                + net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(configManager).describeThresholds());
     }
 
     private void initModels() {
@@ -382,7 +439,7 @@ public final class Vesuvio extends JavaPlugin {
     private void extractModelResource(String modelName, Path modelsDir) {
         Path target = modelsDir.resolve(modelName);
         if (!Files.exists(target)) {
-            try (java.io.InputStream in = getResource("models/" + modelName)) {
+            try (InputStream in = getResource("models/" + modelName)) {
                 if (in != null) {
                     Files.copy(in, target);
                     getLogger().info("Извлечена предобученная модель ONNX: " + modelName);
@@ -428,7 +485,7 @@ public final class Vesuvio extends JavaPlugin {
         // everyone synchronously while the pool is still open. Stopping the executor below also
         // drains any async quit saves already queued.
         if (databaseManager != null && userDataManager != null) {
-            for (net.lovelace.vesuvio.data.UserData u : userDataManager.getAllUsers()) {
+            for (UserData u : userDataManager.getAllUsers()) {
                 try {
                     databaseManager.savePlayerSync(u.getUuid(), u.getUsername(), u.getTrustScore(),
                             u.getRiskIndex(), u.getClientBrand(), u.isManualSuspect());
@@ -439,7 +496,7 @@ public final class Vesuvio extends JavaPlugin {
         }
 
         // Drain workers before closing the resources they use.
-        net.lovelace.vesuvio.engine.ManagedExecutor.stop(virtualExecutor);
+        ManagedExecutor.stop(virtualExecutor);
         if (mlManager != null) mlManager.stopTasks();
         if (diagnostics != null) diagnostics.close();
 
@@ -474,7 +531,7 @@ public final class Vesuvio extends JavaPlugin {
         getLogger().info("Vesuvio 26.2 остановлен.");
     }
 
-    public net.lovelace.vesuvio.config.PresetManager getPresetManager() {
+    public PresetManager getPresetManager() {
         return presetManager;
     }
 }

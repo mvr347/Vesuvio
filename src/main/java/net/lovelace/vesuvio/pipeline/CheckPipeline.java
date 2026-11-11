@@ -30,6 +30,49 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Logger;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.logging.Level;
+import net.lovelace.vesuvio.check.combat.AutoCriticalsCheck;
+import net.lovelace.vesuvio.check.combat.BackTrackCheck;
+import net.lovelace.vesuvio.check.combat.MoveDirectionCheck;
+import net.lovelace.vesuvio.check.movement.BlinkCheck;
+import net.lovelace.vesuvio.check.movement.ElytraCheck;
+import net.lovelace.vesuvio.check.movement.FlyCheck;
+import net.lovelace.vesuvio.check.movement.InvMoveCheck;
+import net.lovelace.vesuvio.check.movement.NoFallCheck;
+import net.lovelace.vesuvio.check.movement.PhaseCheck;
+import net.lovelace.vesuvio.check.movement.SpeedCheck;
+import net.lovelace.vesuvio.check.movement.StepUpCheck;
+import net.lovelace.vesuvio.check.movement.TimerCheck;
+import net.lovelace.vesuvio.check.movement.VelocityCheck;
+import net.lovelace.vesuvio.check.onnx.ShadowEvaluator;
+import net.lovelace.vesuvio.check.protocol.BadPacketsCheck;
+import net.lovelace.vesuvio.check.statistical.BaritoneCheck;
+import net.lovelace.vesuvio.check.statistical.GCDAimCheck;
+import net.lovelace.vesuvio.check.statistical.KillauraAngleCheck;
+import net.lovelace.vesuvio.check.statistical.SnapAimCheck;
+import net.lovelace.vesuvio.check.statistical.StatisticalReachCheck;
+import net.lovelace.vesuvio.check.statistical.StrafeReversalCheck;
+import net.lovelace.vesuvio.data.AimTrackingBuffer;
+import net.lovelace.vesuvio.diagnostics.DiagnosticService;
+import net.lovelace.vesuvio.engine.AimTrackingService;
+import net.lovelace.vesuvio.engine.AsyncTasks;
+import net.lovelace.vesuvio.engine.AttackSnapshot;
+import net.lovelace.vesuvio.engine.HitboxHistoryTracker;
+import net.lovelace.vesuvio.engine.LagCompensator;
+import net.lovelace.vesuvio.engine.NpcTrapManager;
+import net.lovelace.vesuvio.engine.TransactionManager;
+import net.lovelace.vesuvio.evasion.BanEvasionManager;
+import net.lovelace.vesuvio.i18n.Russian;
+import net.lovelace.vesuvio.packet.AimPacketListener;
+import net.lovelace.vesuvio.punishment.PunishmentService;
+import net.lovelace.vesuvio.punishment.PunishmentWaveManager;
+import net.lovelace.vesuvio.staff.DiscordWebhookService;
+import net.lovelace.vesuvio.storage.ViolationRecord;
+import org.bukkit.entity.Entity;
 
 /**
  * 5.1 Check Pipeline with Prioritized Multi-Layer Execution.
@@ -45,46 +88,46 @@ public final class CheckPipeline {
     private final Plugin plugin;
     private final ConfigManager config;
     private final MLManager mlManager;
-    private volatile net.lovelace.vesuvio.check.onnx.ShadowEvaluator shadowEvaluator;
+    private volatile ShadowEvaluator shadowEvaluator;
     private final SelfLearningManager selfLearning;
     private final SmartAlertService alertService;
     private final DatabaseManager databaseManager;
-    private final net.lovelace.vesuvio.engine.LagCompensator lagCompensator;
-    private final net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager;
-    private final net.lovelace.vesuvio.staff.DiscordWebhookService discordService;
-    private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
-    private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
-    private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
-    private final net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager;
-    private final net.lovelace.vesuvio.punishment.PunishmentService punishmentService;
+    private final LagCompensator lagCompensator;
+    private final PunishmentWaveManager waveManager;
+    private final DiscordWebhookService discordService;
+    private final HitboxHistoryTracker hitboxTracker;
+    private final BanEvasionManager banEvasionManager;
+    private final TransactionManager transactionManager;
+    private final NpcTrapManager npcTrapManager;
+    private final PunishmentService punishmentService;
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
     private final StatisticalAimCheck aimCheck = new StatisticalAimCheck();
     private final TemporalConsistencyCheck temporalCheck = new TemporalConsistencyCheck();
-    private final net.lovelace.vesuvio.check.statistical.GCDAimCheck gcdAimCheck = new net.lovelace.vesuvio.check.statistical.GCDAimCheck();
-    private final net.lovelace.vesuvio.check.protocol.BadPacketsCheck badPacketsCheck = new net.lovelace.vesuvio.check.protocol.BadPacketsCheck();
-    private final net.lovelace.vesuvio.check.statistical.StatisticalReachCheck reachCheck;
-    private final net.lovelace.vesuvio.check.movement.FlyCheck flyCheck = new net.lovelace.vesuvio.check.movement.FlyCheck();
-    private final net.lovelace.vesuvio.check.movement.SpeedCheck speedCheck = new net.lovelace.vesuvio.check.movement.SpeedCheck();
-    private final net.lovelace.vesuvio.check.movement.NoFallCheck noFallCheck = new net.lovelace.vesuvio.check.movement.NoFallCheck();
-    private final net.lovelace.vesuvio.check.movement.TimerCheck timerCheck = new net.lovelace.vesuvio.check.movement.TimerCheck();
-    private final net.lovelace.vesuvio.check.movement.VelocityCheck velocityCheck = new net.lovelace.vesuvio.check.movement.VelocityCheck();
-    private final net.lovelace.vesuvio.check.movement.PhaseCheck phaseCheck = new net.lovelace.vesuvio.check.movement.PhaseCheck();
-    private final net.lovelace.vesuvio.check.movement.BlinkCheck blinkCheck;
-    private final net.lovelace.vesuvio.check.movement.ElytraCheck elytraCheck = new net.lovelace.vesuvio.check.movement.ElytraCheck();
-    private final net.lovelace.vesuvio.check.statistical.KillauraAngleCheck angleCheck;
-    private final net.lovelace.vesuvio.check.statistical.SnapAimCheck snapAimCheck;
-    private final net.lovelace.vesuvio.check.statistical.StrafeReversalCheck strafeReversalCheck;
-    private net.lovelace.vesuvio.engine.AimTrackingService aimTrackingService;
-    private final net.lovelace.vesuvio.check.movement.StepUpCheck stepUpCheck = new net.lovelace.vesuvio.check.movement.StepUpCheck();
-    private final net.lovelace.vesuvio.check.movement.InvMoveCheck invMoveCheck = new net.lovelace.vesuvio.check.movement.InvMoveCheck();
-    private final net.lovelace.vesuvio.check.combat.AutoCriticalsCheck autoCriticalsCheck = new net.lovelace.vesuvio.check.combat.AutoCriticalsCheck();
-    private final net.lovelace.vesuvio.check.combat.BackTrackCheck backTrackCheck = new net.lovelace.vesuvio.check.combat.BackTrackCheck();
-    private final net.lovelace.vesuvio.check.combat.MoveDirectionCheck moveDirectionCheck = new net.lovelace.vesuvio.check.combat.MoveDirectionCheck();
-    private final net.lovelace.vesuvio.check.statistical.BaritoneCheck baritoneCheck = new net.lovelace.vesuvio.check.statistical.BaritoneCheck();
+    private final GCDAimCheck gcdAimCheck = new GCDAimCheck();
+    private final BadPacketsCheck badPacketsCheck = new BadPacketsCheck();
+    private final StatisticalReachCheck reachCheck;
+    private final FlyCheck flyCheck = new FlyCheck();
+    private final SpeedCheck speedCheck = new SpeedCheck();
+    private final NoFallCheck noFallCheck = new NoFallCheck();
+    private final TimerCheck timerCheck = new TimerCheck();
+    private final VelocityCheck velocityCheck = new VelocityCheck();
+    private final PhaseCheck phaseCheck = new PhaseCheck();
+    private final BlinkCheck blinkCheck;
+    private final ElytraCheck elytraCheck = new ElytraCheck();
+    private final KillauraAngleCheck angleCheck;
+    private final SnapAimCheck snapAimCheck;
+    private final StrafeReversalCheck strafeReversalCheck;
+    private AimTrackingService aimTrackingService;
+    private final StepUpCheck stepUpCheck = new StepUpCheck();
+    private final InvMoveCheck invMoveCheck = new InvMoveCheck();
+    private final AutoCriticalsCheck autoCriticalsCheck = new AutoCriticalsCheck();
+    private final BackTrackCheck backTrackCheck = new BackTrackCheck();
+    private final MoveDirectionCheck moveDirectionCheck = new MoveDirectionCheck();
+    private final BaritoneCheck baritoneCheck = new BaritoneCheck();
 
-    private final java.util.concurrent.Executor backgroundExecutor;
-    private final net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics;
+    private final Executor backgroundExecutor;
+    private final DiagnosticService diagnostics;
 
     public CheckPipeline(Plugin plugin,
                          ConfigManager config,
@@ -92,15 +135,15 @@ public final class CheckPipeline {
                          SelfLearningManager selfLearning,
                          SmartAlertService alertService,
                          DatabaseManager databaseManager,
-                         net.lovelace.vesuvio.engine.LagCompensator lagCompensator,
-                         net.lovelace.vesuvio.punishment.PunishmentWaveManager waveManager,
-                         net.lovelace.vesuvio.staff.DiscordWebhookService discordService,
-                         net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
-                         net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager,
-                         net.lovelace.vesuvio.engine.TransactionManager transactionManager,
-                         net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager,
-                         java.util.concurrent.Executor backgroundExecutor,
-                         net.lovelace.vesuvio.diagnostics.DiagnosticService diagnostics) {
+                         LagCompensator lagCompensator,
+                         PunishmentWaveManager waveManager,
+                         DiscordWebhookService discordService,
+                         HitboxHistoryTracker hitboxTracker,
+                         BanEvasionManager banEvasionManager,
+                         TransactionManager transactionManager,
+                         NpcTrapManager npcTrapManager,
+                         Executor backgroundExecutor,
+                         DiagnosticService diagnostics) {
         this.diagnostics = diagnostics;
         this.backgroundExecutor = backgroundExecutor;
         this.plugin = plugin;
@@ -116,22 +159,22 @@ public final class CheckPipeline {
         this.banEvasionManager = banEvasionManager;
         this.transactionManager = transactionManager;
         this.npcTrapManager = npcTrapManager;
-        this.punishmentService = new net.lovelace.vesuvio.punishment.PunishmentService(plugin, config, databaseManager, waveManager,
+        this.punishmentService = new PunishmentService(plugin, config, databaseManager, waveManager,
                 selfLearning, banEvasionManager);
-        this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach(), transactionManager);
-        this.blinkCheck = net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(config);
-        this.angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck(config, hitboxTracker, transactionManager);
-        this.strafeReversalCheck = new net.lovelace.vesuvio.check.statistical.StrafeReversalCheck(config);
-        this.snapAimCheck = new net.lovelace.vesuvio.check.statistical.SnapAimCheck(config);
+        this.reachCheck = new StatisticalReachCheck(config.getMaxReach(), transactionManager);
+        this.blinkCheck = BlinkCheck.fromConfig(config);
+        this.angleCheck = new KillauraAngleCheck(config, hitboxTracker, transactionManager);
+        this.strafeReversalCheck = new StrafeReversalCheck(config);
+        this.snapAimCheck = new SnapAimCheck(config);
     }
 
-    private Function<java.util.UUID, MechanicsState> targetMechanics = id -> MechanicsState.NONE;
+    private Function<UUID, MechanicsState> targetMechanics = id -> MechanicsState.NONE;
 
-    public void targetMechanics(Function<java.util.UUID, MechanicsState> resolver) {
-        targetMechanics = java.util.Objects.requireNonNull(resolver);
+    public void targetMechanics(Function<UUID, MechanicsState> resolver) {
+        targetMechanics = Objects.requireNonNull(resolver);
     }
 
-    private boolean controlledTarget(org.bukkit.entity.Entity target) {
+    private boolean controlledTarget(Entity target) {
         return target instanceof Player player
                 && targetMechanics.apply(player.getUniqueId()).hitbox(System.nanoTime());
     }
@@ -140,11 +183,11 @@ public final class CheckPipeline {
      * Wired after construction because the tracking service needs the plugin's tick scheduler,
      * which is set up later in {@code Vesuvio#onEnable} than the pipeline itself.
      */
-    public void setAimTrackingService(net.lovelace.vesuvio.engine.AimTrackingService service) {
+    public void setAimTrackingService(AimTrackingService service) {
         this.aimTrackingService = service;
     }
 
-    public net.lovelace.vesuvio.engine.AimTrackingService getAimTrackingService() {
+    public AimTrackingService getAimTrackingService() {
         return aimTrackingService;
     }
 
@@ -152,7 +195,7 @@ public final class CheckPipeline {
      * Wired after construction (same reason as the tracking service above). Null unless shadow
      * mode is in use, in which case every real inference is mirrored to the candidate model.
      */
-    public void setShadowEvaluator(net.lovelace.vesuvio.check.onnx.ShadowEvaluator evaluator) {
+    public void setShadowEvaluator(ShadowEvaluator evaluator) {
         this.shadowEvaluator = evaluator;
     }
 
@@ -168,7 +211,7 @@ public final class CheckPipeline {
         var evaluator = shadowEvaluator;
         if (evaluator == null) return;
 
-        String shadowName = modelName + net.lovelace.vesuvio.check.onnx.ShadowEvaluator.SHADOW_SUFFIX;
+        String shadowName = modelName + ShadowEvaluator.SHADOW_SUFFIX;
         if (!mlManager.isModelLoaded(shadowName)) return;
 
         double liveThreshold = mlManager.getThreshold(modelName);
@@ -184,7 +227,7 @@ public final class CheckPipeline {
      * {@link ConfigManager} directly) can gate before doing any per-packet work at all, rather
      * than dispatching to a virtual thread just to have this pipeline no-op there.
      */
-    public void submitPacketCheck(UserData data, java.util.concurrent.Executor executor, Runnable task) {
+    public void submitPacketCheck(UserData data, Executor executor, Runnable task) {
         long epoch = config.runtime().detectionEpoch();
         long reset = data.getMovementResetNanos();
         data.packetChecks().submit(executor, () -> {
@@ -199,11 +242,11 @@ public final class CheckPipeline {
     }
     public long getDetectionEpoch() { return config.runtime().detectionEpoch(); }
 
-    public net.lovelace.vesuvio.evasion.BanEvasionManager getBanEvasionManager() {
+    public BanEvasionManager getBanEvasionManager() {
         return banEvasionManager;
     }
 
-    public net.lovelace.vesuvio.engine.NpcTrapManager getNpcTrapManager() {
+    public NpcTrapManager getNpcTrapManager() {
         return npcTrapManager;
     }
 
@@ -250,7 +293,7 @@ public final class CheckPipeline {
 
         // Held so the ensemble below can be scored against THIS click's probability rather than
         // whatever the previous inference happened to leave behind - see the ensemble block.
-        java.util.concurrent.CompletableFuture<MLResult> clickMlFuture = null;
+        CompletableFuture<MLResult> clickMlFuture = null;
 
         final long detectionEpoch = config.runtime().detectionEpoch();
         final long resetEpoch = data.getMovementResetNanos();
@@ -351,7 +394,7 @@ public final class CheckPipeline {
                 && !data.isAltCheckDone() && data.getClickBuffer().getCount() >= 48) {
             data.setAltCheckDone(true);
             long[] signatureSnapshot = signature.clone();
-            net.lovelace.vesuvio.engine.AsyncTasks.run(() -> {
+            AsyncTasks.run(() -> {
                 var match = banEvasionManager.findSignatureMatch(
                         signatureSnapshot, config.getBanEvasionSignatureThreshold(), config.getBanEvasionSignatureScanLimit());
                 match.ifPresent(m -> {
@@ -370,7 +413,7 @@ public final class CheckPipeline {
                 // session - the signature snapshot it compares only gets more stable over time,
                 // not less), but a failure here would otherwise vanish silently since nothing
                 // else observes this future. Log it so an operator can see the check misfired.
-                LOGGER.log(java.util.logging.Level.WARNING,
+                LOGGER.log(Level.WARNING,
                         "[Vesuvio] Ошибка проверки обхода блокировки по стилю игры: " + player.getName(), ex);
                 return null;
             });
@@ -451,12 +494,12 @@ public final class CheckPipeline {
 
     /**
      * @param signedDeltaYaw this packet's yaw change, signed and wrapped to (-180, 180] - see
-     *                       {@link net.lovelace.vesuvio.data.AimTrackingBuffer#wrapDegrees}. The
+     *                       {@link AimTrackingBuffer#wrapDegrees}. The
      *                       3-arg overload above passes the unsigned magnitude instead, which only
-     *                       matters to {@link net.lovelace.vesuvio.check.statistical.SnapAimCheck}
+     *                       matters to {@link SnapAimCheck}
      *                       and only means that overload's caller (tests, mainly) cannot exercise
      *                       the sign-reversal half of that check - production always goes through
-     *                       {@link net.lovelace.vesuvio.packet.AimPacketListener}, which has the
+     *                       {@link AimPacketListener}, which has the
      *                       real signed value.
      */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch, float signedDeltaYaw) {
@@ -573,7 +616,7 @@ public final class CheckPipeline {
     }
 
     public void processAttack(Player player, int targetEntityId, UserData data,
-                              net.lovelace.vesuvio.engine.AttackSnapshot attack) {
+                              AttackSnapshot attack) {
         if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
                 || data.mechanics().combat(System.nanoTime())) return;
 
@@ -651,11 +694,11 @@ public final class CheckPipeline {
     }
 
     /** Main-thread half of {@link #processAttack}: everything that needs live world state. */
-    private void runAttackWorldChecks(Player player, int targetEntityId, UserData data, net.lovelace.vesuvio.engine.AttackSnapshot attack) {
+    private void runAttackWorldChecks(Player player, int targetEntityId, UserData data, AttackSnapshot attack) {
         if (!player.isOnline()) return;
 
-        org.bukkit.entity.Entity target = null;
-        for (org.bukkit.entity.Entity e : player.getNearbyEntities(7.0, 7.0, 7.0)) {
+        Entity target = null;
+        for (Entity e : player.getNearbyEntities(7.0, 7.0, 7.0)) {
             if (e.getEntityId() == targetEntityId) {
                 target = e;
                 break;
@@ -729,7 +772,7 @@ public final class CheckPipeline {
 
     /**
      * Definitive KillAura/MobAura proof: the attack packet named an entity ID that only exists as
-     * a per-player packet-level trap (see {@link net.lovelace.vesuvio.engine.NpcTrapManager}). No
+     * a per-player packet-level trap (see {@link NpcTrapManager}). No
      * further validation is meaningful here - a legitimate client cannot see or aim at this entity
      * at all, so a single hit is conclusive rather than needing the streak/confidence machinery
      * every other combat check relies on.
@@ -986,7 +1029,7 @@ public final class CheckPipeline {
      * @return whether the flag was accepted (reached handleFlag)
      */
     /** Transactional round-trip time in milliseconds (never Player#getPing()), or -1 when unknown. */
-    public double transactionRtt(java.util.UUID uuid) {
+    public double transactionRtt(UUID uuid) {
         return transactionManager != null ? transactionManager.getTransactionPing(uuid) : -1.0;
     }
 
@@ -1031,7 +1074,7 @@ public final class CheckPipeline {
                     "[FLAG] %s | проверка=%s уверенность=%.2f добавлено=%.2f -> нарушения=%.1f риск=%.1f доверие=%.1f | %s | подробности=%s",
                     player.getName(), result.checkName(), result.confidence(), result.vl(),
                     data.getVl(), data.getRiskIndex(), data.getTrustScore(),
-                    result.explanation(), net.lovelace.vesuvio.i18n.Russian.details(result.details())));
+                    result.explanation(), Russian.details(result.details())));
         }
 
         // 1-2. Staff chat and Discord: at most one alert per check and player per staff.smart-alerts.min-interval-ms. The database
@@ -1047,7 +1090,7 @@ public final class CheckPipeline {
         }
 
         // 3. Queue asynchronous database violation record
-        databaseManager.logViolationAsync(new net.lovelace.vesuvio.storage.ViolationRecord(
+        databaseManager.logViolationAsync(new ViolationRecord(
                 player.getUniqueId(),
                 player.getName(),
                 result.checkName(),
