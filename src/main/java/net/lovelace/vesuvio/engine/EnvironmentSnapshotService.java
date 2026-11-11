@@ -53,6 +53,9 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
     /** Per-player memo of the last block scan, so an unmoved player skips the world lookups. */
     private final Map<UUID, BlockCache> blockCaches = new HashMap<>();
 
+    /** Per-player "sticky" release state (see {@link StickyWindow}). Main thread only. */
+    private final Map<UUID, Sticky> sticky = new HashMap<>();
+
     private long tick = 0L;
     private net.lovelace.vesuvio.integration.essential.LoveEssentialHook mechanics;
 
@@ -95,6 +98,7 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
                 // A single misbehaving player (odd world state, a plugin-backed inventory that
                 // throws) must never take down the capture loop for everyone else.
                 blockCaches.remove(player.getUniqueId());
+                sticky.remove(player.getUniqueId());
                 UserData data = userDataManager.get(player.getUniqueId());
                 if (data != null) data.setPhysicsFrame(net.lovelace.vesuvio.engine.physics.PhysicsFrame.unknown("CAPTURE_FAILED"));
             }
@@ -103,6 +107,20 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
 
     public void remove(UUID uuid) {
         blockCaches.remove(uuid);
+        sticky.remove(uuid);
+    }
+
+    /** Drops state of players who are no longer online (see StateJanitor). */
+    public void retainOnline(java.util.Set<UUID> online) {
+        blockCaches.keySet().retainAll(online);
+        sticky.keySet().retainAll(online);
+    }
+
+    /** Closing a container is applied by the server at once; the snapshot of this tick still shows it open. */
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
+    public void onInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent event) {
+        UserData data = userDataManager.get(event.getPlayer().getUniqueId());
+        if (data != null) data.markContainerClosed();
     }
 
     // A cancelled break/place is not ignored on purpose: the cancelling plugin (claims, regeneration) often restores the block a
@@ -188,6 +206,7 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
 
     public void clear() {
         blockCaches.clear();
+        sticky.clear();
     }
 
     private EnvironmentSnapshot capture(Player player) {
@@ -238,7 +257,35 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
             // Some custom-inventory plugins throw from getOpenInventory during teardown.
         }
         // CRAFTING is the player's own always-present 2x2 view, i.e. "no container open".
-        boolean containerOpen = openType != InventoryType.CRAFTING;
+        // CREATIVE: the client keeps its own inventory screen and the server reports it as an open view, which is not a
+        // container that blocks movement or attacks.
+        boolean containerOpen = openType != InventoryType.CRAFTING && mode != GameMode.CREATIVE;
+
+        Sticky st = sticky.computeIfAbsent(player.getUniqueId(), id -> new Sticky());
+        long nowMillis = System.currentTimeMillis();
+        boolean levitation = st.levitation.update(tick, player.hasPotionEffect(PotionEffectType.LEVITATION));
+        boolean slowFalling = st.slowFalling.update(tick, player.hasPotionEffect(PotionEffectType.SLOW_FALLING));
+        boolean jumpBoost = st.jumpBoost.update(tick, player.hasPotionEffect(PotionEffectType.JUMP_BOOST));
+        // The effect is already gone on the server but the client has not learned that yet: judge it by the best it had.
+        movementSpeed = st.speed.max(tick, movementSpeed);
+        jumpStrength = st.jump.max(tick, jumpStrength);
+        boolean flightNow = player.getAllowFlight() || player.isFlying();
+        boolean recentExemption = st.flight.update(tick, flightNow)
+                | st.glide.update(tick, player.isGliding())
+                | st.vehicle.update(tick, player.isInsideVehicle());
+        if (!containerOpen) st.containerSince = 0L;
+        else if (st.containerSince == 0L) st.containerSince = nowMillis;
+
+        double stepHeight = 0.6;
+        try {
+            AttributeInstance stepAttr = player.getAttribute(Attribute.STEP_HEIGHT);
+            if (stepAttr != null) stepHeight = stepAttr.getValue();
+        } catch (Throwable ignored) {
+            // Attribute unavailable: keep the vanilla value.
+        }
+        boolean insideSolid = loc.getWorld() != null
+                && loc.getWorld().isChunkLoaded(loc.getBlockX() >> 4, loc.getBlockZ() >> 4)
+                && boxInsideSolid(loc.getWorld(), player.getBoundingBox());
 
         return new EnvironmentSnapshot(
                 System.currentTimeMillis(),
@@ -260,15 +307,15 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
                 blocks.inCobweb,
                 blocks.nearClimbable,
                 blocks.solidBelow,
-                blocks.insideSolidBlock,
+                insideSolid,
                 blocks.blockBelow,
                 blocks.blockedPosX,
                 blocks.blockedNegX,
                 blocks.blockedPosZ,
                 blocks.blockedNegZ,
-                player.hasPotionEffect(PotionEffectType.LEVITATION),
-                player.hasPotionEffect(PotionEffectType.SLOW_FALLING),
-                player.hasPotionEffect(PotionEffectType.JUMP_BOOST),
+                levitation,
+                slowFalling,
+                jumpBoost,
                 player.hasPotionEffect(PotionEffectType.BLINDNESS),
                 player.hasPotionEffect(PotionEffectType.DOLPHINS_GRACE),
                 speedAmplifier,
@@ -277,7 +324,12 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
                 movementSpeed,
                 jumpStrength,
                 containerOpen,
-                openType.name());
+                openType.name(),
+                stepHeight,
+                blocks.nearLiquid,
+                blocks.nearStuck,
+                st.containerSince,
+                recentExemption);
     }
 
     /**
@@ -345,24 +397,35 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
         // impossible positions qualify. isPassable() is checked too because a few occluding-looking
         // blocks are walkable, and a player standing in one is not clipping. See isGenuinelySolid
         // for the further special-cased materials that pass this test but still are not real walls.
-        cache.insideSolidBlock = isGenuinelySolid(feetBlock) || isGenuinelySolid(headBlock);
+        // (Since 2026-11-11 insideSolidBlock is computed per tick from the player's real hitbox in capture(), see
+        // boxInsideSolid: the feet/head block test here called soul sand and mud, which are occluding cubes only 14/16 high,
+        // "inside a block" during ordinary walking, and a crawling or swimming player in a 1-high tunnel too.)
 
         // 3x3 column around the feet: is there anything that legitimately breaks a fall, and is
         // there anything the player could legitimately be climbing or bouncing on?
         boolean solidBelow = false;
         boolean nearClimbable = false;
+        boolean nearLiquid = false;
+        boolean nearStuck = false;
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 for (int dy = -1; dy <= 2; dy++) {
-                    Material m = world.getBlockAt(bx + dx, by + dy, bz + dz).getType();
+                    org.bukkit.block.Block nb = world.getBlockAt(bx + dx, by + dy, bz + dz);
+                    Material m = nb.getType();
                     if (m == Material.AIR) continue;
                     if (dy <= 0 && breaksFall(m)) solidBelow = true;
                     if (isClimbableOrBouncy(m)) nearClimbable = true;
+                    if (isLiquidLike(m) || (m != Material.AIR && nb.getBlockData() instanceof org.bukkit.block.data.Waterlogged wl && wl.isWaterlogged())) {
+                        nearLiquid = true;
+                    }
+                    if (isStuckBlock(m)) nearStuck = true;
                 }
             }
         }
         cache.solidBelow = solidBelow;
         cache.nearClimbable = nearClimbable;
+        cache.nearLiquid = nearLiquid;
+        cache.nearStuck = nearStuck;
 
         // Immediate horizontal neighbours at feet and head height: enough to tell "player is
         // pressed against a wall on this side" from "player is in the open", which is all the
@@ -406,6 +469,39 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
         return type.isOccluding() && !block.isPassable();
     }
 
+    /**
+     * Whether the given box (a player's or a vehicle's real hitbox, pose included) overlaps the true collision shape of a
+     * genuinely solid block. Shared by Phase and VehicleClip. The box is shrunk slightly so that touching a wall or
+     * standing on a floor is not "inside"; soul sand, mud and other partial cubes are judged by their real shape.
+     */
+    public static boolean boxInsideSolid(World world, org.bukkit.util.BoundingBox box) {
+        final double eps = 1.0E-3;
+        org.bukkit.util.BoundingBox probe = new org.bukkit.util.BoundingBox(
+                box.getMinX() + eps, box.getMinY() + eps, box.getMinZ() + eps,
+                box.getMaxX() - eps, box.getMaxY() - eps, box.getMaxZ() - eps);
+        for (int x = (int) Math.floor(probe.getMinX()); x <= (int) Math.floor(probe.getMaxX()); x++) {
+            for (int y = (int) Math.floor(probe.getMinY()); y <= (int) Math.floor(probe.getMaxY()); y++) {
+                for (int z = (int) Math.floor(probe.getMinZ()); z <= (int) Math.floor(probe.getMaxZ()); z++) {
+                    org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+                    if (!isGenuinelySolid(block)) continue;
+                    // Collision shapes are block-local.
+                    org.bukkit.util.BoundingBox local = probe.clone().shift(-x, -y, -z);
+                    if (block.getCollisionShape().overlaps(local)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isLiquidLike(Material m) {
+        return m == Material.WATER || m == Material.LAVA || m == Material.KELP || m == Material.KELP_PLANT
+                || m == Material.SEAGRASS || m == Material.TALL_SEAGRASS || m == Material.BUBBLE_COLUMN;
+    }
+
+    private static boolean isStuckBlock(Material m) {
+        return m == Material.SWEET_BERRY_BUSH || m == Material.POWDER_SNOW || m == Material.COBWEB;
+    }
+
     /** Blocks that make a claimed on-ground state or a survived fall plausible. */
     private static boolean breaksFall(Material m) {
         return m.isSolid()
@@ -426,6 +522,19 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
 
     private static final UUID EMPTY_WORLD = new UUID(0L, 0L);
 
+    /** Mutable per-player release windows. Only ever touched on the main thread. */
+    private static final class Sticky {
+        final StickyWindow levitation = new StickyWindow();
+        final StickyWindow slowFalling = new StickyWindow();
+        final StickyWindow jumpBoost = new StickyWindow();
+        final StickyWindow flight = new StickyWindow();
+        final StickyWindow glide = new StickyWindow();
+        final StickyWindow vehicle = new StickyWindow();
+        final StickyWindow speed = new StickyWindow();
+        final StickyWindow jump = new StickyWindow();
+        long containerSince;
+    }
+
     /** Mutable holder for the memoised block scan. Only ever touched on the main thread. */
     private static final class BlockCache {
         long tick;
@@ -434,7 +543,8 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
         boolean solidBelow = true;
         boolean nearClimbable;
         boolean inCobweb;
-        boolean insideSolidBlock;
+        boolean nearLiquid;
+        boolean nearStuck;
         Material blockBelow = Material.AIR;
         boolean blockedPosX;
         boolean blockedNegX;

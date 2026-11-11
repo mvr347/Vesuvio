@@ -598,6 +598,14 @@ public final class UserData {
     public void setTimerWindowStartNanos(long nanos) { this.timerWindowStartNanos = nanos; }
 
     public long getLastVelocityMillis() { return lastVelocityMillis; }
+    // A container (chest, furnace, ...) was closed. The close arrives as a packet and as an event, both before the server
+    // snapshot of the next tick shows it, so the checks that read the snapshot consult this timestamp too.
+    private volatile long lastContainerClosedMillis = 0L;
+    public void markContainerClosed() { this.lastContainerClosedMillis = System.currentTimeMillis(); }
+    public long getLastContainerClosedMillis() { return lastContainerClosedMillis; }
+    /** True when a close happened after {@code sinceMillis} (typically the snapshot capture time). */
+    public boolean containerClosedAfter(long sinceMillis) { return lastContainerClosedMillis >= sinceMillis && lastContainerClosedMillis != 0L; }
+
     public void recordVelocity() { this.lastVelocityMillis = System.currentTimeMillis(); }
     public boolean hasRecentVelocity() { return (System.currentTimeMillis() - lastVelocityMillis) < 1200L; }
 

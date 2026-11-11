@@ -57,8 +57,23 @@ public final class TestSnapshots {
         private boolean inWater = false;
         private boolean containerOpen = false;
         private String openInventoryType = "CRAFTING";
+        private double stepHeight = 0.6;
+        private boolean nearLiquid = false;
+        private boolean nearStuck = false;
+        private long containerOpenSince = 0L;
+        private boolean recentExemption = false;
+        Builder stepHeight(double v) { this.stepHeight = v; return this; }
+        Builder nearLiquid(boolean v) { this.nearLiquid = v; return this; }
+        Builder nearStuck(boolean v) { this.nearStuck = v; return this; }
+        Builder containerOpenSince(long v) { this.containerOpenSince = v; return this; }
+        Builder recentExemption(boolean v) { this.recentExemption = v; return this; }
         Builder inWater(boolean v) { this.inWater = v; return this; }
-        Builder container(String type) { this.containerOpen = true; this.openInventoryType = type; return this; }
+        Builder container(String type) {
+            this.containerOpen = true;
+            this.openInventoryType = type;
+            if (containerOpenSince == 0L) containerOpenSince = System.currentTimeMillis();
+            return this;
+        }
 
         public EnvironmentSnapshot build() {
             return new EnvironmentSnapshot(
@@ -81,7 +96,9 @@ public final class TestSnapshots {
                     // jumpStrength
                     movementSpeed, jumpStrength,
                     // containerOpen, openInventoryType
-                    containerOpen, openInventoryType);
+                    containerOpen, openInventoryType,
+                    // stepHeight, nearLiquid, nearStuck, containerOpenSinceMillis, recentExemption
+                    stepHeight, nearLiquid, nearStuck, containerOpenSince, recentExemption);
         }
     }
 }

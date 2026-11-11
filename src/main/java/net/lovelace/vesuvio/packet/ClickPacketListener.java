@@ -53,9 +53,18 @@ public final class ClickPacketListener extends PacketListenerAbstract {
 
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
-        if (!checkPipeline.isAnticheatEnabled()) return;
-
         var type = event.getPacketType();
+
+        // Recorded even while detection is off: the next snapshot can still show the container as open for a tick.
+        if (type == PacketType.Play.Client.CLOSE_WINDOW) {
+            if (event.getPlayer() instanceof Player player && !player.hasMetadata("NPC")) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) data.markContainerClosed();
+            }
+            return;
+        }
+
+        if (!checkPipeline.isAnticheatEnabled()) return;
 
         if (type == PacketType.Play.Client.ANIMATION) {
             Player player = (Player) event.getPlayer();

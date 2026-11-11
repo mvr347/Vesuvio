@@ -9,6 +9,7 @@ import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPong;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientWindowConfirmation;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerExplosion;
 import net.lovelace.vesuvio.config.ConfigManager;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.data.UserDataManager;
@@ -79,6 +80,19 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
         }
     }
 
+    /** Whether this explosion packet carries a knockback for the receiving player (field depends on protocol version). */
+    static boolean explosionPushesPlayer(WrapperPlayServerExplosion wrapper) {
+        try {
+            Vector3d knockback = wrapper.getKnockback();
+            if (knockback != null && (knockback.getX() != 0.0 || knockback.getY() != 0.0 || knockback.getZ() != 0.0)) return true;
+            var motion = wrapper.getPlayerMotion();
+            return motion != null && (motion.getX() != 0f || motion.getY() != 0f || motion.getZ() != 0f);
+        } catch (RuntimeException e) {
+            // Unknown layout for this protocol version: assume a push, the exemption only lasts about a second.
+            return true;
+        }
+    }
+
     @Override
     public void onPacketSend(PacketSendEvent event) {
         if (event.getPacketType() == PacketType.Play.Server.PLAYER_POSITION_AND_LOOK) {
@@ -89,6 +103,15 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
             return;
         }
         if (!config.isAnticheatEnabled()) return;
+        if (event.getPacketType() == PacketType.Play.Server.EXPLOSION) {
+            // A wind charge or an explosion pushes the player WITHOUT an ENTITY_VELOCITY packet: the push rides inside the
+            // explosion packet. Without noting it the resulting speed/fly burst was judged as the player's own.
+            if (event.getPlayer() instanceof Player player) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null && explosionPushesPlayer(new WrapperPlayServerExplosion(event))) data.recordVelocity();
+            }
+            return;
+        }
         if (event.getPacketType() != PacketType.Play.Server.ENTITY_VELOCITY) return;
 
         Object playerObj = event.getPlayer();
