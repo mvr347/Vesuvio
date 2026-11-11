@@ -120,7 +120,7 @@ public final class ConfigManager {
         punishmentExcludedChecks.clear();
         java.util.List<String> excluded = config.contains("punishments.excluded-checks")
                 ? config.getStringList("punishments.excluded-checks")
-                : java.util.List.of("phase", "invmove");
+                : java.util.List.of("phase", "invmove", "clickml", "aimml");
         for (String name : excluded) punishmentExcludedChecks.add(normalizeCheckName(name));
 
         silentChecks.clear();

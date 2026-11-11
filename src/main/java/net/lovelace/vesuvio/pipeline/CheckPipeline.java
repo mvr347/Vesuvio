@@ -266,9 +266,8 @@ public final class CheckPipeline {
                     CheckResult res = CheckResult.flag("ClickML", mlResult.probability(), mlResult.vl(),
                             String.format(Locale.US, "Уверенность модели кликов: %.1f%%", mlResult.probability() * 100),
                             mlResult.details());
-                    if (reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 12.0)) {
-                        data.adjustTrust(-5.0);
-                    }
+                    // ML only alerts: no trust penalty until the models have published metrics (see punishments.excluded-checks).
+                    reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 12.0);
 
                 } else if (mlResult.probability() >= config.getActiveLearningMinProb()
                         && mlResult.probability() <= config.getActiveLearningMaxProb()) {
@@ -524,9 +523,7 @@ public final class CheckPipeline {
                         CheckResult res = CheckResult.flag("AimML", mlResult.probability(), mlResult.vl(),
                                 String.format(Locale.US, "Уверенность модели прицеливания: %.1f%%", mlResult.probability() * 100),
                                 mlResult.details());
-                        if (reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 10.0)) {
-                            data.adjustTrust(-4.0);
-                        }
+                        reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 10.0);
                     }
                 });
             }
