@@ -1,78 +1,31 @@
 package net.lovelace.vesuvio.pipeline;
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.minimessage.MiniMessage;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.check.onnx.MLManager;
-import net.lovelace.vesuvio.check.onnx.MLResult;
-import net.lovelace.vesuvio.check.selflearning.ActiveLearning;
-import net.lovelace.vesuvio.check.selflearning.AnomalyMemory;
-import net.lovelace.vesuvio.check.selflearning.OnlineClassifier;
 import net.lovelace.vesuvio.check.selflearning.SelfLearningManager;
-import net.lovelace.vesuvio.check.statistical.StatisticalAimCheck;
-import net.lovelace.vesuvio.check.statistical.StatisticalClickCheck;
-import net.lovelace.vesuvio.check.statistical.TemporalConsistencyCheck;
 import net.lovelace.vesuvio.config.ConfigManager;
-import net.lovelace.vesuvio.data.ClickSignature;
 import net.lovelace.vesuvio.data.UserData;
-import net.lovelace.vesuvio.feature.AimFeatureExtractor;
-import net.lovelace.vesuvio.feature.ClickFeatureExtractor;
 import net.lovelace.vesuvio.staff.SmartAlertService;
 import net.lovelace.vesuvio.storage.DatabaseManager;
-import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
 import java.util.function.Function;
 import net.lovelace.vesuvio.integration.essential.MechanicsState;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.logging.Logger;
-import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.logging.Level;
-import net.lovelace.vesuvio.check.combat.AutoCriticalsCheck;
-import net.lovelace.vesuvio.check.combat.BackTrackCheck;
-import net.lovelace.vesuvio.check.combat.MoveDirectionCheck;
-import net.lovelace.vesuvio.check.movement.BlinkCheck;
-import net.lovelace.vesuvio.check.movement.ElytraCheck;
-import net.lovelace.vesuvio.check.movement.FlyCheck;
-import net.lovelace.vesuvio.check.movement.InvMoveCheck;
-import net.lovelace.vesuvio.check.movement.NoFallCheck;
-import net.lovelace.vesuvio.check.movement.PhaseCheck;
-import net.lovelace.vesuvio.check.movement.SpeedCheck;
-import net.lovelace.vesuvio.check.movement.StepUpCheck;
-import net.lovelace.vesuvio.check.movement.TimerCheck;
-import net.lovelace.vesuvio.check.movement.VelocityCheck;
 import net.lovelace.vesuvio.check.onnx.ShadowEvaluator;
-import net.lovelace.vesuvio.check.protocol.BadPacketsCheck;
-import net.lovelace.vesuvio.check.statistical.BaritoneCheck;
-import net.lovelace.vesuvio.check.statistical.GCDAimCheck;
-import net.lovelace.vesuvio.check.statistical.KillauraAngleCheck;
-import net.lovelace.vesuvio.check.statistical.SnapAimCheck;
-import net.lovelace.vesuvio.check.statistical.StatisticalReachCheck;
-import net.lovelace.vesuvio.check.statistical.StrafeReversalCheck;
-import net.lovelace.vesuvio.data.AimTrackingBuffer;
 import net.lovelace.vesuvio.diagnostics.DiagnosticService;
 import net.lovelace.vesuvio.engine.AimTrackingService;
-import net.lovelace.vesuvio.engine.AsyncTasks;
 import net.lovelace.vesuvio.engine.AttackSnapshot;
 import net.lovelace.vesuvio.engine.HitboxHistoryTracker;
 import net.lovelace.vesuvio.engine.LagCompensator;
 import net.lovelace.vesuvio.engine.NpcTrapManager;
 import net.lovelace.vesuvio.engine.TransactionManager;
 import net.lovelace.vesuvio.evasion.BanEvasionManager;
-import net.lovelace.vesuvio.i18n.Russian;
-import net.lovelace.vesuvio.packet.AimPacketListener;
 import net.lovelace.vesuvio.punishment.PunishmentService;
 import net.lovelace.vesuvio.punishment.PunishmentWaveManager;
 import net.lovelace.vesuvio.staff.DiscordWebhookService;
-import net.lovelace.vesuvio.storage.ViolationRecord;
-import org.bukkit.entity.Entity;
 
 /**
  * 5.1 Check Pipeline with Prioritized Multi-Layer Execution.
@@ -83,51 +36,13 @@ import org.bukkit.entity.Entity;
  */
 public final class CheckPipeline {
 
-    private static final Logger LOGGER = Logger.getLogger("Vesuvio-Pipeline");
-
-    private final Plugin plugin;
     private final ConfigManager config;
-    private final MLManager mlManager;
-    private volatile ShadowEvaluator shadowEvaluator;
-    private final SelfLearningManager selfLearning;
-    private final SmartAlertService alertService;
-    private final DatabaseManager databaseManager;
-    private final LagCompensator lagCompensator;
-    private final PunishmentWaveManager waveManager;
-    private final DiscordWebhookService discordService;
-    private final HitboxHistoryTracker hitboxTracker;
-    private final BanEvasionManager banEvasionManager;
-    private final TransactionManager transactionManager;
-    private final NpcTrapManager npcTrapManager;
-    private final PunishmentService punishmentService;
-
-    private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
-    private final StatisticalAimCheck aimCheck = new StatisticalAimCheck();
-    private final TemporalConsistencyCheck temporalCheck = new TemporalConsistencyCheck();
-    private final GCDAimCheck gcdAimCheck = new GCDAimCheck();
-    private final BadPacketsCheck badPacketsCheck = new BadPacketsCheck();
-    private final StatisticalReachCheck reachCheck;
-    private final FlyCheck flyCheck = new FlyCheck();
-    private final SpeedCheck speedCheck = new SpeedCheck();
-    private final NoFallCheck noFallCheck = new NoFallCheck();
-    private final TimerCheck timerCheck = new TimerCheck();
-    private final VelocityCheck velocityCheck = new VelocityCheck();
-    private final PhaseCheck phaseCheck = new PhaseCheck();
-    private final BlinkCheck blinkCheck;
-    private final ElytraCheck elytraCheck = new ElytraCheck();
-    private final KillauraAngleCheck angleCheck;
-    private final SnapAimCheck snapAimCheck;
-    private final StrafeReversalCheck strafeReversalCheck;
-    private AimTrackingService aimTrackingService;
-    private final StepUpCheck stepUpCheck = new StepUpCheck();
-    private final InvMoveCheck invMoveCheck = new InvMoveCheck();
-    private final AutoCriticalsCheck autoCriticalsCheck = new AutoCriticalsCheck();
-    private final BackTrackCheck backTrackCheck = new BackTrackCheck();
-    private final MoveDirectionCheck moveDirectionCheck = new MoveDirectionCheck();
-    private final BaritoneCheck baritoneCheck = new BaritoneCheck();
-
-    private final Executor backgroundExecutor;
-    private final DiagnosticService diagnostics;
+    private final PipelineContext ctx;
+    private final FlagReporter reporter;
+    private final ClickPipeline clickPipeline;
+    private final AimPipeline aimPipeline;
+    private final AttackPipeline attackPipeline;
+    private final MovementPipeline movementPipeline;
 
     public CheckPipeline(Plugin plugin,
                          ConfigManager config,
@@ -144,51 +59,30 @@ public final class CheckPipeline {
                          NpcTrapManager npcTrapManager,
                          Executor backgroundExecutor,
                          DiagnosticService diagnostics) {
-        this.diagnostics = diagnostics;
-        this.backgroundExecutor = backgroundExecutor;
-        this.plugin = plugin;
         this.config = config;
-        this.mlManager = mlManager;
-        this.selfLearning = selfLearning;
-        this.alertService = alertService;
-        this.databaseManager = databaseManager;
-        this.lagCompensator = lagCompensator;
-        this.waveManager = waveManager;
-        this.discordService = discordService;
-        this.hitboxTracker = hitboxTracker;
-        this.banEvasionManager = banEvasionManager;
-        this.transactionManager = transactionManager;
-        this.npcTrapManager = npcTrapManager;
-        this.punishmentService = new PunishmentService(plugin, config, databaseManager, waveManager,
+        PunishmentService punishmentService = new PunishmentService(plugin, config, databaseManager, waveManager,
                 selfLearning, banEvasionManager);
-        this.reachCheck = new StatisticalReachCheck(config.getMaxReach(), transactionManager);
-        this.blinkCheck = BlinkCheck.fromConfig(config);
-        this.angleCheck = new KillauraAngleCheck(config, hitboxTracker, transactionManager);
-        this.strafeReversalCheck = new StrafeReversalCheck(config);
-        this.snapAimCheck = new SnapAimCheck(config);
+        this.ctx = new PipelineContext(plugin, config, mlManager, selfLearning, alertService, databaseManager, lagCompensator,
+                waveManager, discordService, hitboxTracker, banEvasionManager, transactionManager, npcTrapManager,
+                backgroundExecutor, diagnostics, punishmentService);
+        this.reporter = new FlagReporter(config, alertService, databaseManager, discordService, diagnostics, punishmentService);
+        ctx.reporter(reporter);
+        this.clickPipeline = new ClickPipeline(ctx);
+        this.aimPipeline = new AimPipeline(ctx);
+        this.attackPipeline = new AttackPipeline(ctx);
+        this.movementPipeline = new MovementPipeline(ctx);
     }
-
-    private Function<UUID, MechanicsState> targetMechanics = id -> MechanicsState.NONE;
 
     public void targetMechanics(Function<UUID, MechanicsState> resolver) {
-        targetMechanics = Objects.requireNonNull(resolver);
+        ctx.targetMechanics(resolver);
     }
 
-    private boolean controlledTarget(Entity target) {
-        return target instanceof Player player
-                && targetMechanics.apply(player.getUniqueId()).hitbox(System.nanoTime());
-    }
-
-    /**
-     * Wired after construction because the tracking service needs the plugin's tick scheduler,
-     * which is set up later in {@code Vesuvio#onEnable} than the pipeline itself.
-     */
     public void setAimTrackingService(AimTrackingService service) {
-        this.aimTrackingService = service;
+        ctx.aimTrackingService(service);
     }
 
     public AimTrackingService getAimTrackingService() {
-        return aimTrackingService;
+        return ctx.aimTrackingService();
     }
 
     /**
@@ -196,30 +90,9 @@ public final class CheckPipeline {
      * mode is in use, in which case every real inference is mirrored to the candidate model.
      */
     public void setShadowEvaluator(ShadowEvaluator evaluator) {
-        this.shadowEvaluator = evaluator;
+        ctx.shadowEvaluator(evaluator);
     }
 
-    /**
-     * Mirrors one inference to the shadow candidate, if one is loaded for this model.
-     *
-     * <p>Runs on the ONNX completion callback, never on the main thread, and its result is only
-     * ever counted - it cannot touch VL, Risk, Trust or alerts. That is the entire contract of
-     * shadow mode: an unproven model gets to be measured against live traffic without being
-     * allowed to punish anyone on the strength of an offline score.
-     */
-    private void recordShadowVerdict(String modelName, float[] features, double liveProbability) {
-        var evaluator = shadowEvaluator;
-        if (evaluator == null) return;
-
-        String shadowName = modelName + ShadowEvaluator.SHADOW_SUFFIX;
-        if (!mlManager.isModelLoaded(shadowName)) return;
-
-        double liveThreshold = mlManager.getThreshold(modelName);
-        double shadowThreshold = mlManager.getThreshold(shadowName);
-        mlManager.evaluateAsync(shadowName, features).thenAccept(shadowResult ->
-                evaluator.record(modelName, liveProbability, shadowResult.probability(),
-                        liveThreshold, shadowThreshold));
-    }
 
     /**
      * The global kill-switch (/vesuvio toggle) - see {@link ConfigManager#isAnticheatEnabled()}.
@@ -243,865 +116,63 @@ public final class CheckPipeline {
     public long getDetectionEpoch() { return config.runtime().detectionEpoch(); }
 
     public BanEvasionManager getBanEvasionManager() {
-        return banEvasionManager;
+        return ctx.banEvasionManager();
     }
 
     public NpcTrapManager getNpcTrapManager() {
-        return npcTrapManager;
+        return ctx.npcTrapManager();
     }
 
-    /**
-     * Processes click events from a player. Runs asynchronously.
-     */
     public void processClick(Player player, UserData data) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
-                || data.mechanics().combat(System.nanoTime())) return;
-
-        // -------------------------------------------------------------
-        // Layer 1: Statistical Engine (Fast, Heuristic)
-        // -------------------------------------------------------------
-        CheckResult statResult = CheckResult.pass("ClickStatistical");
-        if (config.isStatisticalEnabled()) {
-            double lagTolerance = (lagCompensator != null) ? lagCompensator.getLagToleranceMultiplier(player) : 1.0;
-            statResult = clickCheck.check(data);
-            if (statResult.isFlag()) {
-                double addedVl = (statResult.vl() * config.getStatisticalWeight()) / lagTolerance;
-                reportWindowed(player, data, statResult, addedVl, (statResult.confidence() * 8.0) / lagTolerance);
-
-                // If certainty is overwhelmingly high (> 0.92), flag without wasting ML inference cycles
-                if (statResult.confidence() >= config.getStatisticalCutoff() && lagTolerance <= 1.1) {
-                    return;
-                }
-            }
-        }
-
-        // Temporal Consistency Check (Mechanic 1.2)
-        double temporalConfidence = 0.0;
-        if (config.isTemporalConsistencyEnabled()) {
-            CheckResult tempResult = temporalCheck.check(data);
-            temporalConfidence = tempResult.confidence();
-            if (tempResult.isFlag()) {
-                reportWindowed(player, data, tempResult, tempResult.vl(), 15.0);
-            }
-        }
-
-        // -------------------------------------------------------------
-        // Layer 2: ONNX Machine Learning Inference Layer
-        // -------------------------------------------------------------
-        float[] features = ClickFeatureExtractor.extract(data.getClickBuffer(), data.getEarlyCombatMean());
-        boolean isSuspicious = statResult.isFlag() || statResult.confidence() > 0.40 || data.getLastCalculatedCPS() > 11.5;
-
-        // Held so the ensemble below can be scored against THIS click's probability rather than
-        // whatever the previous inference happened to leave behind - see the ensemble block.
-        CompletableFuture<MLResult> clickMlFuture = null;
-
-        final long detectionEpoch = config.runtime().detectionEpoch();
-        final long resetEpoch = data.getMovementResetNanos();
-        if (config.isOnnxEnabled() && isSuspicious && data.shouldRunML()) {
-            data.markMLRun();
-            float[] featuresCopy = features.clone();
-
-            clickMlFuture = mlManager.evaluateAsync("click_model", featuresCopy);
-            clickMlFuture.thenAccept(mlResult -> {
-                if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
-                data.setLastMLProbability(mlResult.probability());
-                recordShadowVerdict("click_model", featuresCopy, mlResult.probability());
-
-                if (mlResult.isFlag()) {
-                    CheckResult res = CheckResult.flag("ClickML", mlResult.probability(), mlResult.vl(),
-                            String.format(Locale.US, "Уверенность модели кликов: %.1f%%", mlResult.probability() * 100),
-                            mlResult.details());
-                    // ML only alerts: no trust penalty until the models have published metrics (see punishments.excluded-checks).
-                    reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 12.0);
-
-                } else if (mlResult.probability() >= config.getActiveLearningMinProb()
-                        && mlResult.probability() <= config.getActiveLearningMaxProb()) {
-                    // ---------------------------------------------------------
-                    // Layer 3: Active Learning Gray-Zone Review Prompt (Mechanic 2.1)
-                    // ---------------------------------------------------------
-                    selfLearning.getActiveLearning().requestReview(player, data, mlResult, featuresCopy);
-                }
-            });
-        }
-
-        // -------------------------------------------------------------
-        // Layer 3a: Online Self-Learning Classifier (pure-Java SGD, trained continuously by
-        // AutoDatasetCollector + staff Active Learning verdicts). Gated on a minimum trained
-        // sample count so an undertrained model at server start can't produce noisy flags.
-        // -------------------------------------------------------------
-        double selfLearnProbability = 0.0;
-        if (config.isSelfLearningEnabled()) {
-            OnlineClassifier classifier = selfLearning.getOnlineClassifier();
-            if (classifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
-                double selfLearnProb = classifier.predict(features);
-                selfLearnProbability = selfLearnProb;
-                data.setLastSelfLearnProbability(selfLearnProb);
-
-                if (selfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
-                    Map<String, Object> slDetails = new HashMap<>();
-                    slDetails.put("probability", selfLearnProb);
-                    slDetails.put("trainedSamples", classifier.getTrainedSamplesCount());
-
-                    CheckResult slResult = CheckResult.flag("ClickSelfLearn", selfLearnProb, 1.6 * config.getSelfLearningWeight(),
-                            String.format(Locale.US, "Уверенность самообучающегося классификатора: %.1f%% (обучен на %d образцах)",
-                                    selfLearnProb * 100, classifier.getTrainedSamplesCount()),
-                            slDetails);
-                    reportWindowed(player, data, slResult, 1.6 * config.getSelfLearningWeight(), selfLearnProb * 9.0);
-                } else if (selfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
-                    // Below the confident-flag bar but still elevated - contribute to Risk only,
-                    // silently, without a chat alert. This is the model corroborating other
-                    // signals rather than acting alone.
-                    data.adjustRisk((selfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
-                }
-            }
-        }
-
-        // -------------------------------------------------------------
-        // Layer 3: Anomaly Memory & Click Fingerprinting
-        // -------------------------------------------------------------
-        long[] signature = data.getClickBuffer().getSignature();
-        AnomalyMemory anomalyMem = selfLearning.getAnomalyMemory();
-
-        // Observe near-flag patterns
-        anomalyMem.observe(player.getUniqueId(), signature, statResult);
-
-        // Check repetition
-        float repeatScore = anomalyMem.getRepeatScore(player.getUniqueId(), signature);
-        if (repeatScore > 0.35f) {
-            data.adjustRisk(repeatScore * config.getAnomalyRiskBoost() * 10.0);
-        }
-
-        // Mechanic 1.1: Click Signature Fingerprinting
-        if (config.isFingerprintingEnabled() && data.getTrustScore() >= 70.0) {
-            long[] baseline = data.getBaselineSignature();
-            if (baseline == null && data.getClickBuffer().getCount() >= 48) {
-                data.setBaselineSignature(signature.clone());
-            } else if (baseline != null && data.getClickBuffer().getCount() >= 48) {
-                float similarity = ClickSignature.hammingSimilarity(baseline, signature);
-                if (similarity < (1.0f - config.getFingerprintDeviationThreshold())) {
-                    data.adjustRisk(config.getFingerprintRiskPenalty());
-                    LOGGER.info(String.format("[Vesuvio] Изменение стиля игры %s: сходство=%.2f",
-                            player.getName(), similarity));
-                }
-            }
-        }
-
-        // Ban-evasion: compare this (possibly brand-new) account's playstyle signature against
-        // recently banned players once it has the same 48-sample baseline used for
-        // fingerprinting above. Deliberately NOT gated on Trust (a ban-evading alt starts at
-        // default trust) and runs at most once per session (altCheckDone).
-        if (config.isBanEvasionEnabled() && config.isBanEvasionSignatureCheckEnabled() && banEvasionManager != null
-                && !data.isAltCheckDone() && data.getClickBuffer().getCount() >= 48) {
-            data.setAltCheckDone(true);
-            long[] signatureSnapshot = signature.clone();
-            AsyncTasks.run(() -> {
-                var match = banEvasionManager.findSignatureMatch(
-                        signatureSnapshot, config.getBanEvasionSignatureThreshold(), config.getBanEvasionSignatureScanLimit());
-                match.ifPresent(m -> {
-                    if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
-                    Map<String, Object> details = new HashMap<>();
-                    details.put("bannedUsername", m.bannedUsername());
-                    details.put("similarity", m.similarity());
-                    CheckResult result = CheckResult.flag("BanEvasion", 0.75, 1.5,
-                            String.format(Locale.US, "Стиль игры совпадает с заблокированным игроком «%s» (сходство %.0f%%)",
-                                    m.bannedUsername(), m.similarity() * 100),
-                            details);
-                    report(player, data, result, 0.0, config.getBanEvasionSignatureMatchRisk());
-                });
-            }, backgroundExecutor).exceptionally(ex -> {
-                // altCheckDone is already set above (this check only ever needs to run once per
-                // session - the signature snapshot it compares only gets more stable over time,
-                // not less), but a failure here would otherwise vanish silently since nothing
-                // else observes this future. Log it so an operator can see the check misfired.
-                LOGGER.log(Level.WARNING,
-                        "[Vesuvio] Ошибка проверки обхода блокировки по стилю игры: " + player.getName(), ex);
-                return null;
-            });
-        }
-
-        // -------------------------------------------------------------
-        // Ensemble scoring (see EnsembleScorer): fuses this evaluation's statistical, self-learning,
-        // anomaly-repeat and temporal signals with the ONNX probability.
-        //
-        // The ONNX layer is evaluated asynchronously above, so reading data.getLastMLProbability()
-        // here would score this click against whatever the PREVIOUS inference left behind - which is
-        // wrong in both directions: a player whose last inference was a 0.9 keeps getting Risk for a
-        // click the model never saw, and a player whose inference is still in flight is fused with a
-        // stale 0.0 that reads as the model vouching for them. So when an inference was dispatched
-        // for this click, the ensemble is computed in its completion callback against the real
-        // probability; when none was (ONNX off, not suspicious, or throttled) the last known value
-        // is used only while it is still fresh, and otherwise the ONNX term is dropped from the
-        // fusion entirely rather than defaulted.
-        // -------------------------------------------------------------
-        if (config.isEnsembleScoringEnabled()) {
-            final double statConfidence = statResult.confidence();
-            final double selfLearn = selfLearnProbability;
-            final float repeat = repeatScore;
-            final double temporal = temporalConfidence;
-
-            if (clickMlFuture != null) {
-                clickMlFuture
-                        .thenAccept(mlResult -> {
-                            if (config.runtime().acceptsDetection(detectionEpoch) && data.getMovementResetNanos() == resetEpoch)
-                                applyEnsemble(data, statConfidence, mlResult.probability(), selfLearn, repeat, temporal);
-                        })
-                        .exceptionally(ex -> {
-                            // Inference failed; still score the rest of the layers rather than
-                            // silently dropping the whole ensemble contribution for this click.
-                            if (config.runtime().acceptsDetection(detectionEpoch) && data.getMovementResetNanos() == resetEpoch)
-                                applyEnsemble(data, statConfidence, null, selfLearn, repeat, temporal);
-                            return null;
-                        });
-            } else {
-                applyEnsemble(data, statConfidence, freshOnnxProbability(data), selfLearn, repeat, temporal);
-            }
-        }
+        clickPipeline.processClick(player, data);
     }
 
-    /**
-     * The last ONNX probability if it is recent enough to describe the player's current behaviour,
-     * otherwise {@code null} so {@link EnsembleScorer} drops the term and its weight instead of
-     * treating an absent signal as a clean one.
-     */
-    private Double freshOnnxProbability(UserData data) {
-        long producedAt = data.getLastMLProbabilityNanos();
-        if (producedAt == 0L) return null;
-        double ageMs = (System.nanoTime() - producedAt) / 1_000_000.0;
-        return ageMs <= config.getEnsembleMaxOnnxAgeMs() ? data.getLastMLProbability() : null;
-    }
-
-    /** Applies the bounded Risk contribution an above-threshold ensemble score earns. */
-    private void applyEnsemble(UserData data, double statConfidence, Double onnxProbability,
-                               double selfLearnProbability, float repeatScore, double temporalConfidence) {
-        if (data.mechanics().combat(System.nanoTime())) return;
-        EnsembleScorer.Inputs inputs = new EnsembleScorer.Inputs(
-                statConfidence, onnxProbability, selfLearnProbability, repeatScore, temporalConfidence);
-        double ensembleScore = EnsembleScorer.score(inputs, config);
-        if (ensembleScore < config.getEnsembleRiskThreshold()) return;
-
-        double contribution = (ensembleScore - config.getEnsembleRiskThreshold())
-                / Math.max(1e-6, 1.0 - config.getEnsembleRiskThreshold())
-                * config.getEnsembleMaxRiskContribution();
-        data.adjustRisk(contribution);
-    }
-
-    /**
-     * Processes aim updates with delta rotations.
-     */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch) {
-        processAim(player, data, deltaYaw, deltaPitch, deltaYaw);
+        aimPipeline.processAim(player, data, deltaYaw, deltaPitch);
     }
 
-    /**
-     * @param signedDeltaYaw this packet's yaw change, signed and wrapped to (-180, 180] - see
-     *                       {@link AimTrackingBuffer#wrapDegrees}. The
-     *                       3-arg overload above passes the unsigned magnitude instead, which only
-     *                       matters to {@link SnapAimCheck}
-     *                       and only means that overload's caller (tests, mainly) cannot exercise
-     *                       the sign-reversal half of that check - production always goes through
-     *                       {@link AimPacketListener}, which has the
-     *                       real signed value.
-     */
     public void processAim(Player player, UserData data, float deltaYaw, float deltaPitch, float signedDeltaYaw) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
-                || data.mechanics().combat(System.nanoTime())) return;
-
-        // KillauraAngleCheck's ReactionTime sub-check needs to know when the attacker's camera
-        // last made a "real" turn, not merely received a rotation packet - tracked here since this
-        // is the one place every aim update (combat or not) passes through.
-        long nowNanos = System.nanoTime();
-        data.setLastRotationNanos(nowNanos);
-        double combinedRotation = Math.abs(deltaYaw) + Math.abs(deltaPitch);
-        if (combinedRotation >= config.getKillauraReactionSignificantRotationDegrees()) {
-            data.setLastSignificantRotationNanos(nowNanos);
-        }
-
-        // Angular-jerk ("snap-back") detector - see SnapAimCheck's javadoc. Deliberately not
-        // gated on combat: the revert half of a snap-back can land on the tick after the attack,
-        // by which point isInCombat() is still true, but there is no reason to make the check
-        // depend on that timing at all when the signature is meaningful on its own.
-        if (config.isSnapAimEnabled()) {
-            CheckResult snapResult = snapAimCheck.check(data, signedDeltaYaw, nowNanos);
-            if (snapResult.isFlag()) {
-                report(player, data, snapResult, snapResult.vl() * config.getStatisticalWeight(), snapResult.confidence() * 9.0);
-            }
-        }
-
-        // BadPackets Pitch Bounds Check
-        if (config.isBadPacketsEnabled() && config.isBadPacketsPitchBounds()) {
-            CheckResult pitchResult = badPacketsCheck.checkPitch(data.getLastPitch());
-            if (pitchResult.isFlag()) {
-                report(player, data, pitchResult, pitchResult.vl(), 20.0);
-            }
-        }
-
-        // Mathematical GCD Mouse Quantization Check (GrimAC/Polar)
-        if (config.isGcdAimEnabled() && (deltaYaw > 0 || deltaPitch > 0)) {
-            CheckResult gcdResult = gcdAimCheck.check(data, deltaYaw, deltaPitch, (float) config.getGcdAimMinRotation());
-            if (gcdResult.isFlag()) {
-                report(player, data, gcdResult, gcdResult.vl() * config.getStatisticalWeight(), gcdResult.confidence() * 7.0);
-            }
-        }
-
-        if (!config.isStatisticalEnabled()) return;
-
-        if (data.getAimBuffer().isFull()) {
-            CheckResult result = aimCheck.check(data);
-            if (result.isFlag()) {
-                reportWindowed(player, data, result, result.vl() * config.getStatisticalWeight(), result.confidence() * 6.0);
-            }
-        }
-
-        // Layer 2: ONNX Aim Machine Learning Inference Layer
-        if (config.isOnnxEnabled() && data.isInCombat() && data.getAimBuffer().getCount() >= 16) {
-            float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer());
-            boolean isAimSuspicious = (aimFeatures[4] > 0.15f || aimFeatures[6] > 12.0f || aimFeatures[5] > 0.35f || aimFeatures[7] < 0.20f);
-            if (isAimSuspicious && data.shouldRunML()) {
-                data.markMLRun();
-                float[] featuresCopy = aimFeatures.clone();
-                long detectionEpoch = config.runtime().detectionEpoch();
-                long resetEpoch = data.getMovementResetNanos();
-                mlManager.evaluateAsync("aim_model", featuresCopy).thenAccept(mlResult -> {
-                    if (!config.runtime().acceptsDetection(detectionEpoch) || data.getMovementResetNanos() != resetEpoch) return;
-                    recordShadowVerdict("aim_model", featuresCopy, mlResult.probability());
-                    if (mlResult.isFlag()) {
-                        CheckResult res = CheckResult.flag("AimML", mlResult.probability(), mlResult.vl(),
-                                String.format(Locale.US, "Уверенность модели прицеливания: %.1f%%", mlResult.probability() * 100),
-                                mlResult.details());
-                        reportWindowed(player, data, res, mlResult.vl() * config.getOnnxWeight(), mlResult.probability() * 10.0);
-                    }
-                });
-            }
-        }
-
-        // -------------------------------------------------------------
-        // Layer 3a: Online Self-Learning Classifier for aim (separate weights/priors from the
-        // click classifier - see SelfLearningManager.getAimClassifier / OnlineClassifier.AIM_PRIORS).
-        // Same minimum-trained-sample gate as the click classifier, and additionally requires
-        // combat context like the other aim checks to avoid scoring idle look-around.
-        // -------------------------------------------------------------
-        if (config.isSelfLearningEnabled() && data.isInCombat() && data.getAimBuffer().getCount() >= 16) {
-            OnlineClassifier aimClassifier = selfLearning.getAimClassifier();
-            if (aimClassifier.getTrainedSamplesCount() >= config.getOnlineClassifierMinTrainedSamples()) {
-                float[] aimFeatures = AimFeatureExtractor.extract(data.getAimBuffer());
-                double aimSelfLearnProb = aimClassifier.predict(aimFeatures);
-                data.setLastAimSelfLearnProbability(aimSelfLearnProb);
-
-                if (aimSelfLearnProb >= config.getOnlineClassifierFlagThreshold()) {
-                    Map<String, Object> slDetails = new HashMap<>();
-                    slDetails.put("probability", aimSelfLearnProb);
-                    slDetails.put("trainedSamples", aimClassifier.getTrainedSamplesCount());
-
-                    CheckResult slResult = CheckResult.flag("AimSelfLearn", aimSelfLearnProb, 1.6 * config.getSelfLearningWeight(),
-                            String.format(Locale.US, "Уверенность самообучающегося классификатора прицеливания: %.1f%% (обучен на %d образцах)",
-                                    aimSelfLearnProb * 100, aimClassifier.getTrainedSamplesCount()),
-                            slDetails);
-                    reportWindowed(player, data, slResult, 1.6 * config.getSelfLearningWeight(), aimSelfLearnProb * 9.0);
-                } else if (aimSelfLearnProb >= config.getOnlineClassifierSilentRiskThreshold()) {
-                    data.adjustRisk((aimSelfLearnProb - config.getOnlineClassifierSilentRiskThreshold()) * 12.0);
-                }
-            }
-        }
+        aimPipeline.processAim(player, data, deltaYaw, deltaPitch, signedDeltaYaw);
     }
 
     public void processAim(Player player, UserData data) {
-        processAim(player, data, 0f, 0f);
+        aimPipeline.processAim(player, data);
     }
 
-    /**
-     * Evaluates attack interactions: NoSwing, InventoryAttack, and Latency-Compensated Reach.
-     */
     public void processAttack(Player player, int targetEntityId, UserData data) {
-        processAttack(player, targetEntityId, data, data.captureAttack(System.nanoTime()));
+        attackPipeline.processAttack(player, targetEntityId, data);
     }
 
-    public void processAttack(Player player, int targetEntityId, UserData data,
-                              AttackSnapshot attack) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
-                || data.mechanics().combat(System.nanoTime())) return;
-
-        // A downed/invulnerable attacker or target means a third-party plugin (revive/downed-
-        // state mechanics, admin god-mode, spawn protection, etc.) is actively controlling that
-        // entity's position/hitbox/state outside of normal survival rules - our combat math
-        // (reach, angle, crit timing) isn't meaningful there and shouldn't punish it. Concretely
-        // reported case: finishing off a player mid-revive (temporarily invulnerable, position
-        // still settling) false-flagged the finisher for Reach/Angle.
-        if (player.isInvulnerable()) {
-            return;
-        }
-
-        // Animation may legally follow ATTACK in the same client tick. Wait three server
-        // ticks and match against the bounded swing history, not just the last animation.
-        if (config.isBadPacketsEnabled() && config.isBadPacketsNoSwing()) {
-            long epoch = config.runtime().detectionEpoch();
-            long reset = data.getMovementResetNanos();
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                if (!config.runtime().acceptsDetection(epoch) || data.getMovementResetNanos() != reset
-                        || !player.isOnline() || data.hasRecentTeleport() || data.hasSwingNear(attack.receivedNanos())) return;
-                CheckResult result = CheckResult.flag("BadPackets", 0.95, 3.0,
-                        "Атака без соответствующей анимации руки", Map.of("windowMs", 150));
-                report(player, data, result, result.vl(), 18);
-            }, 3L);
-        }
-
-        // 2. BadPackets: InventoryAttack check
-        if (config.isBadPacketsEnabled() && config.isBadPacketsInventoryAttack()) {
-            CheckResult invResult = badPacketsCheck.checkInventoryAttack(data,
-                    transactionManager != null ? transactionManager.getTransactionPing(player.getUniqueId()) : -1.0);
-            if (invResult.isFlag()) {
-                report(player, data, invResult, invResult.vl(), 15.0);
-            }
-        }
-
-        // 2.5 Auto Criticals micro-hop check
-        if (config.isAutoCriticalsEnabled()) {
-            CheckResult critResult = autoCriticalsCheck.check(data);
-            if (critResult.isFlag()) {
-                report(player, data, critResult, critResult.vl(), critResult.confidence() * 10.0);
-            }
-        }
-
-        // 2.6 Strafe-reversal sensorimotor latency. Runs off the aim-tracking buffer rather than
-        // this attack's geometry, so it is throttled instead of running per attack - the buffer
-        // only gains one sample per tick, and re-scanning it on every swing would just re-walk the
-        // same events.
-        if (config.isStrafeReversalEnabled() && data.shouldRunStrafeReversal(config.getStrafeReversalIntervalMs())) {
-            CheckResult reversalResult = strafeReversalCheck.check(data);
-            if (reversalResult.isFlag()) {
-                report(player, data, reversalResult, reversalResult.vl(), reversalResult.confidence() * 10.0);
-            }
-        }
-
-        // 3. Statistical Latency-Compensated Reach & Combat Angle check.
-        //
-        // These two are the only checks that need live world and entity data: resolving the target
-        // entity id walks the surrounding chunks' entity lists, and the killaura line-of-sight test
-        // raytraces blocks. Neither is safe from the virtual thread the rest of this method runs
-        // on - both read structures the main thread mutates every tick, so off-thread they can
-        // observe a half-updated entity list or force a chunk access from the wrong thread. The
-        // work itself is small and attacks are rare compared to movement packets, so it is hopped
-        // onto the main thread rather than being approximated.
-        if (!config.isReachEnabled() && !config.isKillauraAngleEnabled()) {
-            return;
-        }
-        long epoch = config.runtime().detectionEpoch();
-        long reset = data.getMovementResetNanos();
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (!config.runtime().acceptsDetection(epoch) || data.getMovementResetNanos() != reset
-                    || data.hasRecentTeleport()) return;
-            runAttackWorldChecks(player, targetEntityId, data, attack);
-        });
+    public void processAttack(Player player, int targetEntityId, UserData data, AttackSnapshot attack) {
+        attackPipeline.processAttack(player, targetEntityId, data, attack);
     }
 
-    /** Main-thread half of {@link #processAttack}: everything that needs live world state. */
-    private void runAttackWorldChecks(Player player, int targetEntityId, UserData data, AttackSnapshot attack) {
-        if (!player.isOnline()) return;
-
-        Entity target = null;
-        for (Entity e : player.getNearbyEntities(7.0, 7.0, 7.0)) {
-            if (e.getEntityId() == targetEntityId) {
-                target = e;
-                break;
-            }
-        }
-
-        // A downed/invulnerable target means a third-party plugin (revive mechanics, admin
-        // god-mode, spawn protection) is actively controlling its position/hitbox outside normal
-        // survival rules - reach and angle math isn't meaningful against state we don't own.
-        // Concretely reported case: finishing off a player mid-revive (temporarily invulnerable,
-        // position still settling) false-flagged the finisher for Reach/Angle.
-        if (target == null || target.equals(player) || target.isInvulnerable()
-                || controlledTarget(target)) {
-            // Reach and the whole killaura family live below this line, so when an operator reports
-            // that an attack "was not caught", the first thing that has to be answered is whether
-            // the attack reached them at all. Silence here and silence from a check that ran look
-            // identical in the log otherwise.
-            if (config.isDebug()) {
-                LOGGER.info(String.format(Locale.US,
-                        "[Атака] %s -> сущность=%d: пропущена (%s), боевые проверки не выполнены",
-                        player.getName(), targetEntityId,
-                        target == null ? "цель отсутствует среди ближайших сущностей"
-                                : target.equals(player) ? "цель совпадает с атакующим"
-                                : controlledTarget(target) ? "поза цели управляется LoveEssential"
-                                : "цель неуязвима"));
-            }
-            return;
-        }
-
-        if (config.isReachEnabled()) {
-            CheckResult reachResult = reachCheck.check(player, target, data, hitboxTracker, lagCompensator, attack);
-            if (reachResult.isFlag()) {
-                report(player, data, reachResult, reachResult.vl() * config.getStatisticalWeight(), reachResult.confidence() * 8.0);
-            }
-        }
-
-        // Tell the per-tick aim tracker what this player is actually fighting, so it can record
-        // target-relative aim from here on (see AimTrackingService / StrafeReversalCheck).
-        if (aimTrackingService != null) {
-            aimTrackingService.noteTarget(player, target);
-        }
-
-        if (config.isKillauraAngleEnabled()) {
-            CheckResult angleResult = angleCheck.check(player, target, data, attack);
-            if (angleResult.isFlag()) {
-                report(player, data, angleResult, angleResult.vl(), angleResult.confidence() * 9.0);
-            }
-        }
-
-        if (config.isBackTrackEnabled() && hitboxTracker != null && transactionManager != null) {
-            CheckResult backTrackResult = backTrackCheck.check(player, target, data, hitboxTracker, transactionManager, config.getMaxReach(), attack);
-            if (backTrackResult.isFlag()) {
-                report(player, data, backTrackResult, backTrackResult.vl(), backTrackResult.confidence() * 10.0);
-            }
-        }
-
-        if (config.isMoveDirectionEnabled()) {
-            CheckResult moveDirResult = moveDirectionCheck.check(player, target, data);
-            if (moveDirResult.isFlag()) {
-                report(player, data, moveDirResult, moveDirResult.vl(), moveDirResult.confidence() * 8.0);
-            }
-        }
-
-        // Fake-NPC trap: converting accumulating combat suspicion into a conclusive answer, not
-        // surveilling every player - only offered once a player is already flagged high-risk by
-        // the checks above (or anything else feeding into risk/VL).
-        if (npcTrapManager != null && data.isSuspect(config.getHighRiskThreshold())) {
-            npcTrapManager.maybeSpawnTrap(player);
-        }
-    }
-
-    /**
-     * Definitive KillAura/MobAura proof: the attack packet named an entity ID that only exists as
-     * a per-player packet-level trap (see {@link NpcTrapManager}). No
-     * further validation is meaningful here - a legitimate client cannot see or aim at this entity
-     * at all, so a single hit is conclusive rather than needing the streak/confidence machinery
-     * every other combat check relies on.
-     */
     public void handleNpcTrapHit(Player player, UserData data) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()
-                || data.mechanics().combat(System.nanoTime())) return;
-
-        if (npcTrapManager != null) npcTrapManager.despawnTrap(player.getUniqueId());
-
-        // The one label in the system that is not self-confirming: a legitimate client cannot see
-        // this entity at all, so the verdict owes nothing to the statistics the models would
-        // otherwise just be learning to reproduce.
-        selfLearning.getAutoDatasetCollector().collectTrapSample(player, data);
-
-        Map<String, Object> details = new HashMap<>();
-        details.put("target", "npc-trap");
-
-        CheckResult result = CheckResult.flag("NpcTrap", 1.0, 25.0,
-                "Атака персональной пакетной сущности-ловушки, недоступной при обычной игре", details);
-        report(player, data, result, result.vl(), 60.0);
+        attackPipeline.handleNpcTrapHit(player, data);
     }
 
-    /**
-     * Processes player movement packets (Fly, Speed, NoFall, Timer).
-     */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos) {
-        processMovement(player, data, x, y, z, onGround, hasPos, packetReceiptNanos, true);
+        movementPipeline.processMovement(player, data, x, y, z, onGround, hasPos, packetReceiptNanos);
     }
 
-    /**
-     * @param clientHadSomethingToReport whether this packet reports state the client had not
-     *                                   already reported - computed in packet order on the netty
-     *                                   thread, see {@link UserData#noteReportedClientState}.
-     */
     public void processMovement(Player player, UserData data, double x, double y, double z, boolean onGround, boolean hasPos, long packetReceiptNanos, boolean clientHadSomethingToReport) {
-        if (!config.isAnticheatEnabled() || packetReceiptNanos < data.getMovementResetNanos()) return;
-        if (data.mechanics().movement(System.nanoTime())) {
-            data.setLastAnyMovementNanos(packetReceiptNanos);
-            data.resetTimerBalance();
-            if (hasPos) {
-                data.setLastPosition(x, y, z, onGround);
-                data.setLastPositionNanos(packetReceiptNanos);
-            }
-            return;
-        }
-
-        if (data.hasRecentTeleport()) {
-            data.resetTimerBalance();
-            data.setLastAnyMovementNanos(packetReceiptNanos);
-            if (hasPos) {
-                data.setLastPosition(x, y, z, onGround);
-                data.setLastPositionNanos(packetReceiptNanos);
-            }
-            return;
-        }
-
-        // A third-party plugin controlling this player's state (revive/downed mechanics,
-        // god-mode, spawn protection) can legitimately move/teleport/ragdoll them outside normal
-        // survival physics - e.g. a "downed" player briefly falling before their temporary
-        // post-revive invulnerability kicks in. Don't run movement heuristics against state we
-        // don't own.
-        //
-        // Every per-check momentum/streak state that carries meaning across ticks is cleared here,
-        // the same way the teleport-exclusion branch below clears it - invulnerability is exactly
-        // the same "this delta cannot be trusted, nothing should carry forward from it" situation.
-        // lastAnyMovementNanos is refreshed rather than left stale so BlinkCheck does not read the
-        // whole invulnerability window as withheld-movement-on-a-healthy-connection the instant it
-        // ends: transactions keep flowing throughout regardless (TransactionManager ticks every
-        // online player unconditionally), so a stale timestamp here really would look exactly like
-        // a textbook blink.
-        if (player.isInvulnerable()) {
-            data.resetKinematicState();
-            data.setLastAnyMovementNanos(packetReceiptNanos);
-            if (hasPos) {
-                data.setLastPosition(x, y, z, onGround);
-            }
-            return;
-        }
-
-        // A game mode change (staff entering /vesuvio spectate, an admin switching to creative and
-        // back) is applied instantly, but the game mode every movement check reads comes from the
-        // once-per-tick EnvironmentSnapshot. For up to one tick after the change the checks are
-        // therefore judging a spectator-speed flyer against the survival movement model, and
-        // SpeedCheck's debt accumulator needs only a single such packet to cross its flag
-        // threshold - which is exactly how staff opening a spectate session flagged themselves for
-        // Speed. Handled the same way as the invulnerability branch above: nothing carries across
-        // the transition, and the silence up to it is not Blink's to read either.
-        if (data.hasRecentGameModeChange()) {
-            data.resetKinematicState();
-            data.setLastAnyMovementNanos(packetReceiptNanos);
-            if (hasPos) {
-                data.setLastPosition(x, y, z, onGround);
-            }
-            return;
-        }
-
-        // Lag tolerance is computed once per movement packet and shared by every check below, so a
-        // single spike cannot be counted differently by each of them.
-        double lagTolerance = (lagCompensator != null) ? lagCompensator.getLagToleranceMultiplier(player) : 1.0;
-
-        // 1. Timer check runs on every movement packet
-        if (config.isTimerEnabled()) {
-            CheckResult timerResult = timerCheck.check(data, lagTolerance, packetReceiptNanos,
-                    transactionManager != null ? transactionManager.getMsSinceLastAckSent(player.getUniqueId()) : -1.0);
-            if (timerResult.isFlag()) {
-                report(player, data, timerResult, timerResult.vl(), timerResult.confidence() * 10.0);
-            }
-        }
-
-        // 1a. Blink runs on every movement packet, position-carrying or not - an idle vanilla
-        // client sends position-less flying packets each tick, and it is the silence of that whole
-        // stream (not of positions alone) that distinguishes a lag switch from standing still.
-        if (config.isBlinkEnabled() && transactionManager != null) {
-            CheckResult blinkResult = blinkCheck.check(player.getUniqueId(), data, transactionManager,
-                    packetReceiptNanos, hasPos, clientHadSomethingToReport);
-            if (blinkResult.isFlag()) {
-                report(player, data, blinkResult, blinkResult.vl(), blinkResult.confidence() * 12.0);
-            }
-        }
-
-        if (!hasPos) {
-            return;
-        }
-
-        long nowNanos = packetReceiptNanos;
-        long prevNanos = data.getLastPositionNanos();
-        data.setLastPositionNanos(nowNanos);
-
-        if (!data.hasLastPosition()) {
-            data.setLastPosition(x, y, z, onGround);
-            return;
-        }
-
-        double deltaX = x - data.getLastX();
-        double deltaY = y - data.getLastY();
-        double deltaZ = z - data.getLastZ();
-
-        data.setLastPosition(x, y, z, onGround);
-        data.setLastMoveDelta(deltaX, deltaZ);
-
-        // Real time this delta covers. The movement models are per-tick, so a delta spanning more
-        // than a tick (idle player resuming, post-lag burst) has to be handled differently rather
-        // than being read as one very fast tick.
-        double elapsedMs = prevNanos == 0L ? 50.0 : (nowNanos - prevNanos) / 1_000_000.0;
-
-        // 1a-1. Blink release-burst confirmation. Must run BEFORE the teleport-size exclusion below
-        // discards this delta: a real blink's release is frequently exactly that size (queued
-        // movement flushed in one packet), which is precisely why it used to be silently absorbed
-        // there with no flag at all instead of being recognised as the signature it is.
-        if (config.isBlinkEnabled() && transactionManager != null) {
-            CheckResult burstResult = blinkCheck.checkReleaseBurst(data, deltaX, deltaY, deltaZ, elapsedMs, nowNanos);
-            if (burstResult.isFlag()) {
-                report(player, data, burstResult, burstResult.vl(), burstResult.confidence() * 12.0);
-            }
-        }
-
-        // Exclude teleports / huge jumps
-        if (Math.abs(deltaX) > 10.0 || Math.abs(deltaY) > 15.0 || Math.abs(deltaZ) > 10.0) {
-            data.resetKinematicState();
-            return;
-        }
-
-        // 1a-2. Elytra: the one movement state every other check in this pipeline exempts
-        // outright (EnvironmentSnapshot#isMovementExempt()) because none of them model glide
-        // physics. Runs unconditionally here; the check itself gates on env.gliding() and is a
-        // no-op otherwise.
-        if (config.isElytraEnabled()) {
-            CheckResult elytraResult = elytraCheck.check(data, deltaX, deltaY, deltaZ);
-            if (elytraResult.isFlag()) {
-                report(player, data, elytraResult, elytraResult.vl(), elytraResult.confidence() * 10.0);
-            }
-        }
-
-        if (config.isBaritoneEnabled()) {
-            CheckResult baritoneResult = baritoneCheck.check(player, data, deltaX, deltaZ);
-            if (baritoneResult.isFlag()) {
-                report(player, data, baritoneResult, baritoneResult.vl(), baritoneResult.confidence() * 7.0);
-            }
-        }
-
-        // 1b. Velocity / anti-knockback. Runs before the exemption-heavy checks because it is the
-        // check that validates the "recent velocity" exemption the others rely on.
-        if (config.isVelocityEnabled() && transactionManager != null) {
-            CheckResult velocityResult = velocityCheck.check(player.getUniqueId(), data, transactionManager, deltaX, deltaZ);
-            if (velocityResult.isFlag()) {
-                report(player, data, velocityResult, velocityResult.vl(), velocityResult.confidence() * 11.0);
-            }
-        }
-
-        // 1c. Phase / Clip
-        if (config.isPhaseEnabled()) {
-            CheckResult phaseResult = phaseCheck.check(data, deltaX, deltaZ);
-            if (phaseResult.isFlag()) {
-                report(player, data, phaseResult, phaseResult.vl(), phaseResult.confidence() * 12.0);
-            }
-        }
-
-        // 2. Fly & AirJump check
-        if (config.isFlyEnabled()) {
-            CheckResult flyResult = flyCheck.check(data, deltaX, deltaY, deltaZ, onGround);
-            if (flyResult.isFlag()) {
-                report(player, data, flyResult, flyResult.vl(), flyResult.confidence() * 12.0);
-
-                // Fly is one of the fastest and hardest checks - on a high-confidence flag there is
-                // little value in also running Speed/NoFall/StepUp/InvMove this same tick.
-                if (flyResult.confidence() >= config.getStatisticalCutoff()) {
-                    return;
-                }
-            }
-        }
-
-        // 3. Horizontal Speed check
-        if (config.isSpeedEnabled()) {
-            CheckResult speedResult = speedCheck.check(data, deltaX, deltaZ, deltaY, onGround, elapsedMs, lagTolerance);
-            if (speedResult.isFlag()) {
-                report(player, data, speedResult, speedResult.vl(), speedResult.confidence() * 8.0);
-            }
-        }
-
-        // 4. NoFall check
-        if (config.isNoFallEnabled()) {
-            CheckResult noFallResult = noFallCheck.check(data, deltaY, onGround);
-            if (noFallResult.isFlag()) {
-                report(player, data, noFallResult, noFallResult.vl(), noFallResult.confidence() * 10.0);
-            }
-        }
-
-        // 5. StepUp check
-        if (config.isStepEnabled()) {
-            CheckResult stepResult = stepUpCheck.check(data, deltaY, onGround);
-            if (stepResult.isFlag()) {
-                report(player, data, stepResult, stepResult.vl(), stepResult.confidence() * 10.0);
-            }
-        }
-
-        // 6. InvMove check
-        if (config.isInvMoveEnabled()) {
-            CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY,
-                    transactionManager != null ? transactionManager.getTransactionPing(player.getUniqueId()) : -1.0);
-            if (invMoveResult.isFlag()) {
-                report(player, data, invMoveResult, invMoveResult.vl(), invMoveResult.confidence() * 8.0);
-            }
-        }
-    }
-
-    /**
-     * Single entry point for a flag: every place that used to call addVl + adjustRisk + handleFlag goes through here.
-     * Order matters. Checks disabled or a recent teleport: diagnostics only, no VL (the flag is dropped, so its VL must not
-     * stay behind). Windowed checks (see {@link #reportWindowed}) are re-reported at most once per
-     * layers.statistical.reflag-interval-ms. Checks in punishments.excluded-checks are still logged and shown to staff,
-     * but add neither VL nor risk. Only then the regular handleFlag (alert, Discord, database, punishments).
-     *
-     * @return whether the flag was accepted (reached handleFlag)
-     */
-    /** Transactional round-trip time in milliseconds (never Player#getPing()), or -1 when unknown. */
-    public double transactionRtt(UUID uuid) {
-        return transactionManager != null ? transactionManager.getTransactionPing(uuid) : -1.0;
+        movementPipeline.processMovement(player, data, x, y, z, onGround, hasPos, packetReceiptNanos, clientHadSomethingToReport);
     }
 
     public boolean report(Player player, UserData data, CheckResult result, double vl, double risk) {
-        return reportInternal(player, data, result, vl, risk, false);
+        return reporter.report(player, data, result, vl, risk);
     }
 
-    /** Same as {@link #report}, for checks that re-evaluate one sliding window on every packet. */
     public boolean reportWindowed(Player player, UserData data, CheckResult result, double vl, double risk) {
-        return reportInternal(player, data, result, vl, risk, true);
-    }
-
-    private boolean reportInternal(Player player, UserData data, CheckResult result, double vl, double risk, boolean windowed) {
-        if (!config.isAnticheatEnabled() || data.hasRecentTeleport()) {
-            diagnostics.flag(data, result, !config.isAnticheatEnabled() ? "отклонено: проверки выключены"
-                    : "отклонено: защита после телепортации");
-            return false;
-        }
-        if (windowed && !data.tryReflag(result.checkName(), System.currentTimeMillis(), config.getStatisticalReflagIntervalMs())) {
-            diagnostics.flag(data, result, "отклонено: повторный флаг оконной проверки");
-            return false;
-        }
-        if (!config.isExcludedFromPunishment(result.checkName())) {
-            data.addVl(vl);
-            data.adjustRisk(risk);
-        }
-        data.setLastTriggeredCheck(result.checkName());
-        handleFlag(player, data, result);
-        return true;
+        return reporter.reportWindowed(player, data, result, vl, risk);
     }
 
     public void handleFlag(Player player, UserData data, CheckResult result) {
-        boolean disabled = !config.isAnticheatEnabled();
-        boolean teleportGrace = data.hasRecentTeleport();
-        diagnostics.flag(data, result, disabled ? "отклонено: проверки выключены"
-                : teleportGrace ? "отклонено: защита после телепортации" : "принято");
-        if (disabled || teleportGrace) return;
-        // 0. Verbose console diagnostics (settings.debug: true) - dumps the exact feature values
-        // that triggered the flag, so server owners can tune thresholds without guessing.
-        if (config.isDebug()) {
-            LOGGER.info(String.format(Locale.US,
-                    "[FLAG] %s | проверка=%s уверенность=%.2f добавлено=%.2f -> нарушения=%.1f риск=%.1f доверие=%.1f | %s | подробности=%s",
-                    player.getName(), result.checkName(), result.confidence(), result.vl(),
-                    data.getVl(), data.getRiskIndex(), data.getTrustScore(),
-                    result.explanation(), Russian.details(result.details())));
-        }
+        reporter.handleFlag(player, data, result);
+    }
 
-        // 1-2. Staff chat and Discord: at most one alert per check and player per staff.smart-alerts.min-interval-ms. The database
-        // record below is written for every flag, so the journal stays complete.
-        if (data.tryAlert(result.checkName(), System.currentTimeMillis(), config.getAlertMinIntervalMs())) {
-            // Broadcast smart MiniMessage alert to staff
-            alertService.broadcastAlert(player, data, result);
-
-            // Dispatch Discord Webhook rich embed asynchronously
-            if (discordService != null) {
-                discordService.dispatchAlertAsync(player, data, result);
-            }
-        }
-
-        // 3. Queue asynchronous database violation record
-        databaseManager.logViolationAsync(new ViolationRecord(
-                player.getUniqueId(),
-                player.getName(),
-                result.checkName(),
-                data.getVl(),
-                result.confidence(),
-                result.explanation(),
-                result.details().toString(),
-                System.currentTimeMillis()
-        ));
-
-        // 4. Evaluate punishment thresholds
-        punishmentService.evaluate(player, data);
+    /** Transactional round-trip time in milliseconds (never Player#getPing()), or -1 when unknown. */
+    public double transactionRtt(UUID uuid) {
+        return ctx.transactionRtt(uuid);
     }
 }
