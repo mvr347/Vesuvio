@@ -1037,6 +1037,8 @@ public final class ConfigManager {
         return config.getDouble("scoring.risk.high-risk-threshold", 75.0);
     }
 
+    public long getAlertMinIntervalMs() { return config.getLong("staff.smart-alerts.min-interval-ms", 1500L); }
+
     public double getRiskCleanSeconds() { return config.getDouble("scoring.risk.clean-seconds", 60.0); }
     public double getRiskDecayPerMinute() { return config.getDouble("scoring.risk.decay-per-minute", 1.0); }
     public double getRiskFloor() { return config.getDouble("scoring.risk.floor", 10.0); }

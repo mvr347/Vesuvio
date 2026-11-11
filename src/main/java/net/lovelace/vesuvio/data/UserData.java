@@ -169,6 +169,22 @@ public final class UserData {
         }
     }
 
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastAlertMillis = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Rate limit of staff chat and Discord alerts per check (the database record is never limited). */
+    public boolean tryAlert(String check, long nowMillis, long intervalMillis) {
+        if (intervalMillis <= 0) return true;
+        final boolean[] allowed = {false};
+        lastAlertMillis.compute(check, (k, last) -> {
+            if (last == null || nowMillis - last >= intervalMillis || nowMillis < last) {
+                allowed[0] = true;
+                return nowMillis;
+            }
+            return last;
+        });
+        return allowed[0];
+    }
+
     private final java.util.concurrent.ConcurrentHashMap<String, Long> lastReflagMillis = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**

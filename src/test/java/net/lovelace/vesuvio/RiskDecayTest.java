@@ -81,4 +81,14 @@ class RiskDecayTest {
         assertTrue(d.tryReflag("ClickStatistical", 2_000L, 4_000L), "per check");
         assertTrue(d.tryReflag("AimStatistical", 5_000L, 4_000L));
     }
+
+    @Test
+    void alertsAreLimitedPerCheckAndPlayer() {
+        UserData d = new UserData(UUID.randomUUID(), "t");
+        assertTrue(d.tryAlert("Fly", 1_000L, 1_500L));
+        assertFalse(d.tryAlert("Fly", 2_000L, 1_500L), "same check inside the interval");
+        assertTrue(d.tryAlert("Speed", 2_000L, 1_500L), "another check is independent");
+        assertTrue(d.tryAlert("Fly", 2_600L, 1_500L));
+        assertTrue(d.tryAlert("Fly", 2_601L, 0L), "0 disables the limit");
+    }
 }

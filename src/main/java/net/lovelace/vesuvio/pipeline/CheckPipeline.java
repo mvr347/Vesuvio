@@ -1032,12 +1032,16 @@ public final class CheckPipeline {
                     result.explanation(), net.lovelace.vesuvio.i18n.Russian.details(result.details())));
         }
 
-        // 1. Broadcast smart MiniMessage alert to staff
-        alertService.broadcastAlert(player, data, result);
+        // 1-2. Staff chat and Discord: at most one alert per check and player per staff.smart-alerts.min-interval-ms. The database
+        // record below is written for every flag, so the journal stays complete.
+        if (data.tryAlert(result.checkName(), System.currentTimeMillis(), config.getAlertMinIntervalMs())) {
+            // Broadcast smart MiniMessage alert to staff
+            alertService.broadcastAlert(player, data, result);
 
-        // 2. Dispatch Discord Webhook rich embed asynchronously
-        if (discordService != null) {
-            discordService.dispatchAlertAsync(player, data, result);
+            // Dispatch Discord Webhook rich embed asynchronously
+            if (discordService != null) {
+                discordService.dispatchAlertAsync(player, data, result);
+            }
         }
 
         // 3. Queue asynchronous database violation record
