@@ -800,14 +800,7 @@ public final class CheckPipeline {
         // online player unconditionally), so a stale timestamp here really would look exactly like
         // a textbook blink.
         if (player.isInvulnerable()) {
-            data.resetAirTicks();
-            data.resetFlyStreak();
-            data.resetSpeedStreak();
-            data.setPrevHorizontalSpeed(0.0);
-            data.setSpeedPredictionDebt(0.0);
-            data.clearPredictedVector();
-            data.clearPendingVelocity();
-            data.resetPhaseTicks();
+            data.resetKinematicState();
             data.setLastAnyMovementNanos(packetReceiptNanos);
             if (hasPos) {
                 data.setLastPosition(x, y, z, onGround);
@@ -824,14 +817,7 @@ public final class CheckPipeline {
         // Speed. Handled the same way as the invulnerability branch above: nothing carries across
         // the transition, and the silence up to it is not Blink's to read either.
         if (data.hasRecentGameModeChange()) {
-            data.resetAirTicks();
-            data.resetFlyStreak();
-            data.resetSpeedStreak();
-            data.setPrevHorizontalSpeed(0.0);
-            data.setSpeedPredictionDebt(0.0);
-            data.clearPredictedVector();
-            data.clearPendingVelocity();
-            data.resetPhaseTicks();
+            data.resetKinematicState();
             data.setLastAnyMovementNanos(packetReceiptNanos);
             if (hasPos) {
                 data.setLastPosition(x, y, z, onGround);
@@ -901,14 +887,7 @@ public final class CheckPipeline {
 
         // Exclude teleports / huge jumps
         if (Math.abs(deltaX) > 10.0 || Math.abs(deltaY) > 15.0 || Math.abs(deltaZ) > 10.0) {
-            data.resetAirTicks();
-            data.resetFlyStreak();
-            data.resetSpeedStreak();
-            data.setPrevHorizontalSpeed(0.0);
-            data.setSpeedPredictionDebt(0.0);
-            data.clearPredictedVector();
-            data.clearPendingVelocity();
-            data.resetPhaseTicks();
+            data.resetKinematicState();
             return;
         }
 

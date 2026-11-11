@@ -1258,6 +1258,25 @@ public final class UserData {
                         states, grace > 0 ? now + grace : 0);
     }
 
+    /**
+     * Forgets everything the movement checks carry from one packet to the next (air time, Fly/Speed accumulators, the predicted
+     * motion vector, a pending knockback, Phase ticks). Used where the next delta cannot be trusted: invulnerability, a game
+     * mode change, a teleport-sized jump. One method instead of the same eight lines copied into each branch, where one copy
+     * always missed whatever state was added last.
+     */
+    public void resetKinematicState() {
+        resetAirTicks();
+        resetFlyStreak();
+        resetSpeedStreak();
+        setPrevHorizontalSpeed(0.0);
+        setSpeedPredictionDebt(0.0);
+        clearPredictedVector();
+        clearPendingVelocity();
+        resetPhaseTicks();
+        resetPhaseEntry();
+        stepEvidence.reset();
+    }
+
     private volatile long movementResetNanos;
     private final net.lovelace.vesuvio.engine.OrderedTaskQueue packetChecks =
             new net.lovelace.vesuvio.engine.OrderedTaskQueue();
