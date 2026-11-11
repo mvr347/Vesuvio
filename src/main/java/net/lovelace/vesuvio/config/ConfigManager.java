@@ -957,10 +957,6 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.world.vehicleclip.enabled", true);
     }
 
-    public boolean isXrayEnabled() {
-        return config.getBoolean("mechanics.world.xray.enabled", true);
-    }
-
     public boolean isTowerEnabled() {
         return config.getBoolean("mechanics.world.tower.enabled", true);
     }

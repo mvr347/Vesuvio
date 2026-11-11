@@ -71,7 +71,7 @@ public final class WorldInteractionListener implements Listener {
      * starts on one block and finishes on another has not mined anything impossibly fast, and
      * pairing those two events produced exactly that reading.
      */
-    private record DigStart(String blockKey, long startedAtNanos, long minimumMillis, Material material, long epoch) {}
+    private record DigStart(String blockKey, int startedAtTick, long minimumMillis, Material material, long epoch) {}
 
     private final Map<UUID, DigStart> blockDamageTimes = new ConcurrentHashMap<>();
 
@@ -83,12 +83,15 @@ public final class WorldInteractionListener implements Listener {
      * CLAUDE.md: no "N in a row" counters, a decaying accumulator instead.
      */
     private final Map<UUID, DecayingEvidence> fastBreakEvidence = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastBlockPlaceNanos = new ConcurrentHashMap<>();
-    private final Map<UUID, AtomicInteger> fastPlaceStreak = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastTowerPlaceNanos = new ConcurrentHashMap<>();
-    private final Map<UUID, AtomicInteger> towerStreak = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> eatStartMillis = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> bowDrawStartMillis = new ConcurrentHashMap<>();
+    // Placements in a sliding 2 s window (2026-11-11). The gap between two placements measured on the server clock is ~0 for
+    // every pair processed in one burst after a hang; a count over a window that is dropped when the server hitched is not.
+    private static final long PLACE_WINDOW_MS = 2000L;
+    private static final int FAST_PLACE_MAX_PER_WINDOW = 30; // vanilla: one per 4 ticks = 10 per 2 s
+    private static final int TOWER_MAX_PER_WINDOW = 12;      // vanilla pillar: one per ~8-10 ticks = 4-5 per 2 s
+    private final Map<UUID, net.lovelace.vesuvio.data.RateWindow> placeWindows = new ConcurrentHashMap<>();
+    private final Map<UUID, net.lovelace.vesuvio.data.RateWindow> towerWindows = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> eatStartTick = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> bowDrawStartTick = new ConcurrentHashMap<>();
 
     public WorldInteractionListener(UserDataManager userDataManager, CheckPipeline pipeline, ConfigManager config) {
         this.userDataManager = userDataManager;
@@ -160,68 +163,46 @@ public final class WorldInteractionListener implements Listener {
         }
         }
 
-        long now = System.nanoTime();
+        long nowMillis = System.currentTimeMillis();
+        long hitch = net.lovelace.vesuvio.engine.ServerHitch.lastHitchMillis();
 
-        // 1.3 FastPlace: vanilla imposes roughly a 4-tick (200ms) cooldown between block
-        // placements. Flagging at half that (100ms) leaves slack for a fast legitimate clicker
-        // and for the occasional double-packet edge case, while still catching a client that
-        // places every tick or faster.
+        // 1.3 FastPlace: vanilla imposes roughly a 4-tick (200 ms) cooldown between block placements, so a client cannot place more
+        // than about 10 blocks in 2 seconds; 30 leaves room for a fast clicker and double packets.
         if (config.isFastPlaceEnabled()) {
-            Long lastPlace = lastBlockPlaceNanos.get(player.getUniqueId());
-            if (lastPlace != null) {
-                double elapsedMs = (now - lastPlace) / 1_000_000.0;
-                AtomicInteger streak = fastPlaceStreak.computeIfAbsent(player.getUniqueId(), k -> new AtomicInteger());
-                if (elapsedMs < 100.0) {
-                    int count = streak.incrementAndGet();
-                    if (count >= 3) {
-                        streak.set(0);
-                        CheckResult result = CheckResult.flag(
-                                "FastPlace",
-                                0.93,
-                                10.0,
-                                String.format(Locale.US, "Слишком быстрая установка блоков (%.0f мс, минимум около 200 мс)", elapsedMs),
-                                Map.of("elapsedMs", elapsedMs, "streak", count)
-                        );
-                        pipeline.report(player, data, result, result.vl(), 16.0);
-                    }
-                } else {
-                    streak.set(0);
-                }
+            int count = placeWindows.computeIfAbsent(player.getUniqueId(),
+                    k -> new net.lovelace.vesuvio.data.RateWindow(PLACE_WINDOW_MS)).record(nowMillis, hitch);
+            if (count > FAST_PLACE_MAX_PER_WINDOW) {
+                placeWindows.get(player.getUniqueId()).clear();
+                CheckResult result = CheckResult.flag(
+                        "FastPlace",
+                        0.93,
+                        6.0,
+                        String.format(Locale.US, "Слишком быстрая установка блоков (%d блоков за 2 с, максимум около %d)", count, FAST_PLACE_MAX_PER_WINDOW),
+                        Map.of("blocksInWindow", count, "windowMs", PLACE_WINDOW_MS)
+                );
+                pipeline.report(player, data, result, result.vl(), 16.0);
             }
-            lastBlockPlaceNanos.put(player.getUniqueId(), now);
         }
 
-        // 1.4 Tower: pillaring up faster than a jump-and-place cycle can physically repeat. A
-        // vanilla jump takes several ticks to rise far enough to place another block underfoot
-        // (~250-300ms minimum in practice); a Tower/NoSlow-style cheat spams placements straight
-        // up with no jump delay at all. Narrower and stricter than FastPlace above because it
-        // additionally requires the specific "block appears directly beneath the player's new
-        // feet position" geometry, not just any two fast placements.
+        // 1.4 Tower: pillaring up faster than a jump-and-place cycle can physically repeat. A vanilla jump takes several ticks
+        // to rise far enough to place another block underfoot; a Tower cheat places straight up with no jump delay at all.
+        // Narrower than FastPlace because it additionally requires the "block appears directly beneath the player" geometry.
         if (config.isTowerEnabled() && placed.getX() == player.getLocation().getBlockX()
                 && placed.getZ() == player.getLocation().getBlockZ()
                 && placed.getY() == player.getLocation().getBlockY() - 1) {
-            Long lastTower = lastTowerPlaceNanos.get(player.getUniqueId());
-            if (lastTower != null) {
-                double elapsedMs = (now - lastTower) / 1_000_000.0;
-                AtomicInteger streak = towerStreak.computeIfAbsent(player.getUniqueId(), k -> new AtomicInteger());
-                if (elapsedMs < 150.0) {
-                    int count = streak.incrementAndGet();
-                    if (count >= 3) {
-                        streak.set(0);
-                        CheckResult result = CheckResult.flag(
-                                "Tower",
-                                0.92,
-                                11.0,
-                                String.format(Locale.US, "Постройка столба быстрее допустимой физики прыжка (%.0f мс между блоками, минимум около 250 мс)", elapsedMs),
-                                Map.of("elapsedMs", elapsedMs, "streak", count)
-                        );
-                        pipeline.report(player, data, result, result.vl(), 17.0);
-                    }
-                } else {
-                    streak.set(0);
-                }
+            int count = towerWindows.computeIfAbsent(player.getUniqueId(),
+                    k -> new net.lovelace.vesuvio.data.RateWindow(PLACE_WINDOW_MS)).record(nowMillis, hitch);
+            if (count > TOWER_MAX_PER_WINDOW) {
+                towerWindows.get(player.getUniqueId()).clear();
+                CheckResult result = CheckResult.flag(
+                        "Tower",
+                        0.92,
+                        6.0,
+                        String.format(Locale.US, "Постройка столба быстрее допустимой физики прыжка (%d блоков под собой за 2 с, максимум около %d)", count, TOWER_MAX_PER_WINDOW),
+                        Map.of("blocksInWindow", count, "windowMs", PLACE_WINDOW_MS)
+                );
+                pipeline.report(player, data, result, result.vl(), 17.0);
             }
-            lastTowerPlaceNanos.put(player.getUniqueId(), now);
         }
 
         // 1.5 BlockReach / GhostHand on the block being placed against.
@@ -364,13 +345,10 @@ public final class WorldInteractionListener implements Listener {
     public void forgetPlayer(UUID uuid) {
         blockDamageTimes.remove(uuid);
         fastBreakEvidence.remove(uuid);
-        miningProfiles.remove(uuid);
-        lastBlockPlaceNanos.remove(uuid);
-        fastPlaceStreak.remove(uuid);
-        lastTowerPlaceNanos.remove(uuid);
-        towerStreak.remove(uuid);
-        eatStartMillis.remove(uuid);
-        bowDrawStartMillis.remove(uuid);
+        placeWindows.remove(uuid);
+        towerWindows.remove(uuid);
+        eatStartTick.remove(uuid);
+        bowDrawStartTick.remove(uuid);
     }
 
     private boolean hasAdjacentSolidBlock(Block b) {
@@ -415,7 +393,7 @@ public final class WorldInteractionListener implements Listener {
             // Repeated START_DESTROY packets for one dig must not move its clock forward.
             if (previous == null || !previous.blockKey().equals(key) || previous.material() != block.getType()
                     || previous.epoch() != config.runtime().detectionEpoch()) {
-                blockDamageTimes.put(player.getUniqueId(), new DigStart(key, System.nanoTime(), minimum,
+                blockDamageTimes.put(player.getUniqueId(), new DigStart(key, org.bukkit.Bukkit.getCurrentTick(), minimum,
                         block.getType(), config.runtime().detectionEpoch()));
             }
         }
@@ -457,7 +435,10 @@ public final class WorldInteractionListener implements Listener {
         if (breakData != null && !breakData.hasRecentTeleport() && hardness > 0.0f && dig != null
                 && dig.epoch() == config.runtime().detectionEpoch()
                 && dig.material() == block.getType() && dig.blockKey().equals(blockKey(block))) {
-            long elapsed = (System.nanoTime() - dig.startedAtNanos()) / 1_000_000L;
+            // Counted in SERVER ticks (2026-11-11), not nanoTime between two main-thread events: after a server hang the queued start
+            // and stop packets are handled back to back, so the nanoTime gap is ~0 while the tick counter - the server catches up by
+            // running the missed ticks - still shows the real time the player dug for. This is also what vanilla itself measures.
+            long elapsed = (long) (org.bukkit.Bukkit.getCurrentTick() - dig.startedAtTick()) * 50L;
             // Paper computes actual per-tick progress, including modern mining attributes,
             // custom tools, enchantments, effects and harvestability. Use the faster endpoint
             // if equipment/effects changed during this dig; uncertainty must favour the player.
@@ -494,12 +475,6 @@ public final class WorldInteractionListener implements Listener {
             } else {
                 evidence.relieve(0.5, nowNanos, halfLife);
             }
-        }
-
-        // 2.5 X-Ray Statistical & Burst Ore Detection
-        UserData uData = userDataManager.get(player.getUniqueId());
-        if (uData != null) {
-            processXrayCheck(player, block, uData);
         }
 
         // 2.6 Ghost-block resync: the break resolves to air regardless of what drops, so nearby
@@ -572,73 +547,6 @@ public final class WorldInteractionListener implements Listener {
 
         CheckResult result = CheckResult.flag("FastBreak", confidence, vl, explanation, details);
         pipeline.report(player, data, result, result.vl(), 20.0);
-    }
-
-    private static final class MiningProfile {
-        int stoneCount = 0;
-        int diamondOreCount = 0;
-        long windowStart = System.currentTimeMillis();
-        int burstOreCount = 0;
-    }
-
-    private final Map<UUID, MiningProfile> miningProfiles = new ConcurrentHashMap<>();
-
-    private void processXrayCheck(Player player, Block block, UserData data) {
-        if (!config.isXrayEnabled()) return;
-        Material mat = block.getType();
-        boolean isRareOre = (mat == Material.DIAMOND_ORE || mat == Material.DEEPSLATE_DIAMOND_ORE ||
-                             mat == Material.ANCIENT_DEBRIS || mat == Material.EMERALD_ORE || mat == Material.DEEPSLATE_EMERALD_ORE);
-        boolean isCommonStone = (mat == Material.STONE || mat == Material.DEEPSLATE || mat == Material.TUFF ||
-                                 mat == Material.NETHERRACK || mat == Material.GRANITE || mat == Material.DIORITE || mat == Material.ANDESITE);
-
-        if (!isRareOre && !isCommonStone) return;
-
-        MiningProfile profile = miningProfiles.computeIfAbsent(player.getUniqueId(), k -> new MiningProfile());
-        long now = System.currentTimeMillis();
-
-        if (now - profile.windowStart > 60_000L) {
-            profile.burstOreCount = 0;
-            profile.windowStart = now;
-        }
-
-        if (isCommonStone) {
-            profile.stoneCount++;
-            if (profile.stoneCount + profile.diamondOreCount > 600) {
-                profile.stoneCount /= 2;
-                profile.diamondOreCount /= 2;
-            }
-        } else if (isRareOre) {
-            profile.diamondOreCount++;
-            profile.burstOreCount++;
-
-            // Burst check: 6+ rare ores mined in < 60s
-            if (profile.burstOreCount >= 6) {
-                CheckResult result = CheckResult.flag(
-                        "XrayBurst",
-                        0.92,
-                        15.0,
-                        String.format(Locale.US, "Слишком частые находки редкой руды (%d блоков %s за менее чем 60 с)", profile.burstOreCount, mat.name()),
-                        Map.of("ore", mat.name(), "burstCount", profile.burstOreCount)
-                );
-                pipeline.report(player, data, result, result.vl(), 25.0);
-            }
-
-            // Statistical ratio check: when >= 4 rare ores mined, ratio > 25% is abnormal
-            int total = profile.stoneCount + profile.diamondOreCount;
-            if (profile.diamondOreCount >= 4 && total >= 10) {
-                double ratio = (double) profile.diamondOreCount / total;
-                if (ratio > 0.25) {
-                    CheckResult result = CheckResult.flag(
-                            "XrayStatistical",
-                            0.95,
-                            20.0,
-                            String.format(Locale.US, "Аномальная доля руды среди добытых блоков: %.1f%% (прокоп прямо к руде)", ratio * 100),
-                            Map.of("oreCount", profile.diamondOreCount, "stoneCount", profile.stoneCount, "ratio", ratio)
-                    );
-                    pipeline.report(player, data, result, result.vl(), 30.0);
-                }
-            }
-        }
     }
 
     // -------------------------------------------------------------
@@ -758,12 +666,12 @@ public final class WorldInteractionListener implements Listener {
     // -------------------------------------------------------------
 
     /**
-     * Vanilla eating/drinking takes 32 ticks (1600ms) start to finish for both food and potions
-     * (both fire {@link PlayerItemConsumeEvent} on completion). A 50% safety margin - the same
-     * proportion FastBreak already uses - only flags a completion clearly, not marginally, faster
-     * than any legitimate client could produce.
+     * Eating/drinking runs for the item's own use duration ({@code ItemStack#getMaxItemUseDuration}, 32 ticks for ordinary food
+     * and potions, shorter or longer for custom items) and fires {@link PlayerItemConsumeEvent} on completion. Measured in
+     * SERVER ticks (2026-11-11): the gap between two main-thread events in nanoTime is ~0 after a server hang. 50% of the use
+     * duration is the margin, as for FastBreak.
      */
-    private static final long MIN_EAT_MS = 800L;
+    private static final double MIN_EAT_FRACTION = 0.5;
 
     /**
      * Vanilla lets a bow be released at any charge for a weaker shot - there is no minimum draw
@@ -771,7 +679,7 @@ public final class WorldInteractionListener implements Listener {
      * a shot claiming near-maximum force (which vanilla only reaches after roughly a second of
      * charging) with a draw time far too short to have earned it.
      */
-    private static final double MIN_FULL_CHARGE_MS = 700.0;
+    private static final int MIN_FULL_CHARGE_TICKS = 14; // 700 ms
     private static final float NEAR_FULL_FORCE = 0.95f;
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -786,11 +694,13 @@ public final class WorldInteractionListener implements Listener {
         if (item == null) return;
 
         if (config.isFastEatEnabled() && (item.getType().isEdible() || item.getType() == Material.POTION)) {
-            eatStartMillis.putIfAbsent(player.getUniqueId(), System.currentTimeMillis());
+            eatStartTick.putIfAbsent(player.getUniqueId(), org.bukkit.Bukkit.getCurrentTick());
         }
 
-        if (config.isFastBowEnabled() && (item.getType() == Material.BOW || item.getType() == Material.CROSSBOW)) {
-            bowDrawStartMillis.putIfAbsent(player.getUniqueId(), System.currentTimeMillis());
+        // A crossbow is loaded, not drawn-and-released: Quick Charge, multishot and loading in the off hand all change what
+        // "fast" means, so it is not judged at all.
+        if (config.isFastBowEnabled() && item.getType() == Material.BOW) {
+            bowDrawStartTick.putIfAbsent(player.getUniqueId(), org.bukkit.Bukkit.getCurrentTick());
         }
     }
 
@@ -802,18 +712,21 @@ public final class WorldInteractionListener implements Listener {
         UserData data = userDataManager.get(player.getUniqueId());
         if (data == null) return;
 
-        Long startMillis = eatStartMillis.remove(player.getUniqueId());
-        if (startMillis == null) return; // never observed the start - nothing to compare
+        Integer startTick = eatStartTick.remove(player.getUniqueId());
+        if (startTick == null) return; // never observed the start - nothing to compare
 
-        long elapsed = System.currentTimeMillis() - startMillis;
-        if (elapsed < MIN_EAT_MS) {
+        int useTicks = event.getItem().getMaxItemUseDuration(player);
+        if (useTicks <= 0) return;
+        long elapsedTicks = org.bukkit.Bukkit.getCurrentTick() - startTick;
+        long minTicks = (long) Math.floor(useTicks * MIN_EAT_FRACTION);
+        if (elapsedTicks < minTicks) {
             CheckResult result = CheckResult.flag(
                     "FastEat",
                     0.93,
-                    9.0,
-                    String.format(Locale.US, "Употребление %s быстрее допустимой анимации (%d мс, минимум около %d мс)",
-                            event.getItem().getType().name(), elapsed, MIN_EAT_MS),
-                    Map.of("item", event.getItem().getType().name(), "elapsedMs", elapsed)
+                    4.0,
+                    String.format(Locale.US, "Употребление %s быстрее допустимой анимации (%d тактов, минимум около %d из %d)",
+                            event.getItem().getType().name(), elapsedTicks, minTicks, useTicks),
+                    Map.of("item", event.getItem().getType().name(), "elapsedTicks", elapsedTicks, "useTicks", useTicks)
             );
             pipeline.report(player, data, result, result.vl(), 14.0);
         }
@@ -828,20 +741,22 @@ public final class WorldInteractionListener implements Listener {
         UserData data = userDataManager.get(player.getUniqueId());
         if (data == null) return;
 
-        Long startMillis = bowDrawStartMillis.remove(player.getUniqueId());
-        if (startMillis == null) return; // never observed the draw start - nothing to compare
+        // Only a bow: a crossbow shot (including one loaded long ago, or after a teleport) has no draw to time.
+        if (event.getBow() == null || event.getBow().getType() != Material.BOW) return;
+        Integer startTick = bowDrawStartTick.remove(player.getUniqueId());
+        if (startTick == null) return; // never observed the draw start - nothing to compare
 
-        long elapsed = System.currentTimeMillis() - startMillis;
+        long elapsedTicks = org.bukkit.Bukkit.getCurrentTick() - startTick;
         float force = event.getForce();
 
-        if (force >= NEAR_FULL_FORCE && elapsed < MIN_FULL_CHARGE_MS) {
+        if (force >= NEAR_FULL_FORCE && elapsedTicks < MIN_FULL_CHARGE_TICKS) {
             CheckResult result = CheckResult.flag(
                     "FastBow",
                     0.90,
-                    8.0,
-                    String.format(Locale.US, "Почти полное натяжение (%.2f) за слишком короткое время (%d мс, минимум около %.0f мс)",
-                            force, elapsed, MIN_FULL_CHARGE_MS),
-                    Map.of("force", force, "elapsedMs", elapsed)
+                    4.0,
+                    String.format(Locale.US, "Почти полное натяжение (%.2f) за слишком короткое время (%d тактов, минимум около %d)",
+                            force, elapsedTicks, MIN_FULL_CHARGE_TICKS),
+                    Map.of("force", force, "elapsedTicks", elapsedTicks)
             );
             pipeline.report(player, data, result, result.vl(), 13.0);
         }

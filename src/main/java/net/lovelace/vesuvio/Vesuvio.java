@@ -265,6 +265,7 @@ public final class Vesuvio extends JavaPlugin {
             try {
                 net.lovelace.vesuvio.engine.TpsCache.update(Bukkit.getTPS());
             } catch (Throwable ignored) {}
+            net.lovelace.vesuvio.engine.ServerHitch.tick(System.currentTimeMillis());
             environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers(), configManager.isAnticheatEnabled());
             if (configManager.isAnticheatEnabled()) aimTrackingService.tick(Bukkit.getOnlinePlayers());
             for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {

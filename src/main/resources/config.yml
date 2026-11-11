@@ -540,8 +540,6 @@ mechanics:
       enabled: true         # Детект BoatClip: устойчивое нахождение любого транспорта (включая
                             # вагонетки) внутри цельного непрозрачного блока при продолжающемся
                             # движении — то же самое, что Phase/Clip у игрока, но для транспорта
-    xray:
-      enabled: true         # Статистический детект паттернов X-Ray и выкапывания руд
     tower:
       enabled: true         # Детект Tower: возведение столбов под себя быстрее, чем позволяет
                             # цикл прыжок-гравитация (реальный минимум ~250мс между блоками)
@@ -593,8 +591,6 @@ mechanics:
     autocriticals: false
     airplace: false
     bedrockbreaker: false
-    xrayburst: false
-    xraystatistical: false
     scaffold: false
     fastbreak: true      # 2026-09-21: копит VL/risk молча, не спамит в чат (см. mechanics.world.fastbreak)
     vehiclefly: false
