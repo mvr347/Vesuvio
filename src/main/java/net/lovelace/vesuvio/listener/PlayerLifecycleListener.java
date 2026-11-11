@@ -20,6 +20,19 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import net.lovelace.vesuvio.engine.AsyncTasks;
+import net.lovelace.vesuvio.engine.EnvironmentSnapshotService;
+import net.lovelace.vesuvio.engine.HitboxHistoryTracker;
+import net.lovelace.vesuvio.engine.LagCompensator;
+import net.lovelace.vesuvio.engine.TransactionManager;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.player.PlayerVelocityEvent;
 
 /**
  * Handles Bukkit player join and quit lifecycle events.
@@ -33,30 +46,30 @@ public final class PlayerLifecycleListener implements Listener {
     private final DatabaseManager databaseManager;
     private final SpectateManager spectateManager;
     private final BrandPacketListener brandListener;
-    private final net.lovelace.vesuvio.engine.LagCompensator lagCompensator;
-    private final net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker;
-    private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
-    private final net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService;
+    private final LagCompensator lagCompensator;
+    private final HitboxHistoryTracker hitboxTracker;
+    private final TransactionManager transactionManager;
+    private final EnvironmentSnapshotService environmentSnapshotService;
     private final WorldInteractionListener worldInteractionListener;
     private final SelfLearningManager selfLearningManager;
     private final BanEvasionManager banEvasionManager;
     private final CheckPipeline checkPipeline;
     private final ConfigManager config;
-    private final java.util.concurrent.Executor backgroundExecutor;
+    private final Executor backgroundExecutor;
 
     public PlayerLifecycleListener(UserDataManager userDataManager,
                                    DatabaseManager databaseManager,
                                    SpectateManager spectateManager,
                                    BrandPacketListener brandListener,
-                                   net.lovelace.vesuvio.engine.LagCompensator lagCompensator,
-                                   net.lovelace.vesuvio.engine.HitboxHistoryTracker hitboxTracker,
-                                   net.lovelace.vesuvio.engine.TransactionManager transactionManager,
-                                   net.lovelace.vesuvio.engine.EnvironmentSnapshotService environmentSnapshotService,
+                                   LagCompensator lagCompensator,
+                                   HitboxHistoryTracker hitboxTracker,
+                                   TransactionManager transactionManager,
+                                   EnvironmentSnapshotService environmentSnapshotService,
                                    WorldInteractionListener worldInteractionListener,
                                    SelfLearningManager selfLearningManager,
                                    BanEvasionManager banEvasionManager,
                                    CheckPipeline checkPipeline,
-                                   ConfigManager config, java.util.concurrent.Executor backgroundExecutor) {
+                                   ConfigManager config, Executor backgroundExecutor) {
         this.backgroundExecutor = backgroundExecutor;
         this.userDataManager = userDataManager;
         this.databaseManager = databaseManager;
@@ -74,8 +87,8 @@ public final class PlayerLifecycleListener implements Listener {
     }
 
     private void runBackground(Runnable task) {
-        net.lovelace.vesuvio.engine.AsyncTasks.run(task, backgroundExecutor).exceptionally(failure -> {
-            java.util.logging.Logger.getLogger("Vesuvio").log(java.util.logging.Level.WARNING,
+        AsyncTasks.run(task, backgroundExecutor).exceptionally(failure -> {
+            Logger.getLogger("Vesuvio").log(Level.WARNING,
                     "Не удалось выполнить фоновую задачу входа игрока", failure);
             return null;
         });
@@ -86,7 +99,7 @@ public final class PlayerLifecycleListener implements Listener {
         Player player = event.getPlayer();
         UserData data = userDataManager.getOrCreate(player);
 
-        java.util.UUID playerId = player.getUniqueId();
+        UUID playerId = player.getUniqueId();
         // Asynchronously load persistent player metrics from database
         runBackground(() -> {
             DatabaseManager.PlayerProfile profile = databaseManager.loadPlayer(playerId);
@@ -152,7 +165,7 @@ public final class PlayerLifecycleListener implements Listener {
             // Persist metrics before eviction
             // Values are read here (main thread, before eviction); only the JDBC write goes
             // off-thread so quitting never blocks the tick. onDisable saves remaining players.
-            final java.util.UUID quitId = player.getUniqueId();
+            final UUID quitId = player.getUniqueId();
             final String quitName = player.getName();
             final double trust = data.getTrustScore();
             final double risk = data.getRiskIndex();
@@ -193,8 +206,8 @@ public final class PlayerLifecycleListener implements Listener {
         }
     }
 
-    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
-    public void onTeleport(org.bukkit.event.player.PlayerTeleportEvent event) {
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeleport(PlayerTeleportEvent event) {
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());
         if (data != null) {
             data.setInitialRotation(false);
@@ -214,16 +227,16 @@ public final class PlayerLifecycleListener implements Listener {
      * itself is an event, so it is recorded the instant it happens and CheckPipeline#processMovement
      * skips the packets that fall inside the gap.
      */
-    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
-    public void onGameModeChange(org.bukkit.event.player.PlayerGameModeChangeEvent event) {
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onGameModeChange(PlayerGameModeChangeEvent event) {
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());
         if (data != null) {
             data.recordGameModeChange();
         }
     }
 
-    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
-    public void onRespawn(org.bukkit.event.player.PlayerRespawnEvent event) {
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onRespawn(PlayerRespawnEvent event) {
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());
         if (data != null) {
             data.setInitialRotation(false);
@@ -243,7 +256,7 @@ public final class PlayerLifecycleListener implements Listener {
      * hacking, since nothing was ever marking "the server just applied external velocity."
      */
     @EventHandler(priority = EventPriority.MONITOR)
-    public void onVelocity(org.bukkit.event.player.PlayerVelocityEvent event) {
+    public void onVelocity(PlayerVelocityEvent event) {
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());
         if (data != null) {
             data.recordVelocity();
