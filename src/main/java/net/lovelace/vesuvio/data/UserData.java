@@ -606,6 +606,9 @@ public final class UserData {
     /** True when a close happened after {@code sinceMillis} (typically the snapshot capture time). */
     public boolean containerClosedAfter(long sinceMillis) { return lastContainerClosedMillis >= sinceMillis && lastContainerClosedMillis != 0L; }
 
+    private final DecayingEvidence stepEvidence = new DecayingEvidence();
+    public DecayingEvidence getStepEvidence() { return stepEvidence; }
+
     private final DecayingEvidence flyEvidence = new DecayingEvidence();
     public DecayingEvidence getFlyEvidence() { return flyEvidence; }
 
@@ -1129,7 +1132,7 @@ public final class UserData {
         resetFlyStreak();
         resetSpeedStreak();
         resetNoFallStreak();
-        resetStepStreak();
+        resetStepStreak(); stepEvidence.reset();
         resetInvMoveStreak();
         resetPhaseTicks();
         phaseEvidence.reset();

@@ -847,7 +847,8 @@ public final class CheckPipeline {
 
         // 1. Timer check runs on every movement packet
         if (config.isTimerEnabled()) {
-            CheckResult timerResult = timerCheck.check(data, lagTolerance, packetReceiptNanos);
+            CheckResult timerResult = timerCheck.check(data, lagTolerance, packetReceiptNanos,
+                    transactionManager != null ? transactionManager.getMsSinceLastAckSent(player.getUniqueId()) : -1.0);
             if (timerResult.isFlag()) {
                 report(player, data, timerResult, timerResult.vl(), timerResult.confidence() * 10.0);
             }

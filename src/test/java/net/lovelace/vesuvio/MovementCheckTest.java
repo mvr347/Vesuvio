@@ -127,7 +127,9 @@ class MovementCheckTest {
         // Three second freeze (chunk load / server hitch), then normal play resumes.
         now += 3000 * MS;
         assertFalse(timerCheck.check(data, 1.0, now).isFlag());
-        assertEquals(0.0, data.getTimerBalanceMs(), 1e-9, "a stall must reset, not credit");
+        // 2026-11-11: no longer reset to 0 (that left a client that froze for a second no catch-up headroom); the balance
+        // is clamped to the floor instead - a stall never credits, and the floor leaves room for the catch-up burst.
+        assertEquals(-250.0, data.getTimerBalanceMs(), 1e-9, "a stall must floor the balance, not credit");
     }
 
     // ------------------------------------------------------------------

@@ -40,7 +40,9 @@ class CheatUtilsChecksTest {
         assertFalse(check.check(data, 1.0, false).isFlag());
 
         // A full block ascended in one packet while still claiming to be on the ground is past
-        // vanilla's 0.6 step height and cannot be a jump.
+        // vanilla's 0.6 step height and cannot be a jump. Since 2026-11-11 one such packet is only evidence (a desynced block,
+        // a dropped teleport also look like it): the second inside ~10 s flags.
+        assertFalse(check.check(data, 1.0, true).isFlag(), "a single step is not enough");
         CheckResult cheatResult = check.check(data, 1.0, true);
         assertTrue(cheatResult.isFlag());
         assertEquals("StepUp", cheatResult.checkName());
