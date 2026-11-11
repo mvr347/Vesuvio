@@ -62,6 +62,13 @@ public final class MoveDirectionCheck {
             return CheckResult.pass("MoveDirection");
         }
 
+        // Knockback from a counter-hit, water and ice all push the player along a vector that has nothing to do with where
+        // they are trying to go, so the movement direction says nothing about the attack direction there.
+        var env = data.getEnvironment();
+        if (data.hasRecentVelocity() || env.inWater() || env.inLava() || env.swimming() || isIce(env.blockBelow())) {
+            return CheckResult.pass("MoveDirection");
+        }
+
         double moveX = data.getLastMoveDeltaX();
         double moveZ = data.getLastMoveDeltaZ();
         double moveSpeed = Math.hypot(moveX, moveZ);
@@ -107,6 +114,11 @@ public final class MoveDirectionCheck {
                         "Атака под углом %.1f° к направлению спринта без его прерывания (%.2f блока/такт, свидетельства %.1f/%.1f)",
                         angleDegrees, moveSpeed, score, EVIDENCE_THRESHOLD),
                 details);
+    }
+
+    private static boolean isIce(org.bukkit.Material m) {
+        return m == org.bukkit.Material.ICE || m == org.bukkit.Material.PACKED_ICE
+                || m == org.bukkit.Material.BLUE_ICE || m == org.bukkit.Material.FROSTED_ICE;
     }
 
     /**

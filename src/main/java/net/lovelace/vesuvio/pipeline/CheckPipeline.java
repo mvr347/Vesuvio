@@ -706,7 +706,7 @@ public final class CheckPipeline {
         }
 
         if (config.isBackTrackEnabled() && hitboxTracker != null && transactionManager != null) {
-            CheckResult backTrackResult = backTrackCheck.check(player, target, data, hitboxTracker, transactionManager, config.getMaxReach());
+            CheckResult backTrackResult = backTrackCheck.check(player, target, data, hitboxTracker, transactionManager, config.getMaxReach(), attack);
             if (backTrackResult.isFlag()) {
                 report(player, data, backTrackResult, backTrackResult.vl(), backTrackResult.confidence() * 10.0);
             }

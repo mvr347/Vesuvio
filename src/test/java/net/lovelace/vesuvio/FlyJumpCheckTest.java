@@ -209,11 +209,36 @@ class FlyJumpCheckTest {
         UserData data = new UserData(UUID.randomUUID(), "Cheater");
         data.setEnvironment(TestSnapshots.builder().jumpStrength(0.42).build());
         data.setLastPosition(0, 64.0, 0, true);
-        data.setLastPosition(0, 64.03, 0, true);
+        // The exploit reports onGround=false (a real crit needs it), and it repeats attack after attack: since 2026-11-11
+        // a single micro-hop is only evidence, the third one flags.
+        data.setLastPosition(0, 64.03, 0, false);
 
+        assertFalse(check.check(data).isFlag());
+        assertFalse(check.check(data).isFlag());
         CheckResult result = check.check(data);
         assertTrue(result.isFlag());
         assertEquals("AutoCriticals", result.checkName());
+    }
+
+    @Test
+    void autoCriticalsIgnoresAStepOntoACarpetOrPathBlock() {
+        // +0.0625 with onGround=true is how vanilla reports stepping onto a carpet/path/farmland/snow layer.
+        AutoCriticalsCheck check = new AutoCriticalsCheck();
+        UserData data = new UserData(UUID.randomUUID(), "Walker");
+        data.setEnvironment(TestSnapshots.builder().jumpStrength(0.42).build());
+        data.setLastPosition(0, 64.0, 0, true);
+        data.setLastPosition(0, 64.0625, 0, true);
+        for (int i = 0; i < 10; i++) assertFalse(check.check(data).isFlag());
+    }
+
+    @Test
+    void autoCriticalsIgnoresMicroMovementNextToAClimbable() {
+        AutoCriticalsCheck check = new AutoCriticalsCheck();
+        UserData data = new UserData(UUID.randomUUID(), "Climber");
+        data.setEnvironment(TestSnapshots.builder().jumpStrength(0.42).nearClimbable(true).build());
+        data.setLastPosition(0, 64.0, 0, true);
+        data.setLastPosition(0, 64.03, 0, false);
+        for (int i = 0; i < 10; i++) assertFalse(check.check(data).isFlag());
     }
 
     @Test
@@ -239,8 +264,10 @@ class FlyJumpCheckTest {
         UserData data = new UserData(UUID.randomUUID(), "CheatingHeavyArmor");
         data.setEnvironment(TestSnapshots.builder().jumpStrength(0.12).build());
         data.setLastPosition(0, 64.0, 0, true);
-        data.setLastPosition(0, 64.01, 0, true);
+        data.setLastPosition(0, 64.01, 0, false);
 
+        check.check(data);
+        check.check(data);
         assertTrue(check.check(data).isFlag());
     }
 

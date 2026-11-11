@@ -143,11 +143,16 @@ public final class HitboxHistoryTracker {
      * measured round-trip rather than trusted latency they report.
      */
     public double findRequiredRewindMs(Player target, double eyeX, double eyeY, double eyeZ, double maxReach) {
+        return findRequiredRewindMs(target, eyeX, eyeY, eyeZ, maxReach, System.nanoTime());
+    }
+
+    /** Same, with the age measured from {@code nowNanos} (the moment the attack packet arrived) instead of from this call. */
+    public double findRequiredRewindMs(Player target, double eyeX, double eyeY, double eyeZ, double maxReach, long nowNanos) {
         Deque<BoxSnapshot> queue = history.get(target.getUniqueId());
         if (queue == null) return -1;
 
         synchronized (queue) {
-            return minimumRequiredRewindMs(queue, eyeX, eyeY, eyeZ, maxReach, System.nanoTime());
+            return minimumRequiredRewindMs(queue, eyeX, eyeY, eyeZ, maxReach, nowNanos);
         }
     }
 

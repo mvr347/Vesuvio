@@ -628,6 +628,11 @@ public final class UserData {
     /** True when a close happened after {@code sinceMillis} (typically the snapshot capture time). */
     public boolean containerClosedAfter(long sinceMillis) { return lastContainerClosedMillis >= sinceMillis && lastContainerClosedMillis != 0L; }
 
+    private final DecayingEvidence autoCritEvidence = new DecayingEvidence();
+    public DecayingEvidence getAutoCritEvidence() { return autoCritEvidence; }
+    private final DecayingEvidence backTrackEvidence = new DecayingEvidence();
+    public DecayingEvidence getBackTrackEvidence() { return backTrackEvidence; }
+
     private final DecayingEvidence stepEvidence = new DecayingEvidence();
     public DecayingEvidence getStepEvidence() { return stepEvidence; }
 
