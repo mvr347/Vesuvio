@@ -31,7 +31,10 @@ public final class GCDAimCheck {
     // into check() below, so this is just the fallback if that's somehow skipped.
     private static final float DEFAULT_MIN_ROTATION = 0.3f;
     private static final float MAX_ROTATION = 55.0f; // Exclude flick/teleport/180 turns
-    private static final int STREAK_THRESHOLD = 3;   // Must fail 3 consecutive times during combat
+    private static final int STREAK_THRESHOLD = 3;   // Minimum number of suspicious samples behind the evidence
+    private static final double EVIDENCE_THRESHOLD = 2.7; // three samples always decay a little, so not 3.0
+    private static final double EVIDENCE_HALF_LIFE_MS = 4000.0;
+    private static final float MAX_RELIABLE_YAW = 32768.0f;
 
     public CheckResult check(UserData data, float deltaYaw, float deltaPitch) {
         return check(data, deltaYaw, deltaPitch, DEFAULT_MIN_ROTATION);
@@ -40,7 +43,12 @@ public final class GCDAimCheck {
     public CheckResult check(UserData data, float deltaYaw, float deltaPitch, float minRotation) {
         // 1. Only analyze aimbot rotations during combat interactions (not while walking/jumping around)
         if (!data.isInCombat()) {
-            data.decrementGcdStreak();
+            data.getGcdEvidence().relieve(1.0, System.nanoTime(), EVIDENCE_HALF_LIFE_MS);
+            return CheckResult.pass("GCDAim");
+        }
+
+        // A yaw this large has lost its float precision: the remainder is rounding noise, not a quantization signature.
+        if (Math.abs(data.getLastYaw()) > MAX_RELIABLE_YAW) {
             return CheckResult.pass("GCDAim");
         }
 
@@ -51,23 +59,28 @@ public final class GCDAimCheck {
         }
 
         // 3. Euclidean GCD on rotation deltas
-        double gcd = calculateGCD(deltaYaw, deltaPitch);
+        // The remainder tolerance follows the float resolution at this yaw (2 ulp) and never drops below 0.0005 degrees.
+        double tolerance = Math.max(0.0005, 2.0 * Math.ulp(Math.abs(data.getLastYaw())));
+        double gcd = calculateGCD(deltaYaw, deltaPitch, tolerance);
 
         // In Minecraft, even at 0% sensitivity, the smallest divisor is 0.0096 degrees.
         // Aimbots using software trigonometry collapse GCD below 0.008 degrees.
+        long now = System.nanoTime();
         if (gcd < 0.008) {
-            data.incrementGcdStreak();
+            // Accumulated, not counted (2026-11-11): a streak of N is reset by one honest sample, which a humanised aimbot adds
+            // on purpose, and on the false side it is reached by chance on tiny float-rounded rotations.
+            double score = data.getGcdEvidence().reward(1.0, now, EVIDENCE_HALF_LIFE_MS);
 
-            if (data.getGcdSuspiciousStreak() >= STREAK_THRESHOLD) {
+            if (score >= EVIDENCE_THRESHOLD && data.getGcdEvidence().events() >= STREAK_THRESHOLD) {
                 Map<String, Object> details = new HashMap<>();
                 details.put("deltaYaw", deltaYaw);
                 details.put("deltaPitch", deltaPitch);
                 details.put("calculatedGCD", gcd);
-                details.put("streak", data.getGcdSuspiciousStreak());
+                details.put("evidence", score);
 
                 String explanation = String.format(Locale.US,
-                        "Серия некорректной дискретизации мыши: %d (поворот: %.2f°, наклон: %.2f°, НОД: %.6f)",
-                        data.getGcdSuspiciousStreak(), deltaYaw, deltaPitch, gcd);
+                        "Накопление некорректной дискретизации мыши: %.1f (поворот: %.2f°, наклон: %.2f°, НОД: %.6f)",
+                        score, deltaYaw, deltaPitch, gcd);
 
                 // Reset streak so we don't spam 20 alerts per second
                 data.resetGcdStreak();
@@ -75,14 +88,18 @@ public final class GCDAimCheck {
                 return CheckResult.flag("GCDAim", 0.94, 2.0, explanation, details);
             }
         } else {
-            // Legitimately quantized mouse rotation steps decay the streak
-            data.decrementGcdStreak();
+            // Legitimately quantized mouse rotation steps refund part of the evidence
+            data.getGcdEvidence().relieve(0.5, now, EVIDENCE_HALF_LIFE_MS);
         }
 
         return CheckResult.pass("GCDAim");
     }
 
     public static double calculateGCD(double a, double b) {
+        return calculateGCD(a, b, 0.0005);
+    }
+
+    public static double calculateGCD(double a, double b, double remainderTolerance) {
         if (a < b) {
             double temp = a;
             a = b;
@@ -100,7 +117,7 @@ public final class GCDAimCheck {
             }
 
             // If remainder is negligible (< 0.0005 degrees), b is an exact divisor
-            if (r < 0.0005 || (b - r) < 0.0005) {
+            if (r < remainderTolerance || (b - r) < remainderTolerance) {
                 return b;
             }
             a = b;

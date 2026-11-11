@@ -604,7 +604,8 @@ public final class CheckPipeline {
 
         // 2. BadPackets: InventoryAttack check
         if (config.isBadPacketsEnabled() && config.isBadPacketsInventoryAttack()) {
-            CheckResult invResult = badPacketsCheck.checkInventoryAttack(data);
+            CheckResult invResult = badPacketsCheck.checkInventoryAttack(data,
+                    transactionManager != null ? transactionManager.getTransactionPing(player.getUniqueId()) : -1.0);
             if (invResult.isFlag()) {
                 report(player, data, invResult, invResult.vl(), 15.0);
             }

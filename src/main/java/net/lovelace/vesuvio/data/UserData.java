@@ -517,6 +517,9 @@ public final class UserData {
         this.initialRotation = initialRotation;
     }
 
+    private final DecayingEvidence gcdEvidence = new DecayingEvidence();
+    public DecayingEvidence getGcdEvidence() { return gcdEvidence; }
+
     public int getGcdSuspiciousStreak() {
         return gcdSuspiciousStreak;
     }
@@ -530,6 +533,7 @@ public final class UserData {
     }
 
     public void resetGcdStreak() {
+        gcdEvidence.reset();
         this.gcdSuspiciousStreak = 0;
     }
 

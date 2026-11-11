@@ -44,12 +44,26 @@ public final class BadPacketsCheck {
      * observe a view mid-swap or race the main thread's own inventory handling.
      */
     public CheckResult checkInventoryAttack(net.lovelace.vesuvio.data.UserData data) {
+        return checkInventoryAttack(data, -1.0);
+    }
+
+    /**
+     * An attack with a container open is only suspicious when the container has been open longer than the client needs to
+     * learn it opened (grace max(400 ms, 2 * RTT + 150 ms)) and no close arrived after the snapshot was taken. CREATIVE is
+     * excluded in the snapshot itself.
+     *
+     * @param rttMs transactional round-trip time, or negative when unknown
+     */
+    public CheckResult checkInventoryAttack(net.lovelace.vesuvio.data.UserData data, double rttMs) {
         if (data == null) return CheckResult.pass("BadPackets");
 
         net.lovelace.vesuvio.engine.EnvironmentSnapshot env = data.getEnvironment();
         if (!env.isFresh(System.currentTimeMillis(), 500L)) return CheckResult.pass("BadPackets");
 
-        if (env.containerOpen()) {
+        long now = System.currentTimeMillis();
+        double graceMs = Math.max(400.0, 2.0 * Math.max(0.0, rttMs) + 150.0);
+        boolean openLongEnough = env.containerOpenSinceMillis() != 0L && now - env.containerOpenSinceMillis() >= graceMs;
+        if (env.containerOpen() && openLongEnough && !data.containerClosedAfter(env.captureMillis())) {
             Map<String, Object> details = Collections.singletonMap("containerType", env.openInventoryType());
             return CheckResult.flag("BadPackets", 0.95, 2.5,
                     "Атака сущности при открытом контейнере или инвентаре", details);
