@@ -56,7 +56,7 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- PacketEvents Spigot / Paper (Shaded as requested in task.txt) -->
+        <!-- PacketEvents Spigot / Paper (Shaded as requested by the project owner) -->
         <dependency>
             <groupId>com.github.retrooper</groupId>
             <artifactId>packetevents-spigot</artifactId>
