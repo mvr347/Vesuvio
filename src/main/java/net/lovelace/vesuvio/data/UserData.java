@@ -967,6 +967,38 @@ public final class UserData {
     // vehicle-riding equivalent of Phase/Clip above.
     // -------------------------------------------------------------
     private volatile int vehicleClipTicks = 0;
+    // Block-state desync (2026-11-11): after a place or break the player's OWN client had cancelled by the server, the client still
+    // holds a ghost block for a round trip. Whatever it does against that block in this window is not a cheat.
+    private volatile long lastOwnBlockDesyncMillis = 0L;
+    public void markOwnBlockDesync() { this.lastOwnBlockDesyncMillis = System.currentTimeMillis(); }
+    public long getLastOwnBlockDesyncMillis() { return lastOwnBlockDesyncMillis; }
+    /** True within {@code rttMs + 500 ms} of the last own cancelled place/break (RTT unknown counts as 0). */
+    public boolean inOwnBlockDesyncWindow(double rttMs) {
+        long last = lastOwnBlockDesyncMillis;
+        return last != 0L && System.currentTimeMillis() - last < Math.max(0.0, rttMs) + 500.0;
+    }
+
+    private final DecayingEvidence airPlaceEvidence = new DecayingEvidence();
+    private final DecayingEvidence scaffoldEvidence = new DecayingEvidence();
+    private final DecayingEvidence ghostHandEvidence = new DecayingEvidence();
+    private final DecayingEvidence blockReachEvidence = new DecayingEvidence();
+    private final DecayingEvidence vehicleFlyEvidence = new DecayingEvidence();
+    public DecayingEvidence getAirPlaceEvidence() { return airPlaceEvidence; }
+    public DecayingEvidence getScaffoldEvidence() { return scaffoldEvidence; }
+    public DecayingEvidence getGhostHandEvidence() { return ghostHandEvidence; }
+    public DecayingEvidence getBlockReachEvidence() { return blockReachEvidence; }
+    public DecayingEvidence getVehicleFlyEvidence() { return vehicleFlyEvidence; }
+
+    private double vehiclePrevDeltaY = Double.NaN;
+    private long vehiclePrevDeltaYMillis = 0L;
+    /** Stores this vehicle tick's deltaY and returns the previous tick's (NaN when there is no recent one). */
+    public synchronized double swapVehicleDeltaY(double deltaY, long nowMillis) {
+        double previous = (nowMillis - vehiclePrevDeltaYMillis) <= 250L ? vehiclePrevDeltaY : Double.NaN;
+        vehiclePrevDeltaY = deltaY;
+        vehiclePrevDeltaYMillis = nowMillis;
+        return previous;
+    }
+
     public int getVehicleClipTicks() { return vehicleClipTicks; }
     public void incrementVehicleClipTicks() { this.vehicleClipTicks++; }
     public void decrementVehicleClipTicks() { this.vehicleClipTicks = Math.max(0, this.vehicleClipTicks - 1); }

@@ -1007,6 +1007,11 @@ public final class CheckPipeline {
      *
      * @return whether the flag was accepted (reached handleFlag)
      */
+    /** Transactional round-trip time in milliseconds (never Player#getPing()), or -1 when unknown. */
+    public double transactionRtt(java.util.UUID uuid) {
+        return transactionManager != null ? transactionManager.getTransactionPing(uuid) : -1.0;
+    }
+
     public boolean report(Player player, UserData data, CheckResult result, double vl, double risk) {
         return reportInternal(player, data, result, vl, risk, false);
     }

@@ -114,9 +114,18 @@ public final class WorldInteractionListener implements Listener {
         Block placed = event.getBlockPlaced();
         Block against = event.getBlockAgainst();
 
+        // The player's own client may still hold a ghost block from a place/break the server cancelled a moment ago: placing
+        // "against air" or "through a wall" in that window is the desync talking, not a cheat.
+        boolean inDesync = data.inOwnBlockDesyncWindow(pipeline.transactionRtt(player.getUniqueId()));
+
         // 1.1 AirPlace: placing block against air or disconnected in space
-        if (config.isAirPlaceEnabled() && (against.getType().isAir() || !hasAdjacentSolidBlock(placed))) {
-            if (config.mayPunish()) event.setCancelled(true);
+        if (!inDesync && config.isAirPlaceEnabled() && (against.getType().isAir() || !hasAdjacentSolidBlock(placed))) {
+            // One such placement is suspicious, two within about 20 s are a flag. The placement itself is still refused.
+            if (config.mayPunish()) {
+                event.setCancelled(true);
+                data.markOwnBlockDesync();
+            }
+            if (!accumulate(data.getAirPlaceEvidence(), 2)) return;
             Map<String, Object> details = new HashMap<>();
             details.put("placed", placed.getType().name());
             details.put("against", against.getType().name());
@@ -124,7 +133,7 @@ public final class WorldInteractionListener implements Listener {
             CheckResult result = CheckResult.flag(
                     "AirPlace",
                     0.99,
-                    15.0,
+                    6.0,
                     "Установка блока в воздухе без соседней опоры",
                     details
             );
@@ -133,7 +142,7 @@ public final class WorldInteractionListener implements Listener {
         }
 
         // 1.2 Scaffold: placing block under feet (y-1) while running/sprinting with forward/upward pitch
-        if (config.isScaffoldEnabled()) {
+        if (!inDesync && config.isScaffoldEnabled()) {
             Location pLoc = player.getLocation();
             if (placed.getY() == pLoc.getBlockY() - 1) {
             float pitch = pLoc.getPitch(); // -90 is straight up, 0 is horizon, 90 is straight down
@@ -144,7 +153,12 @@ public final class WorldInteractionListener implements Listener {
             // Placing directly below feet requires looking down (pitch >= 60°).
             // Scaffold places blocks under feet while pitch is looking horizontally forward (< 40°)
             if (distSq < 1.8 && pitch < 40.0f && (player.isSprinting() || data.getLastDeltaXZ() > 0.22)) {
-                if (config.mayPunish()) event.setCancelled(true);
+                if (config.mayPunish()) {
+                    event.setCancelled(true);
+                    data.markOwnBlockDesync();
+                }
+                // Bridging with a high pitch for one block is ordinary; three in a short time are the cheat.
+                if (!accumulate(data.getScaffoldEvidence(), 3)) return;
                 Map<String, Object> details = new HashMap<>();
                 details.put("pitch", pitch);
                 details.put("placedY", placed.getY());
@@ -154,7 +168,7 @@ public final class WorldInteractionListener implements Listener {
                 CheckResult result = CheckResult.flag(
                         "Scaffold",
                         0.95,
-                        12.0,
+                        5.0,
                         String.format(Locale.US, "Недопустимый угол установки вниз (наклон: %.1f° при минимуме 40°)", pitch),
                         details
                 );
@@ -206,7 +220,7 @@ public final class WorldInteractionListener implements Listener {
         }
 
         // 1.5 BlockReach / GhostHand on the block being placed against.
-        checkBlockReachAndGhostHand(player, data, against, "place");
+        checkBlockReachAndGhostHand(player, data, against, "place", against.getFace(placed));
 
         // 1.6 Ghost-block resync: force the new block state out to nearby clients immediately,
         // rather than relying on the normal chunk-update packet, which lag can delay long enough
@@ -260,9 +274,10 @@ public final class WorldInteractionListener implements Listener {
      * different solid block - interacting with something behind a wall is not something a real
      * client's targeting can produce.
      */
-    private void checkBlockReachAndGhostHand(Player player, UserData data, Block block, String action) {
+    private void checkBlockReachAndGhostHand(Player player, UserData data, Block block, String action, BlockFace face) {
         if (data.hasRecentTeleport()) return;
         if (player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR) return;
+        if (data.inOwnBlockDesyncWindow(pipeline.transactionRtt(player.getUniqueId()))) return;
 
         Location eye = player.getEyeLocation();
         Location blockCenter = block.getLocation().add(0.5, 0.5, 0.5);
@@ -273,13 +288,15 @@ public final class WorldInteractionListener implements Listener {
             double maxReach = (attr != null) ? attr.getValue() : 4.5;
             // Generous buffer: distance is measured to the block's center, not its nearest face/
             // corner, which can legitimately be up to ~0.87 blocks closer at a diagonal.
-            double allowedReach = maxReach + 0.9;
+            // +0.5 more (2026-11-11): the eye height follows the pose (sneak, swim, crawl), and the pose in the snapshot the server reads
+            // can be a tick behind the one the client aimed from.
+            double allowedReach = maxReach + 0.9 + 0.5;
 
-            if (distance > allowedReach) {
+            if (distance > allowedReach && accumulate(data.getBlockReachEvidence(), 2)) {
                 CheckResult result = CheckResult.flag(
                         "BlockReach",
                         0.93,
-                        9.0,
+                        5.0,
                         String.format(Locale.US, "Действие с блоком (%s) за пределами досягаемости (%.2f м, максимум %.2f м)", net.lovelace.vesuvio.i18n.Russian.label(action), distance, allowedReach),
                         Map.of("distance", distance, "maxAllowed", allowedReach, "action", action)
                 );
@@ -294,11 +311,12 @@ public final class WorldInteractionListener implements Listener {
             if (hit != null && hit.getHitBlock() != null && !hit.getHitBlock().equals(block)) {
                 Block obstruction = hit.getHitBlock();
                 if (EnvironmentSnapshotService.isGenuinelySolid(obstruction)
-                        && !isAdjacent(obstruction, block) && !hasVisibleBlockFace(player, eye, block)) {
+                        && !isAdjacent(obstruction, block) && !hasVisibleBlockFace(player, eye, block, face)
+                        && accumulate(data.getGhostHandEvidence(), 2)) {
                     CheckResult result = CheckResult.flag(
                             "GhostHand",
                             0.96,
-                            13.0,
+                            6.0,
                             String.format(Locale.US, "Действие с блоком (%s) сквозь сплошную преграду %s", net.lovelace.vesuvio.i18n.Russian.label(action), obstruction.getType().name()),
                             Map.of("obstruction", obstruction.getType().name(), "action", action, "distance", distance)
                     );
@@ -308,8 +326,64 @@ public final class WorldInteractionListener implements Listener {
         }
     }
 
+    /**
+     * One suspicious event is evidence, not a verdict: {@code events} of them within about 20 s (half-life 10 s, threshold 90% of
+     * the count so the decay between events cannot keep it just under) are. Resets itself once it fires.
+     */
+    public static boolean accumulate(DecayingEvidence evidence, int events) {
+        double score = evidence.reward(1.0, System.nanoTime(), 10_000.0);
+        if (score >= events * 0.9 && evidence.events() >= events) {
+            evidence.reset();
+            return true;
+        }
+        return false;
+    }
+
+    // The server refused a place/break/interact: the player's client keeps a ghost state for about a round trip.
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlaceCancelled(BlockPlaceEvent event) {
+        if (event.isCancelled()) markDesync(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBreakCancelled(BlockBreakEvent event) {
+        if (event.isCancelled()) markDesync(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onInteractCancelled(PlayerInteractEvent event) {
+        if (event.useInteractedBlock() == org.bukkit.event.Event.Result.DENY && event.getClickedBlock() != null) {
+            markDesync(event.getPlayer());
+        }
+    }
+
+    private void markDesync(Player player) {
+        UserData data = userDataManager.get(player.getUniqueId());
+        if (data != null) data.markOwnBlockDesync();
+    }
+
     /** A blocked ray to the centre does not prove the visible face/corner is occluded. */
-    private boolean hasVisibleBlockFace(Player player, Location eye, Block target) {
+    private boolean hasVisibleBlockFace(Player player, Location eye, Block target, BlockFace face) {
+        if (face != null && face != BlockFace.SELF && face.getModX() * face.getModX() + face.getModY() * face.getModY()
+                + face.getModZ() * face.getModZ() == 1) {
+            // The client NAMED the face it clicked: only that face has to be reachable, sampled on a 7x7 grid just outside the block.
+            for (int i = 0; i < 7; i++) {
+                for (int j = 0; j < 7; j++) {
+                    double u = 0.04 + 0.92 * i / 6.0;
+                    double v = 0.04 + 0.92 * j / 6.0;
+                    double x = face.getModX() != 0 ? (face.getModX() > 0 ? 1.001 : -0.001) : u;
+                    double y = face.getModY() != 0 ? (face.getModY() > 0 ? 1.001 : -0.001) : (face.getModX() != 0 ? u : v);
+                    double z = face.getModZ() != 0 ? (face.getModZ() > 0 ? 1.001 : -0.001) : v;
+                    var direction = target.getLocation().add(x, y, z).toVector().subtract(eye.toVector());
+                    double length = direction.length();
+                    if (length < 0.01) return true;
+                    var hit = player.getWorld().rayTraceBlocks(eye, direction.normalize(), length,
+                            FluidCollisionMode.NEVER, true);
+                    if (hit == null || target.equals(hit.getHitBlock())) return true;
+                }
+            }
+            return false;
+        }
         for (double x : new double[]{0.01, 0.5, 0.99}) {
             for (double y : new double[]{0.01, 0.5, 0.99}) {
                 for (double z : new double[]{0.01, 0.5, 0.99}) {
@@ -383,7 +457,7 @@ public final class WorldInteractionListener implements Listener {
         // is what is actually impossible without a bypass; that is judged in onBlockBreak below,
         // which is the only place this ever needs to be judged.
         if (data != null) {
-            checkBlockReachAndGhostHand(player, data, block, "break");
+            checkBlockReachAndGhostHand(player, data, block, "break", event.getBlockFace());
         }
 
         if (config.isFastBreakEnabled()) {
@@ -586,27 +660,44 @@ public final class WorldInteractionListener implements Listener {
 
             if (config.isVehicleFlyEnabled() && walksLikeLivingEntity) {
                 boolean supported = vehicle.isInWater() || vehicle.isInLava() || vehicle.isOnGround();
+                // The vertical change of the previous vehicle tick: a horse's jump arc LOSES height speed every tick (gravity),
+                // so a rise that keeps its speed or grows is what needs explaining. Always stored, also on supported ticks.
+                double previousDeltaY = data.swapVehicleDeltaY(deltaY, System.currentTimeMillis());
+                // Levitation, slow falling and a leash change vertical movement of the mount on their own.
+                boolean externalLift = vehicle instanceof org.bukkit.entity.LivingEntity living
+                        && (living.hasPotionEffect(PotionEffectType.LEVITATION)
+                        || living.hasPotionEffect(PotionEffectType.SLOW_FALLING)
+                        || living.isLeashed());
 
-                if (!supported && deltaY > 0.08) {
+                if (!supported && !externalLift && deltaY > 0.08) {
                     Block below = to.clone().subtract(0, 1.5, 0).getBlock();
-                    if (below.getType().isAir()) {
-                        Map<String, Object> details = new HashMap<>();
-                        details.put("vehicle", vehicle.getType().name());
-                        details.put("deltaY", deltaY);
+                    boolean notDecreasing = !Double.isNaN(previousDeltaY) && deltaY >= previousDeltaY - 0.003;
+                    if (below.getType().isAir() && notDecreasing) {
+                        // Needs a run of such ticks (jump arcs and bounces never produce one), not a single reading.
+                        double score = data.getVehicleFlyEvidence().reward(1.0, System.nanoTime(), 1500.0);
+                        if (score >= 2.7 && data.getVehicleFlyEvidence().events() >= 3) {
+                            data.getVehicleFlyEvidence().reset();
+                            Map<String, Object> details = new HashMap<>();
+                            details.put("vehicle", vehicle.getType().name());
+                            details.put("deltaY", deltaY);
+                            details.put("previousDeltaY", previousDeltaY);
 
-                        CheckResult result = CheckResult.flag(
-                                "VehicleFly",
-                                0.96,
-                                16.0,
-                                String.format(Locale.US, "Подъём в воздухе верхом на %s (ΔY: %.2f)", vehicle.getType().name(), deltaY),
-                                details
-                        );
-                        pipeline.report(player, data, result, result.vl(), 25.0);
+                            CheckResult result = CheckResult.flag(
+                                    "VehicleFly",
+                                    0.96,
+                                    8.0,
+                                    String.format(Locale.US, "Подъём в воздухе верхом на %s без затухания (ΔY: %.2f)", vehicle.getType().name(), deltaY),
+                                    details
+                            );
+                            pipeline.report(player, data, result, result.vl(), 25.0);
 
-                        // Eject player from hacked flying vehicle
-                        vehicle.eject();
-                        data.resetVehicleClipTicks();
-                        continue;
+                            // Eject player from hacked flying vehicle
+                            vehicle.eject();
+                            data.resetVehicleClipTicks();
+                            continue;
+                        }
+                    } else if (!notDecreasing) {
+                        data.getVehicleFlyEvidence().relieve(1.0, System.nanoTime(), 1500.0);
                     }
                 }
             }
@@ -628,10 +719,10 @@ public final class WorldInteractionListener implements Listener {
     private void checkVehicleClip(Player player, UserData data, Entity vehicle, Location from, Location to) {
         double horizontal = Math.hypot(to.getX() - from.getX(), to.getZ() - from.getZ());
 
-        Block atBlock = to.getBlock();
-        Block aboveBlock = to.clone().add(0, 1, 0).getBlock();
-        boolean insideSolid = EnvironmentSnapshotService.isGenuinelySolid(atBlock)
-                || EnvironmentSnapshotService.isGenuinelySolid(aboveBlock);
+        // The vehicle's real hitbox against the true collision shapes (2026-11-11): the old test looked at the blocks at the
+        // vehicle's origin and one above it, so a boat or minecart in a tunnel 1 block high (its box fits, the block above is a
+        // ceiling) was "inside" a wall.
+        boolean insideSolid = EnvironmentSnapshotService.boxInsideSolid(vehicle.getWorld(), vehicle.getBoundingBox());
 
         if (!insideSolid || horizontal < VEHICLE_CLIP_MIN_HORIZONTAL) {
             data.decrementVehicleClipTicks();
