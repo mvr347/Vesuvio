@@ -480,6 +480,58 @@ public final class UserData {
     /** Result of {@link #consumePendingAttackRotation()}: whether a value was present, and its yaw/pitch. */
     public record PendingRotation(boolean present, float yaw, float pitch) {}
 
+    // ---- Rotation ring (2026-11-11) ----------------------------------------------------------------------------------
+    // The client sends an attack packet BEFORE the rotation packet of the same tick, so the angle captured with the attack is
+    // one tick older than what the player actually aimed with: a sharp correction right after the click read as a miss.
+    // Every rotation is recorded here with the time its packet arrived (netty thread), so the combat checks can take the better
+    // of the attack angle and the first rotation within 150 ms after it.
+    private static final int ROTATION_RING = 32;
+    private final long[] rotNanos = new long[ROTATION_RING];
+    private final float[] rotYaw = new float[ROTATION_RING];
+    private final float[] rotPitch = new float[ROTATION_RING];
+    private final float[] rotDelta = new float[ROTATION_RING];
+    private int rotCursor, rotCount;
+
+    public synchronized void recordRotationSample(float yaw, float pitch, long nanos, float combinedDelta) {
+        rotNanos[rotCursor] = nanos;
+        rotYaw[rotCursor] = yaw;
+        rotPitch[rotCursor] = pitch;
+        rotDelta[rotCursor] = combinedDelta;
+        rotCursor = (rotCursor + 1) % ROTATION_RING;
+        rotCount = Math.min(ROTATION_RING, rotCount + 1);
+    }
+
+    /** The first rotation that arrived after {@code attackNanos} and no later than {@code windowNanos} after it. */
+    public synchronized PendingRotation firstRotationAfter(long attackNanos, long windowNanos) {
+        long best = Long.MAX_VALUE;
+        int bestIdx = -1;
+        for (int i = 0; i < rotCount; i++) {
+            long t = rotNanos[i];
+            if (t > attackNanos && t <= attackNanos + windowNanos && t < best) {
+                best = t;
+                bestIdx = i;
+            }
+        }
+        return bestIdx < 0 ? new PendingRotation(false, 0f, 0f) : new PendingRotation(true, rotYaw[bestIdx], rotPitch[bestIdx]);
+    }
+
+    /** Time of the latest rotation before {@code beforeNanos} whose own turn was at least {@code floorDegrees}; 0 if none. */
+    public synchronized long lastSignificantRotationBefore(long beforeNanos, double floorDegrees) {
+        long best = 0L;
+        for (int i = 0; i < rotCount; i++) {
+            long t = rotNanos[i];
+            if (t <= beforeNanos && t > best && rotDelta[i] >= floorDegrees) best = t;
+        }
+        return best;
+    }
+
+    private final DecayingEvidence silentAimEvidence = new DecayingEvidence();
+    private final DecayingEvidence fovEvidence = new DecayingEvidence();
+    private final DecayingEvidence wallHitEvidence = new DecayingEvidence();
+    public DecayingEvidence getSilentAimEvidence() { return silentAimEvidence; }
+    public DecayingEvidence getFovEvidence() { return fovEvidence; }
+    public DecayingEvidence getWallHitEvidence() { return wallHitEvidence; }
+
     /** Reads and clears the pending attack rotation in one step, so it is used at most once. */
     public synchronized PendingRotation consumePendingAttackRotation() {
         PendingRotation result = new PendingRotation(hasPendingAttackRotation, pendingAttackYaw, pendingAttackPitch);

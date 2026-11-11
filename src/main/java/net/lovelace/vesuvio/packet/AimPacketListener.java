@@ -84,6 +84,7 @@ public final class AimPacketListener extends PacketListenerAbstract {
             data.setLastPitch(pitch);
 
             data.getAimBuffer().addRotation(yaw, pitch, now);
+            data.recordRotationSample(yaw, pitch, now, deltaYaw + deltaPitch);
 
             checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.processAim(player, data, deltaYaw, deltaPitch, signedDeltaYaw));
         }

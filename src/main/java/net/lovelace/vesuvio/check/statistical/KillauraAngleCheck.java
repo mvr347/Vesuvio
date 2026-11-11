@@ -83,6 +83,21 @@ public final class KillauraAngleCheck {
         judgedLoc.setPitch(currentPitch);
 
         BoundingBox liveBox = target.getBoundingBox();
+        double rtt = transactionManager == null ? -1 : transactionManager.getTransactionPing(attacker.getUniqueId());
+
+        if (!(target instanceof Player)) {
+            // Only players have a hitbox history. Vehicles, projectiles and anything carrying a passenger have a hitbox that
+            // moves in ways the server box does not describe: geometry is not judged for them at all.
+            if (target instanceof org.bukkit.entity.Vehicle || target instanceof org.bukkit.entity.Projectile
+                    || !target.getPassengers().isEmpty()) {
+                return CheckResult.pass("KillauraAngle");
+            }
+            // Every other non-player is judged against its live box widened by how far it can have travelled while the
+            // attacker's screen lagged behind: |velocity| per tick times the lag in ticks.
+            double lagTicks = Math.min(12.0, (rtt < 0 ? 100.0 : rtt) / 50.0 + 2.0);
+            double travel = Math.min(2.0, target.getVelocity().length() * lagTicks);
+            if (travel > 0.0) liveBox = liveBox.clone().expand(travel);
+        }
 
         Vector toCenter = liveBox.getCenter().subtract(eyeLoc.toVector());
         double distSq = toCenter.lengthSquared();
@@ -104,7 +119,6 @@ public final class KillauraAngleCheck {
         double effectiveAngle = minAngleToBox(eyeLoc, eyeDir, liveBox);
         long received = attack == null ? System.nanoTime() : attack.receivedNanos();
         if (data.hasRecentTeleport() || System.nanoTime() - received > 500_000_000L) return CheckResult.pass("KillauraAngle");
-        double rtt = transactionManager == null ? -1 : transactionManager.getTransactionPing(attacker.getUniqueId());
         java.util.List<HitboxHistoryTracker.BoxSnapshot> candidates = java.util.List.of();
         if (target instanceof Player p && hitboxTracker != null) {
             if (rtt < 0 || rtt > 1000) return CheckResult.pass("KillauraAngle");
@@ -113,6 +127,25 @@ public final class KillauraAngleCheck {
             for (var box : candidates) {
                 effectiveAngle = Math.min(effectiveAngle, minAngleToBox(eyeLoc, eyeDir,
                         new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())));
+            }
+        }
+        // The first rotation within 150 ms AFTER the attack packet belongs to the same client tick (the client sends the attack
+        // first): take the smaller error of the two, so a sharp correction right after the click is not read as a miss.
+        java.util.List<Vector> aimDirs = new java.util.ArrayList<>(2);
+        aimDirs.add(eyeDir);
+        if (attack != null) {
+            UserData.PendingRotation later = data.firstRotationAfter(received, 150_000_000L);
+            if (later.present()) {
+                Location laterLoc = eyeLoc.clone();
+                laterLoc.setYaw(later.yaw());
+                laterLoc.setPitch(later.pitch());
+                Vector laterDir = laterLoc.getDirection().normalize();
+                aimDirs.add(laterDir);
+                effectiveAngle = Math.min(effectiveAngle, minAngleToBox(eyeLoc, laterDir, liveBox));
+                for (var box : candidates) {
+                    effectiveAngle = Math.min(effectiveAngle, minAngleToBox(eyeLoc, laterDir,
+                            new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())));
+                }
             }
         }
         double angleDegrees = angleTo(eyeDir, toCenter.clone().normalize());
@@ -175,16 +208,31 @@ public final class KillauraAngleCheck {
                 if (!mangroveRoots && !b.isPassable()) {
                     double distToBlock = blockHit.getHitPosition().distance(eyeLoc.toVector());
                     if (distToBlock < sightDistance - wallhitTolerance) {
-                        Map<String, Object> details = new HashMap<>();
-                        details.put("block", b.getType().name());
-                        details.put("distToBlock", distToBlock);
-                        details.put("distToTarget", distance);
+                        // The ray along the aim line is blocked, but that is only a wall hit when NO point of ANY candidate
+                        // hitbox can be seen: a player's shoulder visible past a corner is a legal hit.
+                        java.util.List<BoundingBox> allBoxes = new java.util.ArrayList<>();
+                        allBoxes.add(liveBox);
+                        for (var cb : candidates) {
+                            allBoxes.add(new BoundingBox(cb.minX(), cb.minY(), cb.minZ(), cb.maxX(), cb.maxY(), cb.maxZ()));
+                        }
+                        if (anyPointVisible(attacker.getWorld(), eyeLoc, allBoxes)) {
+                            data.getWallHitEvidence().relieve(0.5, received, 10_000);
+                        } else {
+                            double wallScore = data.getWallHitEvidence().reward(1.0, received, 10_000);
+                            if (wallScore >= 1.45 && data.getWallHitEvidence().events() >= 2) {
+                                data.getWallHitEvidence().reset();
+                                Map<String, Object> details = new HashMap<>();
+                                details.put("block", b.getType().name());
+                                details.put("distToBlock", distToBlock);
+                                details.put("distToTarget", distance);
 
-                        String explanation = String.format(Locale.US,
-                                "Атака сквозь сплошное препятствие %s (блок: %.2f м, цель: %.2f м)",
-                                b.getType().name(), distToBlock, distance);
+                                String explanation = String.format(Locale.US,
+                                        "Атака сквозь сплошное препятствие %s (блок: %.2f м, цель: %.2f м)",
+                                        b.getType().name(), distToBlock, distance);
 
-                        return CheckResult.flag("WallHit", 0.98, 3.5, explanation, details);
+                                return CheckResult.flag("WallHit", 0.98, 3.5, explanation, details);
+                            }
+                        }
                     }
                 }
             }
@@ -210,12 +258,37 @@ public final class KillauraAngleCheck {
             rewoundBox = new BoundingBox(snap.minX(), snap.minY(), snap.minZ(), snap.maxX(), snap.maxY(), snap.maxZ());
         }
         BoundingBox targetBox = rewoundBox.clone().expand(hitboxExpand + pingBuffer);
-        RayTraceResult crosshairHit = targetBox.rayTrace(eyeLoc.toVector(), eyeDir, 6.0);
-        for (var box : candidates) {
-            BoundingBox candidate = new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())
-                    .expand(hitboxExpand + pingBuffer);
-            RayTraceResult hit = candidate.rayTrace(eyeLoc.toVector(), eyeDir, 6.0);
-            if (hit != null) { crosshairHit = hit; break; }
+        RayTraceResult crosshairHit = null;
+        for (Vector dir : aimDirs) {
+            crosshairHit = targetBox.rayTrace(eyeLoc.toVector(), dir, 6.0);
+            if (crosshairHit == null) {
+                for (var box : candidates) {
+                    BoundingBox candidate = new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())
+                            .expand(hitboxExpand + pingBuffer);
+                    RayTraceResult hit = candidate.rayTrace(eyeLoc.toVector(), dir, 6.0);
+                    if (hit != null) { crosshairHit = hit; break; }
+                }
+            }
+            if (crosshairHit != null) break;
+        }
+        // "Gaze on target": the line of sight really passes through the (barely widened) hitbox of the target being hit. Evidence
+        // of a target switch or static tracking only counts when it does not: a target that drifted 4 degrees while the camera
+        // stayed put and the hit still landed inside the box is ordinary play.
+        boolean gazeOnTarget = false;
+        for (Vector dir : aimDirs) {
+            if (liveBox.clone().expand(0.1).rayTrace(eyeLoc.toVector(), dir, 6.0) != null
+                    || rewoundBox.clone().expand(0.1).rayTrace(eyeLoc.toVector(), dir, 6.0) != null) {
+                gazeOnTarget = true;
+                break;
+            }
+            for (var box : candidates) {
+                if (new BoundingBox(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())
+                        .expand(0.1).rayTrace(eyeLoc.toVector(), dir, 6.0) != null) {
+                    gazeOnTarget = true;
+                    break;
+                }
+            }
+            if (gazeOnTarget) break;
         }
         if (crosshairHit == null && rtt >= 0 && rtt < 500) {
             double score = data.hitboxEvidence().reward(1, received, 3000);
@@ -230,7 +303,11 @@ public final class KillauraAngleCheck {
         }
 
         double silentAimAngle = scaleThresholdUp(config != null ? config.getKillauraSilentAimAngleDegrees() : 45.0, sensitivity);
-        if (crosshairHit == null && effectiveAngle > silentAimAngle) {
+        if (crosshairHit != null || effectiveAngle <= silentAimAngle) {
+            data.getSilentAimEvidence().relieve(0.25, received, 10_000);
+        }
+        if (crosshairHit == null && effectiveAngle > silentAimAngle
+                && accumulates(data.getSilentAimEvidence(), received)) {
             Map<String, Object> details = new HashMap<>();
             details.put("angle", effectiveAngle);
             details.put("target", target.getName() != null ? target.getName() : target.getType().name());
@@ -248,7 +325,10 @@ public final class KillauraAngleCheck {
         // 4. Absolute Peripheral FOV Limit (360 Killaura), on the multi-point effective angle so a
         // legitimate edge-of-hitbox hit is judged fairly.
         // -------------------------------------------------------------
-        if (effectiveAngle > fovLimit) {
+        if (effectiveAngle <= fovLimit) {
+            data.getFovEvidence().relieve(0.25, received, 10_000);
+        }
+        if (effectiveAngle > fovLimit && accumulates(data.getFovEvidence(), received)) {
             Map<String, Object> details = new HashMap<>();
             details.put("angle", effectiveAngle);
             details.put("centerAngle", angleDegrees);
@@ -278,7 +358,7 @@ public final class KillauraAngleCheck {
         // its internal target reference without generating the mouse input a human retargeting
         // would need.
         // -------------------------------------------------------------
-        CheckResult switchResult = checkTargetSwitch(data, target, currentYaw, currentPitch, requiredYaw, requiredPitch, nowNanos);
+        CheckResult switchResult = checkTargetSwitch(data, target, currentYaw, currentPitch, requiredYaw, requiredPitch, nowNanos, gazeOnTarget);
         if (switchResult != null) {
             data.setLastAttackTarget(target.getEntityId(), nowNanos);
             data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
@@ -292,7 +372,8 @@ public final class KillauraAngleCheck {
         // requirement existing (the target isn't already dead-center) so a player who was already
         // looking at the target is never penalised for reacting "instantly".
         // -------------------------------------------------------------
-        CheckResult reactionResult = checkReactionTime(data, effectiveAngle, nowNanos);
+        CheckResult reactionResult = config != null && config.isKillauraReactionEnabled()
+                ? checkReactionTime(data, effectiveAngle, received) : null;
         if (reactionResult != null) {
             data.setLastAttackTarget(target.getEntityId(), nowNanos);
             data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
@@ -305,12 +386,18 @@ public final class KillauraAngleCheck {
         // catches basic/free KillAura variants that snap-lock exactly onto the target's
         // center every single tick instead of the natural jitter of manual tracking.
         // -------------------------------------------------------------
+        // Evidence from tight aim only counts when the aim line the target demands actually changed between two hits (1 degree):
+        // a mob farm with a fixed crosshair and a target standing still is tight by construction, not by software.
+        boolean requiredAngleMoved = data.hasLastAttackSnapshot()
+                && angularDiff(data.getLastAttackRequiredYaw(), requiredYaw)
+                + angularDiff(data.getLastAttackRequiredPitch(), requiredPitch) >= 1.0;
         double perfectAimAngle = config != null ? config.getKillauraPerfectAimAngleDegrees() : 0.6;
         double perfectAimThreshold = config != null ? config.getKillauraPerfectAimStreak() : 6;
         DecayingEvidence perfectAimEvidence = data.getPerfectAimEvidence();
         if (effectiveAngle < perfectAimAngle) {
-            double score = perfectAimEvidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
-            if (score >= perfectAimThreshold && perfectAimEvidence.events() >= evidenceMinEvents()) {
+            double score = requiredAngleMoved ? perfectAimEvidence.reward(1.0, nowNanos, evidenceHalfLifeMs())
+                    : perfectAimEvidence.current(nowNanos, evidenceHalfLifeMs());
+            if (requiredAngleMoved && score >= perfectAimThreshold && perfectAimEvidence.events() >= evidenceMinEvents()) {
                 Map<String, Object> details = new HashMap<>();
                 details.put("angle", effectiveAngle);
                 details.put("score", score);
@@ -339,7 +426,7 @@ public final class KillauraAngleCheck {
         // than the player's real mouse noise floor across many hits. Distinct from PerfectAimLock
         // (fixed absolute angle) in that the bar is calibrated per-player.
         // -------------------------------------------------------------
-        CheckResult consistencyResult = checkAimConsistency(data, effectiveAngle, target, nowNanos);
+        CheckResult consistencyResult = requiredAngleMoved ? checkAimConsistency(data, effectiveAngle, target, nowNanos) : null;
         if (consistencyResult != null) {
             data.setLastAttackTarget(target.getEntityId(), nowNanos);
             data.setLastAttackSnapshot(currentYaw, currentPitch, requiredYaw, requiredPitch);
@@ -390,7 +477,8 @@ public final class KillauraAngleCheck {
                     + angularDiff(data.getLastAttackPitch(), currentPitch);
             DecayingEvidence staticEvidence = data.getStaticTrackingEvidence();
 
-            if (targetAngularDelta > staticTargetDelta && playerAngularDelta < staticPlayerDelta && effectiveAngle < staticMaxAngle) {
+            if (targetAngularDelta > staticTargetDelta && playerAngularDelta < staticPlayerDelta && effectiveAngle < staticMaxAngle
+                    && !gazeOnTarget) {
                 double score = staticEvidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
                 if (score >= staticThreshold && staticEvidence.events() >= evidenceMinEvents()) {
                     Map<String, Object> details = new HashMap<>();
@@ -427,7 +515,7 @@ public final class KillauraAngleCheck {
      * "not applicable" apart from "evaluated and clean".
      */
     private CheckResult checkTargetSwitch(UserData data, Entity target, float currentYaw, float currentPitch,
-                                           float requiredYaw, float requiredPitch, long nowNanos) {
+                                           float requiredYaw, float requiredPitch, long nowNanos, boolean gazeOnTarget) {
         if (config == null || !data.hasLastAttackSnapshot()) return null;
         int lastTargetId = data.getLastAttackTargetId();
         if (lastTargetId < 0 || lastTargetId == target.getEntityId()) return null;
@@ -445,7 +533,7 @@ public final class KillauraAngleCheck {
         double maxLookDelta = config.getKillauraTargetSwitchMaxLookDeltaDegrees();
 
         DecayingEvidence evidence = data.getTargetSwitchEvidence();
-        if (requiredDelta > minRequiredDelta && lookDelta < maxLookDelta) {
+        if (requiredDelta > minRequiredDelta && lookDelta < maxLookDelta && !gazeOnTarget) {
             double threshold = config.getKillauraTargetSwitchStreak();
             double score = evidence.reward(1.0, nowNanos, evidenceHalfLifeMs());
             if (score >= threshold && evidence.events() >= evidenceMinEvents()) {
@@ -479,9 +567,12 @@ public final class KillauraAngleCheck {
     private CheckResult checkReactionTime(UserData data, double effectiveAngle, long nowNanos) {
         if (config == null) return null;
         double significantFloor = config.getKillauraReactionSignificantRotationDegrees();
-        if (effectiveAngle < significantFloor || data.getLastSignificantRotationNanos() == 0L) return null;
+        // nowNanos is the moment the ATTACK PACKET arrived, and only rotations received before it count: the check itself runs
+        // later on the main thread, where "now" is always at least a tick past the click.
+        long lastTurn = data.lastSignificantRotationBefore(nowNanos, significantFloor);
+        if (effectiveAngle < significantFloor || lastTurn == 0L) return null;
 
-        double reactionMs = (nowNanos - data.getLastSignificantRotationNanos()) / 1_000_000.0;
+        double reactionMs = (nowNanos - lastTurn) / 1_000_000.0;
         double minReactionMs = config.getKillauraReactionMinMs();
 
         // Negative/absurd values mean the "last significant rotation" timestamp predates this
@@ -619,6 +710,47 @@ public final class KillauraAngleCheck {
             evidence.relieve(evidenceCleanRelief(), nowNanos, evidenceHalfLifeMs());
         }
         return null;
+    }
+
+    /** Two events within about ten seconds: reward, and report whether the accumulator reached the bar. */
+    private static boolean accumulates(DecayingEvidence evidence, long nowNanos) {
+        double score = evidence.reward(1.0, nowNanos, 10_000);
+        if (score >= 1.45 && evidence.events() >= 2) {
+            evidence.reset();
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether any sampled point of any of the boxes can be seen from the eye without a solid block in between - the same idea as
+     * a "visible block face" test for block interaction. Samples: the centre, the six face centres and the eight corners pulled
+     * slightly inward.
+     */
+    private static boolean anyPointVisible(org.bukkit.World world, Location eye, java.util.List<BoundingBox> boxes) {
+        Vector origin = eye.toVector();
+        for (BoundingBox box : boxes) {
+            double[] xs = {box.getMinX() + 0.03, box.getCenterX(), box.getMaxX() - 0.03};
+            double[] ys = {box.getMinY() + 0.03, box.getCenterY(), box.getMaxY() - 0.03};
+            double[] zs = {box.getMinZ() + 0.03, box.getCenterZ(), box.getMaxZ() - 0.03};
+            for (double x : xs) {
+                for (double y : ys) {
+                    for (double z : zs) {
+                        Vector to = new Vector(x - origin.getX(), y - origin.getY(), z - origin.getZ());
+                        double len = to.length();
+                        if (len < 1e-6 || len > 8.0) continue;
+                        RayTraceResult hit = world.rayTraceBlocks(eye, to.clone().multiply(1.0 / len), len,
+                                FluidCollisionMode.NEVER, true);
+                        if (hit == null || hit.getHitBlock() == null) return true;
+                        Block hb = hit.getHitBlock();
+                        Material hm = hb.getType();
+                        boolean passable = hb.isPassable() || hm == Material.MANGROVE_ROOTS || hm == Material.MUDDY_MANGROVE_ROOTS;
+                        if (passable || hit.getHitPosition().distance(origin) >= len - 0.05) return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** Half-life of accumulated aim evidence - see {@link DecayingEvidence} and config.yml. */

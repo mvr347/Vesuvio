@@ -745,6 +745,11 @@ public final class ConfigManager {
         return config.getInt("mechanics.combat.killaura.static-tracking.streak", 3);
     }
 
+    /** ReactionTime is off by default: it can only ever be a rough proxy and flagged near-perfect trackers (2026-11-11). */
+    public boolean isKillauraReactionEnabled() {
+        return config.getBoolean("mechanics.combat.killaura.reaction.enabled", false);
+    }
+
     public double getKillauraReactionMinMs() {
         return config.getDouble("mechanics.combat.killaura.reaction.min-ms", 35.0);
     }
