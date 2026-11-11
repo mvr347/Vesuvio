@@ -85,6 +85,13 @@ public final class VelocityCheck {
             data.clearPendingVelocity();
             return CheckResult.pass("Velocity");
         }
+        // Water, lava, cobweb, berry bushes, powder snow and soul sand eat the knockback on their own: a low reading there is
+        // the block, not an anti-knockback client, so such a measurement is dropped instead of scored.
+        if (env.inWater() || env.inLava() || env.inCobweb() || env.nearStuck()
+                || env.blockBelow() == org.bukkit.Material.SOUL_SAND || env.blockBelow() == org.bukkit.Material.SOUL_SOIL) {
+            data.clearPendingVelocity();
+            return CheckResult.pass("Velocity");
+        }
 
         double velX = data.getPendingVelX();
         double velZ = data.getPendingVelZ();

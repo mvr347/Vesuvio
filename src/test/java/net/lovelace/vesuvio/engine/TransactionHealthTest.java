@@ -59,7 +59,8 @@ class TransactionHealthTest {
         var data = new UserData(id, "Blinking");
         data.setEnvironment(TestSnapshots.builder().build());
         data.setLastAnyMovementNanos(start);
-        data.setLastSwingNanos(start + 1000 * MS);
+        // Blink proof needs dense swings (>= 24 provable ticks), not a single one.
+        for (long t = start + 300 * MS; t <= start + 1700 * MS; t += 50 * MS) data.setLastSwingNanos(t);
         assertTrue(new BlinkCheck().check(id, data, transactions, now.get(), true, true).isFlag());
     }
 

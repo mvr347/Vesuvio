@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Guards against a real bug found in a review pass: ConfigManager.reload() used to sort
- * punishment thresholds ascending, and CheckPipeline#evaluatePunishments walks the list and
+ * punishment thresholds ascending, and PunishmentService#evaluate walks the list and
  * fires (then breaks on) the FIRST rule whose threshold is met with a non-blank command. With
  * ascending order that was always the lowest-severity satisfied rule - e.g. a player who blew
  * straight past the "ban" threshold (VL 100) would only ever get "kick" (VL 60) fired, over and
@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 public class PunishmentEscalationTest {
 
-    /** Mirrors CheckPipeline#evaluatePunishments' selection: first rule (in list order) whose
+    /** Mirrors PunishmentService#evaluate' selection: first rule (in list order) whose
      *  threshold is met with a non-blank command wins. */
     private static ConfigManager.PunishmentRule selectRule(List<ConfigManager.PunishmentRule> rules, double currentVl) {
         for (ConfigManager.PunishmentRule rule : rules) {

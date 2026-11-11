@@ -81,6 +81,10 @@ public class TransactionManager {
         players.remove(uuid);
     }
 
+    public void retainOnline(java.util.Set<UUID> online) {
+        players.keySet().retainAll(online);
+    }
+
     public void clear() {
         players.clear();
     }

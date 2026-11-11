@@ -63,14 +63,24 @@ public final class HitboxHistoryTracker {
      * merely because the nearest server tick differs from client interpolation.
      */
     public List<BoxSnapshot> attackCandidates(Player target, int pingMs, long receivedNanos) {
+        return attackCandidates(target, pingMs, receivedNanos, 0.0);
+    }
+
+    /**
+     * @param extraWindowMs widens the window on both sides: how much the real delay of this particular attack can exceed the
+     *                      smoothed RTT (a spike of the last sample over the average, plus how long the oldest transaction
+     *                      has been waiting for its answer)
+     */
+    public List<BoxSnapshot> attackCandidates(Player target, int pingMs, long receivedNanos, double extraWindowMs) {
         Deque<BoxSnapshot> queue = history.get(target.getUniqueId());
         if (queue == null) return List.of();
+        long extra = (long) (Math.max(0.0, extraWindowMs) * 1_000_000.0);
         long rendered = receivedNanos - Math.max(0, pingMs) * 1_000_000L;
         List<BoxSnapshot> result = new ArrayList<>();
         synchronized (queue) {
             for (BoxSnapshot box : queue) {
-                if (box.timestampNanos() >= rendered - 150_000_000L
-                        && box.timestampNanos() <= Math.min(receivedNanos, rendered + 50_000_000L)) result.add(box);
+                if (box.timestampNanos() >= rendered - 150_000_000L - extra
+                        && box.timestampNanos() <= Math.min(receivedNanos, rendered + 50_000_000L + extra)) result.add(box);
             }
         }
         return result;
@@ -143,11 +153,16 @@ public final class HitboxHistoryTracker {
      * measured round-trip rather than trusted latency they report.
      */
     public double findRequiredRewindMs(Player target, double eyeX, double eyeY, double eyeZ, double maxReach) {
+        return findRequiredRewindMs(target, eyeX, eyeY, eyeZ, maxReach, System.nanoTime());
+    }
+
+    /** Same, with the age measured from {@code nowNanos} (the moment the attack packet arrived) instead of from this call. */
+    public double findRequiredRewindMs(Player target, double eyeX, double eyeY, double eyeZ, double maxReach, long nowNanos) {
         Deque<BoxSnapshot> queue = history.get(target.getUniqueId());
         if (queue == null) return -1;
 
         synchronized (queue) {
-            return minimumRequiredRewindMs(queue, eyeX, eyeY, eyeZ, maxReach, System.nanoTime());
+            return minimumRequiredRewindMs(queue, eyeX, eyeY, eyeZ, maxReach, nowNanos);
         }
     }
 
@@ -165,5 +180,9 @@ public final class HitboxHistoryTracker {
 
     public void remove(UUID uuid) {
         history.remove(uuid);
+    }
+
+    public void retainOnline(Set<UUID> online) {
+        history.keySet().retainAll(online);
     }
 }

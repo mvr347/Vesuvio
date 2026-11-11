@@ -23,6 +23,9 @@ import java.util.concurrent.Executor;
  */
 public final class MovementPacketListener extends PacketListenerAbstract {
 
+    private static final PacketWarnings WARNINGS = new PacketWarnings();
+
+
     private final UserDataManager userDataManager;
     private final CheckPipeline checkPipeline;
     private final Executor virtualExecutor;
@@ -91,8 +94,7 @@ public final class MovementPacketListener extends PacketListenerAbstract {
         } catch (Exception e) {
             Player player = (Player) event.getPlayer();
             String playerName = (player != null) ? player.getName() : "unknown";
-            System.err.println("[Vesuvio] Не удалось разобрать " + packetName + " от " + playerName + ": " + e.getMessage());
-            e.printStackTrace();
+            WARNINGS.warn("Не удалось разобрать " + packetName + " от " + playerName, e);
             return;
         }
 
@@ -157,8 +159,7 @@ public final class MovementPacketListener extends PacketListenerAbstract {
                 checkPipeline.processMovement(player, data, finalX, finalY, finalZ, finalOnGround, finalHasPos, packetReceiptNanos, clientHadSomethingToReport);
             });
         } catch (Exception e) {
-            System.err.println("[Vesuvio] Не удалось поставить проверку движения в очередь для " + player.getName() + " (" + finalPacketName + "): " + e.getMessage());
-            e.printStackTrace();
+            WARNINGS.warn("Не удалось поставить проверку движения в очередь для " + player.getName() + " (" + finalPacketName + ")", e);
         }
     }
 }

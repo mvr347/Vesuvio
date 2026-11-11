@@ -36,6 +36,11 @@ public final class AutoCriticalsCheck {
      */
     private static final double MICRO_HOP_RATIO = 0.214;
 
+    // Evidence instead of a single event (2026-11-11): three micro-hop attacks within about half a minute.
+    private static final double EVIDENCE_THRESHOLD = 2.7; // below 3.0: three events always decay a little
+    private static final int EVIDENCE_MIN_EVENTS = 3;
+    private static final double EVIDENCE_HALF_LIFE_MS = 30_000.0;
+
     public CheckResult check(UserData data) {
         if (data == null) return CheckResult.pass("AutoCriticals");
 
@@ -51,6 +56,15 @@ public final class AutoCriticalsCheck {
         if (data.hasRecentVelocity() || env.blindness()) {
             return CheckResult.pass("AutoCriticals");
         }
+        // Ladders, vines, scaffolding, honey and the like move the player by fractions of a block without a jump.
+        if (env.nearClimbable() || env.climbing()) {
+            return CheckResult.pass("AutoCriticals");
+        }
+        // A micro-hop that claims onGround=true is a step onto a carpet, a path block, farmland or a snow layer
+        // (+0.0625 / +0.1), which the vanilla client reports as ground. The exploit sends onGround=false to get the crit.
+        if (data.isLastOnGround()) {
+            return CheckResult.pass("AutoCriticals");
+        }
 
         double deltaY = data.getLastDeltaY();
         int airTicks = data.getAirTicks();
@@ -61,6 +75,13 @@ public final class AutoCriticalsCheck {
         // Normal jump has initial velocity ~= the player's jump-strength attribute.
         // Auto-crits send micro-hops: a tiny fraction of that, with 0 fall distance or <= 1 air tick
         if (deltaY > 0.005 && deltaY < microHopCeiling && airTicks <= 1 && fallDist < 0.1f) {
+            // One micro-hop before an attack can still be an odd terrain step: three such attacks are the exploit.
+            long now = System.nanoTime();
+            double score = data.getAutoCritEvidence().reward(1.0, now, EVIDENCE_HALF_LIFE_MS);
+            if (score < EVIDENCE_THRESHOLD || data.getAutoCritEvidence().events() < EVIDENCE_MIN_EVENTS) {
+                return CheckResult.pass("AutoCriticals");
+            }
+            data.getAutoCritEvidence().reset();
             Map<String, Object> details = new HashMap<>();
             details.put("deltaY", deltaY);
             details.put("airTicks", airTicks);
@@ -70,7 +91,7 @@ public final class AutoCriticalsCheck {
             return CheckResult.flag(
                     "AutoCriticals",
                     0.94,
-                    14.0,
+                    5.0,
                     String.format(Locale.US, "Критический удар через пакетный микропрыжок (ΔY: %.4f блока, в воздухе: %d тактов)", deltaY, airTicks),
                     details
             );

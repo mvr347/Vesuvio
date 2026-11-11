@@ -28,6 +28,9 @@ public final class DatabaseManager implements AutoCloseable {
     private final ViolationReviews violationReviews;
     private final Queue<ViolationRecord> violationQueue = new ConcurrentLinkedQueue<>();
     private final Queue<PunishmentRecord> punishmentQueue = new ConcurrentLinkedQueue<>();
+    // ConcurrentLinkedQueue#size() walks the whole list: on every flag it was O(n) with up to 20 000 entries queued.
+    private final java.util.concurrent.atomic.AtomicInteger violationCount = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger punishmentCount = new java.util.concurrent.atomic.AtomicInteger();
     private final ScheduledExecutorService batchExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "Vesuvio-DB-Batcher");
         t.setDaemon(true);
@@ -184,15 +187,19 @@ public final class DatabaseManager implements AutoCloseable {
 
     public void logViolationAsync(ViolationRecord record) {
         violationQueue.add(record);
-        while (violationQueue.size() > MAX_QUEUE_SIZE) {
-            violationQueue.poll();
+        violationCount.incrementAndGet();
+        while (violationCount.get() > MAX_QUEUE_SIZE) {
+            if (violationQueue.poll() != null) violationCount.decrementAndGet();
+            else break;
         }
     }
 
     public void logPunishmentAsync(PunishmentRecord record) {
         punishmentQueue.add(record);
-        while (punishmentQueue.size() > MAX_QUEUE_SIZE) {
-            punishmentQueue.poll();
+        punishmentCount.incrementAndGet();
+        while (punishmentCount.get() > MAX_QUEUE_SIZE) {
+            if (punishmentQueue.poll() != null) punishmentCount.decrementAndGet();
+            else break;
         }
     }
 
@@ -239,13 +246,16 @@ public final class DatabaseManager implements AutoCloseable {
         // gone for good, with no retry. Re-queue whatever didn't make it in so the next
         // scheduled flush (5s later) picks it back up instead of silently losing it.
         List<ViolationRecord> violationBatch = new ArrayList<>();
+        // The size is checked BEFORE poll(): the old order polled a 201st record and dropped it when the batch was full.
         ViolationRecord r;
-        while ((r = violationQueue.poll()) != null && violationBatch.size() < 200) {
+        while (violationBatch.size() < 200 && (r = violationQueue.poll()) != null) {
+            violationCount.decrementAndGet();
             violationBatch.add(r);
         }
         List<PunishmentRecord> punishmentBatch = new ArrayList<>();
         PunishmentRecord pr;
-        while ((pr = punishmentQueue.poll()) != null && punishmentBatch.size() < 200) {
+        while (punishmentBatch.size() < 200 && (pr = punishmentQueue.poll()) != null) {
+            punishmentCount.decrementAndGet();
             punishmentBatch.add(pr);
         }
 
@@ -290,7 +300,9 @@ public final class DatabaseManager implements AutoCloseable {
             LOGGER.log(Level.SEVERE, "Ошибка записи журнала в базу данных — возвращаем в очередь "
                     + violationBatch.size() + " нарушений и " + punishmentBatch.size() + " наказаний для повторной попытки", e);
             violationQueue.addAll(violationBatch);
+            violationCount.addAndGet(violationBatch.size());
             punishmentQueue.addAll(punishmentBatch);
+            punishmentCount.addAndGet(punishmentBatch.size());
         }
     }
 

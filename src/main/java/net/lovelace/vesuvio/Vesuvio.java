@@ -49,6 +49,7 @@ public final class Vesuvio extends JavaPlugin {
     private net.lovelace.vesuvio.check.onnx.ModelAutoTrainer modelAutoTrainer;
     private SmartAlertService alertService;
     private SpectateManager spectateManager;
+    private net.lovelace.vesuvio.staff.DiscordWebhookService discordWebhookService;
     private net.lovelace.vesuvio.staff.DebugOverlayManager debugOverlayManager;
     private net.lovelace.vesuvio.config.PresetManager presetManager;
     private CheckPipeline checkPipeline;
@@ -143,6 +144,7 @@ public final class Vesuvio extends JavaPlugin {
         var waveManager = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(this, configManager, databaseManager);
         waveManager.start();
         var discordService = new net.lovelace.vesuvio.staff.DiscordWebhookService(configManager, virtualExecutor);
+        this.discordWebhookService = discordService;
         var hitboxTracker = new net.lovelace.vesuvio.engine.HitboxHistoryTracker();
         loveEssentialHook.invalidateGeometry(hitboxTracker::remove);
         var banEvasionManager = new net.lovelace.vesuvio.evasion.BanEvasionManager(databaseManager);
@@ -254,6 +256,29 @@ public final class Vesuvio extends JavaPlugin {
             getLogger().info("Подключена интеграция с PlaceholderAPI (VesuvioExpansion зарегистрирован).");
         }
 
+        // State janitor (every 30 s, main thread): per-player state of everybody who is offline is dropped. See StateJanitor.
+        final var janitorLag = lagCompensator;
+        final var janitorHitbox = hitboxTracker;
+        final var janitorTraps = npcTrapManager;
+        final var janitorWorld = worldInteractionListener;
+        final var janitor = new net.lovelace.vesuvio.engine.StateJanitor(
+                () -> {
+                    java.util.Set<java.util.UUID> ids = new java.util.HashSet<>();
+                    for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) ids.add(p.getUniqueId());
+                    return ids;
+                },
+                java.util.List.of(
+                        userDataManager::retainOnline,
+                        janitorLag::retainOnline,
+                        transactionManager::retainOnline,
+                        janitorHitbox::retainOnline,
+                        environmentSnapshotService::retainOnline,
+                        janitorWorld::retainOnline,
+                        aimTrackingService::retainOnline,
+                        janitorTraps::retainOnline,
+                        ids -> { if (selfLearningManager != null) selfLearningManager.getAutoDatasetCollector().retainOnline(ids); }));
+        Bukkit.getScheduler().runTaskTimer(this, janitor, 600L, 600L);
+
         // 13. Schedulers: Hitbox History Bounding Box Capture (1 tick = 50ms)
         Bukkit.getScheduler().runTaskTimer(this, hitboxTracker::recordTick, 1L, 1L);
 
@@ -265,6 +290,7 @@ public final class Vesuvio extends JavaPlugin {
             try {
                 net.lovelace.vesuvio.engine.TpsCache.update(Bukkit.getTPS());
             } catch (Throwable ignored) {}
+            net.lovelace.vesuvio.engine.ServerHitch.tick(System.currentTimeMillis());
             environmentSnapshotService.captureAll(Bukkit.getOnlinePlayers(), configManager.isAnticheatEnabled());
             if (configManager.isAnticheatEnabled()) aimTrackingService.tick(Bukkit.getOnlinePlayers());
             for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
@@ -290,7 +316,9 @@ public final class Vesuvio extends JavaPlugin {
         // Schedulers: Passive VL Decay
         long decayTicks = (long) (configManager.getVlDecaySeconds() * 20.0);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
-            userDataManager.performDecay(configManager.getVlDecayAmount());
+            userDataManager.performDecay(configManager.getVlDecayAmount(),
+                    (long) (configManager.getRiskCleanSeconds() * 1000.0), configManager.getRiskDecayPerMinute(),
+                    configManager.getRiskFloor(), configManager.getTrustDecayCleanHours());
         }, decayTicks, decayTicks);
 
         // Schedulers: Automatic self-learning dataset collection (legit samples from trusted
@@ -380,6 +408,8 @@ public final class Vesuvio extends JavaPlugin {
             } catch (Throwable ignored) {}
         }
         VesuvioProvider.unregister();
+
+        if (discordWebhookService != null) discordWebhookService.shutdown();
 
         // Clean up spectating staff
         if (spectateManager != null) {

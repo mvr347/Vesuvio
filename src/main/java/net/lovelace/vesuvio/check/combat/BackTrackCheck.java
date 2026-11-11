@@ -44,14 +44,29 @@ public final class BackTrackCheck {
     private static final double RTT_TOLERANCE_MULTIPLIER = 2.0;
 
     /** Fixed floor added on top of the multiplier, so a very low-ping player still gets slack. */
-    private static final double MARGIN_MS = 100.0;
+    // 2026-11-11: 100 -> 300 ms. The client interpolates entities by about 150 ms, the attack packet is handled on the main
+    // thread up to a tick later, and the history is sampled once per tick: together a player with a 10 ms ping legitimately
+    // needs ~250 ms of rewind while chasing, and was flagged.
+    private static final double MARGIN_MS = 300.0;
 
-    /** Separate hits before a flag, so one jittery reading is never enough. */
-    private static final int REQUIRED_STREAK = 3;
+    /** Evidence (one point per out-of-budget hit) needed before a flag, so one jittery reading is never enough. */
+    private static final double EVIDENCE_THRESHOLD = 2.7; // below 3.0: three events always decay a little
+    private static final int EVIDENCE_MIN_EVENTS = 3;
+    private static final double EVIDENCE_HALF_LIFE_MS = 20_000.0;
 
     public CheckResult check(Player attacker, Entity target, UserData data,
                              HitboxHistoryTracker hitboxTracker, TransactionManager transactionManager,
                              double maxReach) {
+        return check(attacker, target, data, hitboxTracker, transactionManager, maxReach, null);
+    }
+
+    /**
+     * @param attack the attack as captured on the netty thread: the attacker's position and the moment the packet arrived.
+     *               The check runs a tick later on the main thread, where the live location and "now" are already newer.
+     */
+    public CheckResult check(Player attacker, Entity target, UserData data,
+                             HitboxHistoryTracker hitboxTracker, TransactionManager transactionManager,
+                             double maxReach, net.lovelace.vesuvio.engine.AttackSnapshot attack) {
         if (attacker == null || data == null || hitboxTracker == null || transactionManager == null) {
             return CheckResult.pass("BackTrack");
         }
@@ -66,28 +81,30 @@ public final class BackTrackCheck {
             return CheckResult.pass("BackTrack");
         }
 
-        Location eye = attacker.getEyeLocation();
-        double requiredMs = hitboxTracker.findRequiredRewindMs(targetPlayer, eye.getX(), eye.getY(), eye.getZ(), maxReach);
+        Location eye = attack != null ? attack.eyeLocation(attacker) : attacker.getEyeLocation();
+        long now = attack != null ? attack.receivedNanos() : System.nanoTime();
+        double requiredMs = hitboxTracker.findRequiredRewindMs(targetPlayer, eye.getX(), eye.getY(), eye.getZ(), maxReach, now);
+        long evidenceNow = System.nanoTime();
 
         if (requiredMs < 0) {
             // The hit was not valid at any point in the tracked window - not a rewind problem,
             // some other check's business (or the hit already missed on the server's own terms).
-            data.resetBackTrackStreak();
+            data.getBackTrackEvidence().relieve(0.5, evidenceNow, EVIDENCE_HALF_LIFE_MS);
             return CheckResult.pass("BackTrack");
         }
 
         double allowedMs = realRtt * RTT_TOLERANCE_MULTIPLIER + MARGIN_MS;
         if (requiredMs <= allowedMs) {
-            data.resetBackTrackStreak();
+            data.getBackTrackEvidence().relieve(0.5, evidenceNow, EVIDENCE_HALF_LIFE_MS);
             return CheckResult.pass("BackTrack");
         }
 
-        data.incrementBackTrackStreak();
-        if (data.getBackTrackStreak() < REQUIRED_STREAK) {
+        double score = data.getBackTrackEvidence().reward(1.0, evidenceNow, EVIDENCE_HALF_LIFE_MS);
+        if (score < EVIDENCE_THRESHOLD || data.getBackTrackEvidence().events() < EVIDENCE_MIN_EVENTS) {
             return CheckResult.pass("BackTrack");
         }
 
-        data.resetBackTrackStreak();
+        data.getBackTrackEvidence().reset();
 
         double excessMs = requiredMs - allowedMs;
         double confidence = Math.min(0.97, 0.82 + excessMs / 1000.0);

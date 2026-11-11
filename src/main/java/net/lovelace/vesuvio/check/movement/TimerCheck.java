@@ -60,12 +60,6 @@ public final class TimerCheck {
     private static final double INTERVAL_EMA_ALPHA = 0.10;
 
     /**
-     * Gaps longer than this are a genuine stall (chunk load, server hitch, reconnect), not client
-     * ticks. Crediting them would let the balance swing wildly, so the sample is discarded.
-     */
-    private static final double MAX_SANE_GAP_MS = 1000.0;
-
-    /**
      * @param lagTolerance multiplier from the lag compensator; scales the flag threshold so a
      *                     genuinely lagging server or connection does not manufacture drift
      */
@@ -78,6 +72,17 @@ public final class TimerCheck {
      * supplying them explicitly is what makes the drift behaviour testable without real sleeps.
      */
     public CheckResult check(UserData data, double lagTolerance, long nowNanos) {
+        return check(data, lagTolerance, nowNanos, -1.0);
+    }
+
+    /**
+     * @param msSinceLastAckSent milliseconds since the server SENT the last transaction the client has answered
+     *                           ({@code TransactionManager#getMsSinceLastAckSent}), or negative when unknown. It bounds how
+     *                           much real time the client can have lived through without the server hearing from its netty
+     *                           thread, so it sizes the catch-up headroom: a client freeze (main loop stopped, netty still
+     *                           answering) leaves it small, a network stall (nothing arrives) lets it grow.
+     */
+    public CheckResult check(UserData data, double lagTolerance, long nowNanos, double msSinceLastAckSent) {
         if (data == null) return CheckResult.pass("Timer");
 
         long now = nowNanos;
@@ -90,16 +95,15 @@ public final class TimerCheck {
         }
 
         double elapsedMs = (now - last) / 1_000_000.0;
-        if (elapsedMs > MAX_SANE_GAP_MS) {
-            // A real stall. Reset rather than credit or debit: neither side of the balance learned
-            // anything trustworthy from an interval the server itself may have caused.
-            data.setTimerBalanceMs(0.0);
-            data.decrementTimerViolationStreak();
-            return CheckResult.pass("Timer");
-        }
 
+        // Both a long gap and a short one are credited the same way and only bounded by the floor. The old "gap > 1000 ms ->
+        // balance 0" reset gave a client that froze for a second (chunk meshing, GC, shader compile, alt-tab) NO headroom for
+        // the ~10 catch-up ticks vanilla then runs in one frame, so those ten packets (+500 ms) crossed the 320 ms line.
+        // The floor follows the transactions: a freeze keeps it near -(RTT + 250) and ten catch-up ticks end near +150, while a
+        // network stall of several hundred ms (packets bunched by TCP) lets it grow with the unanswered time.
+        double floor = -(Math.max(0.0, msSinceLastAckSent) - BALANCE_FLOOR_MS);
         double balance = data.getTimerBalanceMs() + (TICK_MS - elapsedMs);
-        if (balance < BALANCE_FLOOR_MS) balance = BALANCE_FLOOR_MS;
+        if (balance < floor) balance = floor;
         data.setTimerBalanceMs(balance);
 
         // Smoothed packet interval, kept purely so a flag can report a meaningful speed ratio.

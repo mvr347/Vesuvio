@@ -43,6 +43,10 @@ public final class AimTrackingService {
         targets.remove(uuid);
     }
 
+    public void retainOnline(java.util.Set<UUID> online) {
+        targets.keySet().retainAll(online);
+    }
+
     /** Called once per tick on the main thread. */
     public void tick(Iterable<? extends Player> onlinePlayers) {
         long now = System.nanoTime();

@@ -51,11 +51,31 @@ public final class ClickPacketListener extends PacketListenerAbstract {
         this.virtualExecutor = virtualExecutor;
     }
 
+    private static final PacketWarnings WARNINGS = new PacketWarnings();
+
+    /** A full or stopped executor must not turn into an exception on the netty thread for every packet. */
+    private void submitSafely(UserData data, Player player, Runnable task) {
+        try {
+            checkPipeline.submitPacketCheck(data, virtualExecutor, task);
+        } catch (RuntimeException e) {
+            WARNINGS.warn("Не удалось поставить проверку клика в очередь для " + player.getName(), e);
+        }
+    }
+
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
-        if (!checkPipeline.isAnticheatEnabled()) return;
-
         var type = event.getPacketType();
+
+        // Recorded even while detection is off: the next snapshot can still show the container as open for a tick.
+        if (type == PacketType.Play.Client.CLOSE_WINDOW) {
+            if (event.getPlayer() instanceof Player player && !player.hasMetadata("NPC")) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) data.markContainerClosed();
+            }
+            return;
+        }
+
+        if (!checkPipeline.isAnticheatEnabled()) return;
 
         if (type == PacketType.Play.Client.ANIMATION) {
             Player player = (Player) event.getPlayer();
@@ -74,7 +94,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
                 data.getClickBuffer().addClick(now, false);
 
                 // Offload full detection pipeline to virtual thread
-                checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.processClick(player, data));
+                submitSafely(data, player, () -> checkPipeline.processClick(player, data));
             }
 
         } else if (type == PacketType.Play.Client.INTERACT_ENTITY) {
@@ -91,7 +111,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
                 // an "attack" against an entity that does not really exist.
                 var npcTrapManager = checkPipeline.getNpcTrapManager();
                 if (npcTrapManager != null && npcTrapManager.isTrapEntity(player.getUniqueId(), targetEntityId)) {
-                    checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.handleNpcTrapHit(player, data));
+                    submitSafely(data, player, () -> checkPipeline.handleNpcTrapHit(player, data));
                     return;
                 }
 
@@ -101,7 +121,7 @@ public final class ClickPacketListener extends PacketListenerAbstract {
 
                 var attack = data.captureAttack(now);
 
-                checkPipeline.submitPacketCheck(data, virtualExecutor, () -> {
+                submitSafely(data, player, () -> {
                     checkPipeline.processAttack(player, targetEntityId, data, attack);
                     checkPipeline.processClick(player, data);
                 });

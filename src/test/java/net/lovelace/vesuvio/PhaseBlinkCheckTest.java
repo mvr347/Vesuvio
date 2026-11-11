@@ -178,7 +178,7 @@ class PhaseBlinkCheckTest {
         // Same shape as the idle case above, except the packet ending the silence reports a state
         // the client had not reported before - which is what a blink releasing queued movement
         // necessarily does. The idle gate must not cost this detection.
-        data.setLastSwingNanos(now + 1500 * MS);
+        denseSwings(data, now + 500 * MS, now + 2000 * MS);
         now += 2500 * MS;
 
         CheckResult result = check.check(uuid, data, transactions, now, true, true);
@@ -227,8 +227,8 @@ class PhaseBlinkCheckTest {
             check.check(uuid, data, transactions, now);
         }
 
-        // Swing lands in the middle of the silence that follows.
-        data.setLastSwingNanos(now + 1500 * MS);
+        // Dense swings through the silence that follows.
+        denseSwings(data, now + 500 * MS, now + 2000 * MS);
         now += 2500 * MS;
 
         CheckResult result = check.check(uuid, data, transactions, now);
@@ -483,7 +483,7 @@ class PhaseBlinkCheckTest {
         long silenceStart = now;
         now += 2000 * MS;
         for (int i = 0; i < 40; i++) transactions.ack();
-        data.setLastSwingNanos(silenceStart + 1000 * MS); // dead centre of the silence
+        denseSwings(data, silenceStart + 300 * MS, silenceStart + 1700 * MS); // through the middle of the silence
 
         CheckResult result = check.check(uuid, data, transactions, now);
         assertTrue(result.isFlag(), "swinging through the silence is still conclusive");
@@ -654,5 +654,78 @@ class PhaseBlinkCheckTest {
                 .blockBelow(Material.STONE)
                 .insideSolidBlock(insideSolidBlock)
                 .build();
+    }
+
+    /** Swings every 50 ms (a client mining or attacking continuously) from {@code from} to {@code to}. */
+    private static void denseSwings(UserData data, long from, long to) {
+        for (long t = from; t <= to; t += 50 * MS) data.setLastSwingNanos(t);
+    }
+
+    @Test
+    void standingMiningPlayerWhoTurnsTheMouseAfter950msIsNotABlink() {
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        StubTransactions transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Miner");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 10; i++) {
+            now += 50 * MS;
+            transactions.ack();
+            check.check(uuid, data, transactions, now, true, true);
+        }
+        // Stands still and mines (a swing every tick) through the ~950 ms between two reminders, then moves the mouse.
+        long silenceStart = now;
+        denseSwings(data, silenceStart + 50 * MS, silenceStart + 950 * MS);
+        now += 950 * MS;
+        for (int i = 0; i < 20; i++) transactions.ack();
+        assertFalse(check.check(uuid, data, transactions, now, true, true).isFlag(),
+                "950 ms is shorter than the 20-tick reminder: nothing was provably withheld");
+    }
+
+    @Test
+    void twoSecondsOfSilenceWithDenseSwingsIsABlink() {
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        StubTransactions transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Blinker");
+        data.setEnvironment(snapshot(false));
+
+        long now = 0L;
+        for (int i = 0; i < 10; i++) {
+            now += 50 * MS;
+            transactions.ack();
+            check.check(uuid, data, transactions, now, true, true);
+        }
+        long silenceStart = now;
+        denseSwings(data, silenceStart + 50 * MS, silenceStart + 2000 * MS);
+        now += 2100 * MS;
+        for (int i = 0; i < 40; i++) transactions.ack();
+        CheckResult result = check.check(uuid, data, transactions, now, true, true);
+        assertTrue(result.isFlag());
+        assertEquals("activity", result.details().get("evidence"));
+    }
+
+    @Test
+    void sparseSwingsNeverProveAWithheldReminder() {
+        BlinkCheck check = new BlinkCheck();
+        UUID uuid = UUID.randomUUID();
+        StubTransactions transactions = new StubTransactions(45.0, 0.0);
+        UserData data = new UserData(uuid, "Slow");
+        data.setEnvironment(snapshot(false));
+        long now = 0L;
+        for (int i = 0; i < 10; i++) {
+            now += 50 * MS;
+            transactions.ack();
+            check.check(uuid, data, transactions, now, true, true);
+        }
+        long silenceStart = now;
+        // Two swings 1.2 s apart prove no more than the 10-tick catch-up clamp.
+        data.setLastSwingNanos(silenceStart + 400 * MS);
+        data.setLastSwingNanos(silenceStart + 1600 * MS);
+        now += 2100 * MS;
+        for (int i = 0; i < 40; i++) transactions.ack();
+        assertFalse(check.check(uuid, data, transactions, now, true, true).isFlag());
     }
 }

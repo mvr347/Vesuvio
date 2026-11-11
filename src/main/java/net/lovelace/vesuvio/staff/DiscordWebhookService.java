@@ -39,6 +39,18 @@ public final class DiscordWebhookService {
                 .build();
     }
 
+    /**
+     * Closes the HTTP client: each client owns a selector thread and a pool, and one is created per service instance
+     * (every enable/reload), so without this they accumulate until the JVM exits.
+     */
+    public void shutdown() {
+        try {
+            httpClient.close();
+        } catch (RuntimeException ignored) {
+            // Already closed or interrupted while closing - nothing left to release.
+        }
+    }
+
     public void dispatchAlertAsync(Player player, UserData data, CheckResult result) {
         if (!config.isDiscordEnabled()) return;
 

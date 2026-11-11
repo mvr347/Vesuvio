@@ -80,8 +80,15 @@ public record EnvironmentSnapshot(
         double jumpStrength, // Attribute.JUMP_STRENGTH; vanilla default ~0.42
 
         // --- Inventory ---
-        boolean containerOpen,   // a real container GUI, not the always-open 2x2 crafting view
-        String openInventoryType
+        boolean containerOpen,   // a real container GUI, not the always-open 2x2 crafting view; never in CREATIVE
+        String openInventoryType,
+
+        // --- Added 2026-11-11 ---
+        double stepHeight,       // Attribute.STEP_HEIGHT (vanilla 0.6); some gear and effects raise it
+        boolean nearLiquid,      // water, lava, waterlogged block, kelp, seagrass, bubbles in the 3x3 around the player
+        boolean nearStuck,       // berry bush, powder snow, cobweb near the player, not only in the feet block
+        long containerOpenSinceMillis, // when the current container was first seen open; 0 when none
+        boolean recentExemption  // flight, elytra, vehicle ended within the last 20 ticks (the client has not caught up)
 ) {
 
     /** Placeholder used before the first capture; every check treats this as "skip". */
@@ -94,7 +101,8 @@ public record EnvironmentSnapshot(
             false, false, false, false, false, -1,
             0, 0,
             0.1, 0.42,
-            false, "NONE");
+            false, "NONE",
+            0.6, false, false, 0L, false);
 
     /**
      * A snapshot older than a few ticks means the capture task fell behind (server hitch, or the
@@ -110,7 +118,7 @@ public record EnvironmentSnapshot(
      * Centralised here so a newly added check cannot forget one of them.
      */
     public boolean isMovementExempt() {
-        return exemptGameMode || allowFlight || flying || gliding || insideVehicle || dead;
+        return exemptGameMode || allowFlight || flying || gliding || insideVehicle || dead || recentExemption;
     }
 
     /**

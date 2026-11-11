@@ -139,6 +139,70 @@ public final class UserData {
 
     public synchronized void adjustRisk(double delta) {
         this.riskIndex = Math.max(0.0, Math.min(100.0, this.riskIndex + delta));
+        if (delta > 0) lastRiskRaiseMillis = System.currentTimeMillis();
+    }
+
+    private long lastRiskRaiseMillis = System.currentTimeMillis();
+    private long lastCleanDecayMillis = System.currentTimeMillis();
+
+    /**
+     * Passive recovery for a player who has not been flagged for {@code cleanMillis}: risk drops by
+     * {@code riskPerMinute} down to {@code riskFloor}, trust grows by 1.0 per {@code trustHours} of clean time.
+     * Without this the risk only ever grew and trust only ever fell, which tightened every threshold
+     * through {@link #getSensitivityMultiplier()} and produced yet more flags.
+     */
+    public synchronized void applyCleanDecay(long nowMillis, long cleanMillis, double riskPerMinute,
+                                             double riskFloor, double trustHours) {
+        long elapsed = Math.max(0L, nowMillis - lastCleanDecayMillis);
+        lastCleanDecayMillis = nowMillis;
+        long lastBad = Math.max(lastViolationTime.get(), lastRiskRaiseMillis);
+        if (nowMillis - lastBad < cleanMillis) return;
+        // Only the time past the clean threshold counts, otherwise the first tick after it would back-pay it.
+        long counted = Math.min(elapsed, nowMillis - lastBad - cleanMillis);
+        if (counted <= 0) return;
+        double minutes = counted / 60_000.0;
+        if (riskIndex > riskFloor) {
+            riskIndex = Math.max(riskFloor, riskIndex - riskPerMinute * minutes);
+        }
+        if (trustHours > 0) {
+            trustScore = Math.min(100.0, trustScore + minutes / (trustHours * 60.0));
+        }
+    }
+
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastAlertMillis = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Rate limit of staff chat and Discord alerts per check (the database record is never limited). */
+    public boolean tryAlert(String check, long nowMillis, long intervalMillis) {
+        if (intervalMillis <= 0) return true;
+        final boolean[] allowed = {false};
+        lastAlertMillis.compute(check, (k, last) -> {
+            if (last == null || nowMillis - last >= intervalMillis || nowMillis < last) {
+                allowed[0] = true;
+                return nowMillis;
+            }
+            return last;
+        });
+        return allowed[0];
+    }
+
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastReflagMillis = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Rate limit for window-based checks: they re-evaluate the same 64-sample window on every packet, so
+     * one real anomaly would otherwise flag 10-20 times a second. True when a flag for {@code check} may
+     * be reported now; records the time when it does.
+     */
+    public boolean tryReflag(String check, long nowMillis, long intervalMillis) {
+        if (intervalMillis <= 0) return true;
+        final boolean[] allowed = {false};
+        lastReflagMillis.compute(check, (k, last) -> {
+            if (last == null || nowMillis - last >= intervalMillis || nowMillis < last) {
+                allowed[0] = true;
+                return nowMillis;
+            }
+            return last;
+        });
+        return allowed[0];
     }
 
     // Manual Suspect flag (persists across reboots and reconnects)
@@ -176,7 +240,14 @@ public final class UserData {
         double trustFactor = (60.0 - trust) / 60.0; // trust=50 -> +0.17 (slightly harsh), trust=100 -> -0.67 (lenient), trust=0 -> +1.0
         double riskFactor = risk / 100.0;            // risk=10 -> +0.10, risk=100 -> +1.0, risk=0 -> 0.0
         double sensitivity = 1.0 + (trustFactor * 0.6) + (riskFactor * 0.8);
-        return Math.max(0.6, Math.min(2.5, sensitivity));
+        return Math.max(0.6, Math.min(sensitivityCap, sensitivity));
+    }
+
+    private static volatile double sensitivityCap = 1.3;
+
+    /** Upper bound of {@link #getSensitivityMultiplier()} (scoring.sensitivity.max-multiplier). */
+    public static void setSensitivityCap(double cap) {
+        sensitivityCap = Math.max(1.0, cap);
     }
 
     public String getClientBrand() {
@@ -342,6 +413,28 @@ public final class UserData {
         swingCursor = (swingCursor + 1) % recentSwings.length;
         swingCount = Math.min(recentSwings.length, swingCount + 1);
     }
+    /**
+     * Client ticks that PROVABLY ran between two instants, from swing packets only the client's main loop produces: for
+     * every pair of neighbouring swings inside the window, min(gap / 50 ms, {@code maxPerGap}) ticks. The cap is the
+     * vanilla catch-up clamp (10 ticks per frame): a gap bigger than that can be a freeze that ran only its clamp, so it
+     * proves no more than the clamp. Fewer than two swings prove nothing. A sum of 24 or more means the client was past the
+     * mandatory 20-tick position reminder, so a silent movement stream was really withheld.
+     */
+    public synchronized double provenMainLoopTicks(long fromNanos, long toNanos, double maxPerGap) {
+        long[] inWindow = new long[swingCount];
+        int n = 0;
+        for (int i = 0; i < swingCount; i++) {
+            long t = recentSwings[i];
+            if (t > fromNanos && t <= toNanos) inWindow[n++] = t;
+        }
+        java.util.Arrays.sort(inWindow, 0, n);
+        double ticks = 0.0;
+        for (int i = 1; i < n; i++) {
+            ticks += Math.min((inWindow[i] - inWindow[i - 1]) / 50_000_000.0, maxPerGap);
+        }
+        return ticks;
+    }
+
     public synchronized boolean hasSwingNear(long attackNanos) {
         for (int i = 0; i < swingCount; i++) {
             if (Math.abs(recentSwings[i] - attackNanos) <= 150_000_000L) return true;
@@ -403,6 +496,58 @@ public final class UserData {
     /** Result of {@link #consumePendingAttackRotation()}: whether a value was present, and its yaw/pitch. */
     public record PendingRotation(boolean present, float yaw, float pitch) {}
 
+    // ---- Rotation ring (2026-11-11) ----------------------------------------------------------------------------------
+    // The client sends an attack packet BEFORE the rotation packet of the same tick, so the angle captured with the attack is
+    // one tick older than what the player actually aimed with: a sharp correction right after the click read as a miss.
+    // Every rotation is recorded here with the time its packet arrived (netty thread), so the combat checks can take the better
+    // of the attack angle and the first rotation within 150 ms after it.
+    private static final int ROTATION_RING = 32;
+    private final long[] rotNanos = new long[ROTATION_RING];
+    private final float[] rotYaw = new float[ROTATION_RING];
+    private final float[] rotPitch = new float[ROTATION_RING];
+    private final float[] rotDelta = new float[ROTATION_RING];
+    private int rotCursor, rotCount;
+
+    public synchronized void recordRotationSample(float yaw, float pitch, long nanos, float combinedDelta) {
+        rotNanos[rotCursor] = nanos;
+        rotYaw[rotCursor] = yaw;
+        rotPitch[rotCursor] = pitch;
+        rotDelta[rotCursor] = combinedDelta;
+        rotCursor = (rotCursor + 1) % ROTATION_RING;
+        rotCount = Math.min(ROTATION_RING, rotCount + 1);
+    }
+
+    /** The first rotation that arrived after {@code attackNanos} and no later than {@code windowNanos} after it. */
+    public synchronized PendingRotation firstRotationAfter(long attackNanos, long windowNanos) {
+        long best = Long.MAX_VALUE;
+        int bestIdx = -1;
+        for (int i = 0; i < rotCount; i++) {
+            long t = rotNanos[i];
+            if (t > attackNanos && t <= attackNanos + windowNanos && t < best) {
+                best = t;
+                bestIdx = i;
+            }
+        }
+        return bestIdx < 0 ? new PendingRotation(false, 0f, 0f) : new PendingRotation(true, rotYaw[bestIdx], rotPitch[bestIdx]);
+    }
+
+    /** Time of the latest rotation before {@code beforeNanos} whose own turn was at least {@code floorDegrees}; 0 if none. */
+    public synchronized long lastSignificantRotationBefore(long beforeNanos, double floorDegrees) {
+        long best = 0L;
+        for (int i = 0; i < rotCount; i++) {
+            long t = rotNanos[i];
+            if (t <= beforeNanos && t > best && rotDelta[i] >= floorDegrees) best = t;
+        }
+        return best;
+    }
+
+    private final DecayingEvidence silentAimEvidence = new DecayingEvidence();
+    private final DecayingEvidence fovEvidence = new DecayingEvidence();
+    private final DecayingEvidence wallHitEvidence = new DecayingEvidence();
+    public DecayingEvidence getSilentAimEvidence() { return silentAimEvidence; }
+    public DecayingEvidence getFovEvidence() { return fovEvidence; }
+    public DecayingEvidence getWallHitEvidence() { return wallHitEvidence; }
+
     /** Reads and clears the pending attack rotation in one step, so it is used at most once. */
     public synchronized PendingRotation consumePendingAttackRotation() {
         PendingRotation result = new PendingRotation(hasPendingAttackRotation, pendingAttackYaw, pendingAttackPitch);
@@ -440,6 +585,9 @@ public final class UserData {
         this.initialRotation = initialRotation;
     }
 
+    private final DecayingEvidence gcdEvidence = new DecayingEvidence();
+    public DecayingEvidence getGcdEvidence() { return gcdEvidence; }
+
     public int getGcdSuspiciousStreak() {
         return gcdSuspiciousStreak;
     }
@@ -453,6 +601,7 @@ public final class UserData {
     }
 
     public void resetGcdStreak() {
+        gcdEvidence.reset();
         this.gcdSuspiciousStreak = 0;
     }
 
@@ -517,7 +666,7 @@ public final class UserData {
     public int getFlyStreak() { return flyStreak; }
     public void incrementFlyStreak() { this.flyStreak++; }
     public void decrementFlyStreak() { this.flyStreak = Math.max(0, this.flyStreak - 1); }
-    public void resetFlyStreak() { this.flyStreak = 0; }
+    public void resetFlyStreak() { this.flyStreak = 0; flyEvidence.reset(); }
 
     public int getSpeedStreak() { return speedStreak; }
     public void incrementSpeedStreak() { this.speedStreak++; }
@@ -543,6 +692,25 @@ public final class UserData {
     public void setTimerWindowStartNanos(long nanos) { this.timerWindowStartNanos = nanos; }
 
     public long getLastVelocityMillis() { return lastVelocityMillis; }
+    // A container (chest, furnace, ...) was closed. The close arrives as a packet and as an event, both before the server
+    // snapshot of the next tick shows it, so the checks that read the snapshot consult this timestamp too.
+    private volatile long lastContainerClosedMillis = 0L;
+    public void markContainerClosed() { this.lastContainerClosedMillis = System.currentTimeMillis(); }
+    public long getLastContainerClosedMillis() { return lastContainerClosedMillis; }
+    /** True when a close happened after {@code sinceMillis} (typically the snapshot capture time). */
+    public boolean containerClosedAfter(long sinceMillis) { return lastContainerClosedMillis >= sinceMillis && lastContainerClosedMillis != 0L; }
+
+    private final DecayingEvidence autoCritEvidence = new DecayingEvidence();
+    public DecayingEvidence getAutoCritEvidence() { return autoCritEvidence; }
+    private final DecayingEvidence backTrackEvidence = new DecayingEvidence();
+    public DecayingEvidence getBackTrackEvidence() { return backTrackEvidence; }
+
+    private final DecayingEvidence stepEvidence = new DecayingEvidence();
+    public DecayingEvidence getStepEvidence() { return stepEvidence; }
+
+    private final DecayingEvidence flyEvidence = new DecayingEvidence();
+    public DecayingEvidence getFlyEvidence() { return flyEvidence; }
+
     public void recordVelocity() { this.lastVelocityMillis = System.currentTimeMillis(); }
     public boolean hasRecentVelocity() { return (System.currentTimeMillis() - lastVelocityMillis) < 1200L; }
 
@@ -768,6 +936,43 @@ public final class UserData {
     public void setContainerOpenSinceMillis(long millis) { this.containerOpenSinceMillis = millis; }
 
     private volatile int phaseTicks = 0;
+    // Phase "buried" state: the player found themselves inside a block without having walked into it (a block appeared on
+    // them, a teleport, a reset of a mine), which is not phasing until they have left the block again.
+    private boolean phaseWasInside;
+    private boolean phaseBuried;
+    private boolean phaseHasPrevBlock;
+    private int phasePrevX, phasePrevY, phasePrevZ;
+    /**
+     * Records this tick's block cell and inside state and returns whether the player is "buried": entered a block without
+     * changing block coordinates, right after a teleport, or inside the window of a nearby block change.
+     */
+    public synchronized boolean updatePhaseEntry(boolean inside, int bx, int by, int bz, boolean suspiciousEntry) {
+        boolean sameCell = phaseHasPrevBlock && phasePrevX == bx && phasePrevY == by && phasePrevZ == bz;
+        phaseHasPrevBlock = true;
+        phasePrevX = bx;
+        phasePrevY = by;
+        phasePrevZ = bz;
+        if (!inside) {
+            phaseWasInside = false;
+            phaseBuried = false;
+            return false;
+        }
+        if (!phaseWasInside) {
+            phaseWasInside = true;
+            phaseBuried = sameCell || suspiciousEntry;
+        }
+        return phaseBuried;
+    }
+    public synchronized void resetPhaseEntry() {
+        phaseWasInside = false;
+        phaseBuried = false;
+        phaseHasPrevBlock = false;
+    }
+
+    private volatile double invMovePrevHorizontal = 0.0;
+    public double getInvMovePrevHorizontal() { return invMovePrevHorizontal; }
+    public void setInvMovePrevHorizontal(double v) { this.invMovePrevHorizontal = v; }
+
     public int getPhaseTicks() { return phaseTicks; }
     public void incrementPhaseTicks() { this.phaseTicks++; }
     public void decrementPhaseTicks() { this.phaseTicks = Math.max(0, this.phaseTicks - 1); }
@@ -778,6 +983,38 @@ public final class UserData {
     // vehicle-riding equivalent of Phase/Clip above.
     // -------------------------------------------------------------
     private volatile int vehicleClipTicks = 0;
+    // Block-state desync (2026-11-11): after a place or break the player's OWN client had cancelled by the server, the client still
+    // holds a ghost block for a round trip. Whatever it does against that block in this window is not a cheat.
+    private volatile long lastOwnBlockDesyncMillis = 0L;
+    public void markOwnBlockDesync() { this.lastOwnBlockDesyncMillis = System.currentTimeMillis(); }
+    public long getLastOwnBlockDesyncMillis() { return lastOwnBlockDesyncMillis; }
+    /** True within {@code rttMs + 500 ms} of the last own cancelled place/break (RTT unknown counts as 0). */
+    public boolean inOwnBlockDesyncWindow(double rttMs) {
+        long last = lastOwnBlockDesyncMillis;
+        return last != 0L && System.currentTimeMillis() - last < Math.max(0.0, rttMs) + 500.0;
+    }
+
+    private final DecayingEvidence airPlaceEvidence = new DecayingEvidence();
+    private final DecayingEvidence scaffoldEvidence = new DecayingEvidence();
+    private final DecayingEvidence ghostHandEvidence = new DecayingEvidence();
+    private final DecayingEvidence blockReachEvidence = new DecayingEvidence();
+    private final DecayingEvidence vehicleFlyEvidence = new DecayingEvidence();
+    public DecayingEvidence getAirPlaceEvidence() { return airPlaceEvidence; }
+    public DecayingEvidence getScaffoldEvidence() { return scaffoldEvidence; }
+    public DecayingEvidence getGhostHandEvidence() { return ghostHandEvidence; }
+    public DecayingEvidence getBlockReachEvidence() { return blockReachEvidence; }
+    public DecayingEvidence getVehicleFlyEvidence() { return vehicleFlyEvidence; }
+
+    private double vehiclePrevDeltaY = Double.NaN;
+    private long vehiclePrevDeltaYMillis = 0L;
+    /** Stores this vehicle tick's deltaY and returns the previous tick's (NaN when there is no recent one). */
+    public synchronized double swapVehicleDeltaY(double deltaY, long nowMillis) {
+        double previous = (nowMillis - vehiclePrevDeltaYMillis) <= 250L ? vehiclePrevDeltaY : Double.NaN;
+        vehiclePrevDeltaY = deltaY;
+        vehiclePrevDeltaYMillis = nowMillis;
+        return previous;
+    }
+
     public int getVehicleClipTicks() { return vehicleClipTicks; }
     public void incrementVehicleClipTicks() { this.vehicleClipTicks++; }
     public void decrementVehicleClipTicks() { this.vehicleClipTicks = Math.max(0, this.vehicleClipTicks - 1); }
@@ -1037,6 +1274,25 @@ public final class UserData {
                         states, grace > 0 ? now + grace : 0);
     }
 
+    /**
+     * Forgets everything the movement checks carry from one packet to the next (air time, Fly/Speed accumulators, the predicted
+     * motion vector, a pending knockback, Phase ticks). Used where the next delta cannot be trusted: invulnerability, a game
+     * mode change, a teleport-sized jump. One method instead of the same eight lines copied into each branch, where one copy
+     * always missed whatever state was added last.
+     */
+    public void resetKinematicState() {
+        resetAirTicks();
+        resetFlyStreak();
+        resetSpeedStreak();
+        setPrevHorizontalSpeed(0.0);
+        setSpeedPredictionDebt(0.0);
+        clearPredictedVector();
+        clearPendingVelocity();
+        resetPhaseTicks();
+        resetPhaseEntry();
+        stepEvidence.reset();
+    }
+
     private volatile long movementResetNanos;
     private final net.lovelace.vesuvio.engine.OrderedTaskQueue packetChecks =
             new net.lovelace.vesuvio.engine.OrderedTaskQueue();
@@ -1063,9 +1319,10 @@ public final class UserData {
         resetFlyStreak();
         resetSpeedStreak();
         resetNoFallStreak();
-        resetStepStreak();
+        resetStepStreak(); stepEvidence.reset();
         resetInvMoveStreak();
         resetPhaseTicks();
+        resetPhaseEntry();
         phaseEvidence.reset();
         invMoveEvidence.reset();
         resetTimerBalance();
@@ -1220,6 +1477,39 @@ public final class UserData {
             this.speedAirborneTicks++;
         }
         this.speedPrevOnGround = onGround;
+    }
+
+    // Ground flags of the two previous movement packets, as seen by SpeedCheck. Vanilla applies this tick's acceleration by the
+    // state at the START of the tick (= flag of packet t-1) but friction to the previous tick's displacement by the state at
+    // the start of THAT tick (= flag of packet t-2). Using the current packet's flag for both mis-judges the jump and landing ticks.
+    private volatile boolean speedGround1 = true;
+    private volatile boolean speedGround2 = true;
+    public boolean isSpeedGround1() { return speedGround1; }
+    public boolean isSpeedGround2() { return speedGround2; }
+    public synchronized void shiftSpeedGround(boolean onGroundNow) {
+        speedGround2 = speedGround1;
+        speedGround1 = onGroundNow;
+    }
+
+    // Slipperiness memory: friction uses the highest value seen in the last second (ice just left still carries momentum),
+    // acceleration the lowest seen in the last 150 ms (a bigger acceleration is the more permissive bound).
+    private double slipMax = 0.0;
+    private long slipMaxMillis = 0L;
+    private double slipMin = 1.0;
+    private long slipMinMillis = 0L;
+    public synchronized double slipperyMax(double current, long nowMillis) {
+        if (nowMillis - slipMaxMillis > 1000L || current >= slipMax) {
+            slipMax = current;
+            slipMaxMillis = nowMillis;
+        }
+        return slipMax;
+    }
+    public synchronized double slipperyMin(double current, long nowMillis) {
+        if (nowMillis - slipMinMillis > 150L || current <= slipMin) {
+            slipMin = current;
+            slipMinMillis = nowMillis;
+        }
+        return slipMin;
     }
 
     public double getSpeedPredictionDebt() { return speedPredictionDebt; }

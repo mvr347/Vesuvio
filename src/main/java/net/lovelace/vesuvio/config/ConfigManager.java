@@ -103,7 +103,7 @@ public final class ConfigManager {
                     punishmentRules.add(new PunishmentRule(vl, action, cmd));
                 } catch (NumberFormatException ignored) {}
             }
-            // Descending: evaluatePunishments() walks this list and fires the FIRST rule whose
+            // Descending: PunishmentService#evaluate walks this list and fires the FIRST rule whose
             // threshold is met (with a non-blank command), then stops. With an ascending sort
             // that was always the lowest-severity rule (e.g. "kick" at VL 60), so a player who
             // blew straight past the "ban" threshold (VL 100) would only ever get kicked forever
@@ -116,10 +116,11 @@ public final class ConfigManager {
         suspiciousBrands.clear();
         suspiciousBrands.addAll(config.getStringList("mechanics.client-brand.suspicious-brands"));
 
+        net.lovelace.vesuvio.data.UserData.setSensitivityCap(getSensitivityMaxMultiplier());
         punishmentExcludedChecks.clear();
         java.util.List<String> excluded = config.contains("punishments.excluded-checks")
                 ? config.getStringList("punishments.excluded-checks")
-                : java.util.List.of("phase", "invmove");
+                : java.util.List.of("phase", "invmove", "clickml", "aimml");
         for (String name : excluded) punishmentExcludedChecks.add(normalizeCheckName(name));
 
         silentChecks.clear();
@@ -744,6 +745,11 @@ public final class ConfigManager {
         return config.getInt("mechanics.combat.killaura.static-tracking.streak", 3);
     }
 
+    /** ReactionTime is off by default: it can only ever be a rough proxy and flagged near-perfect trackers (2026-11-11). */
+    public boolean isKillauraReactionEnabled() {
+        return config.getBoolean("mechanics.combat.killaura.reaction.enabled", false);
+    }
+
     public double getKillauraReactionMinMs() {
         return config.getDouble("mechanics.combat.killaura.reaction.min-ms", 35.0);
     }
@@ -951,10 +957,6 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.world.vehicleclip.enabled", true);
     }
 
-    public boolean isXrayEnabled() {
-        return config.getBoolean("mechanics.world.xray.enabled", true);
-    }
-
     public boolean isTowerEnabled() {
         return config.getBoolean("mechanics.world.tower.enabled", true);
     }
@@ -1034,6 +1036,15 @@ public final class ConfigManager {
     public double getHighRiskThreshold() {
         return config.getDouble("scoring.risk.high-risk-threshold", 75.0);
     }
+
+    public long getAlertMinIntervalMs() { return config.getLong("staff.smart-alerts.min-interval-ms", 1500L); }
+
+    public double getRiskCleanSeconds() { return config.getDouble("scoring.risk.clean-seconds", 60.0); }
+    public double getRiskDecayPerMinute() { return config.getDouble("scoring.risk.decay-per-minute", 1.0); }
+    public double getRiskFloor() { return config.getDouble("scoring.risk.floor", 10.0); }
+    public double getTrustDecayCleanHours() { return config.getDouble("scoring.trust.decay-clean-hours", 1.5); }
+    public double getSensitivityMaxMultiplier() { return config.getDouble("scoring.sensitivity.max-multiplier", 1.3); }
+    public long getStatisticalReflagIntervalMs() { return config.getLong("layers.statistical.reflag-interval-ms", 4000L); }
 
     public double getVlDecayAmount() {
         return config.getDouble("scoring.vl.decay-amount", 1.0);
