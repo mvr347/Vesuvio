@@ -56,7 +56,7 @@ public final class CheckPipeline {
     private final net.lovelace.vesuvio.evasion.BanEvasionManager banEvasionManager;
     private final net.lovelace.vesuvio.engine.TransactionManager transactionManager;
     private final net.lovelace.vesuvio.engine.NpcTrapManager npcTrapManager;
-    private final MiniMessage mm = MiniMessage.miniMessage();
+    private final net.lovelace.vesuvio.punishment.PunishmentService punishmentService;
 
     private final StatisticalClickCheck clickCheck = new StatisticalClickCheck();
     private final StatisticalAimCheck aimCheck = new StatisticalAimCheck();
@@ -116,6 +116,8 @@ public final class CheckPipeline {
         this.banEvasionManager = banEvasionManager;
         this.transactionManager = transactionManager;
         this.npcTrapManager = npcTrapManager;
+        this.punishmentService = new net.lovelace.vesuvio.punishment.PunishmentService(plugin, config, databaseManager, waveManager,
+                selfLearning, banEvasionManager);
         this.reachCheck = new net.lovelace.vesuvio.check.statistical.StatisticalReachCheck(config.getMaxReach(), transactionManager);
         this.blinkCheck = net.lovelace.vesuvio.check.movement.BlinkCheck.fromConfig(config);
         this.angleCheck = new net.lovelace.vesuvio.check.statistical.KillauraAngleCheck(config, hitboxTracker, transactionManager);
@@ -1057,70 +1059,6 @@ public final class CheckPipeline {
         ));
 
         // 4. Evaluate punishment thresholds
-        evaluatePunishments(player, data);
-    }
-
-    private void evaluatePunishments(Player player, UserData data) {
-        if (!config.mayPunish()) return;
-        long epoch = config.runtime().actionEpoch();
-        long reset = data.getMovementResetNanos();
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (!config.runtime().acceptsAction(epoch)
-                    || data.getMovementResetNanos() != reset || data.hasRecentTeleport()) return;
-            // A burst can flag several checks in one tick: execute at most one action per second.
-            if (!data.tryPunishment(System.nanoTime())) return;
-            double currentVl = data.getVl();
-            for (ConfigManager.PunishmentRule rule : config.getPunishmentRules()) {
-                if (currentVl < rule.vlThreshold() || rule.command() == null || rule.command().isBlank()) continue;
-                String formatted = rule.command().replace("%player%", player.getName())
-                        .replace("%vl%", String.format(Locale.US, "%.0f", currentVl))
-                        .replace("%risk%", String.format(Locale.US, "%.0f", data.getRiskIndex()))
-                        .replace("%ml%", String.format(Locale.US, "%.1f", data.getLastMLProbability() * 100));
-                // Wave mode dedups itself via waveManager.isQueued; every other action fires once per session.
-                boolean waveMode = "ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null;
-                if (!waveMode && !data.tryLatchPunished()) return;
-                if ("ban".equalsIgnoreCase(rule.action())) {
-                    selfLearning.getAutoDatasetCollector().collectCheatSample(player, data);
-                    if (banEvasionManager != null && config.isBanEvasionEnabled()) {
-                        String ip = player.getAddress() != null && player.getAddress().getAddress() != null
-                                ? player.getAddress().getAddress().getHostAddress() : null;
-                        banEvasionManager.recordBanFingerprint(player.getUniqueId(), player.getName(), ip,
-                                data.getClientBrand(), data.getClickBuffer().getSignature(), formatted);
-                    }
-                }
-                if ("ban".equalsIgnoreCase(rule.action()) && config.isWavePunishmentEnabled() && waveManager != null) {
-                    if (!waveManager.isQueued(player.getUniqueId())) {
-                        waveManager.queuePunishment(player.getUniqueId(), player.getName(), formatted, "Волна наказаний: использование читов");
-                    }
-                    return;
-                }
-                boolean executed;
-                if ("kick".equalsIgnoreCase(rule.action())) {
-                    if (!player.isOnline()) { data.resetPunishedLatch(); return; }
-                    String reason = formatted;
-                    for (String prefix : new String[]{"kick " + player.getName() + " ", "minecraft:kick " + player.getName() + " "}) {
-                        if (reason.regionMatches(true, 0, prefix, 0, prefix.length())) { reason = reason.substring(prefix.length()); break; }
-                    }
-                    player.kick(mm.deserialize(reason));
-                    executed = true;
-                } else {
-                    executed = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), toLegacyCommand(formatted));
-                }
-                if (!executed) data.resetPunishedLatch();
-                if (executed) databaseManager.logPunishmentAsync(new net.lovelace.vesuvio.storage.PunishmentRecord(
-                        player.getUniqueId(), player.getName(), rule.action(), formatted, System.currentTimeMillis()));
-                return;
-            }
-        });
-    }
-
-    private String toLegacyCommand(String input) {
-        if (input == null || input.isBlank()) return "";
-        try {
-            if (input.contains("<") && input.contains(">")) {
-                return LegacyComponentSerializer.legacySection().serialize(mm.deserialize(input));
-            }
-        } catch (Throwable ignored) {}
-        return input;
+        punishmentService.evaluate(player, data);
     }
 }

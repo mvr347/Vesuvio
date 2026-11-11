@@ -103,7 +103,7 @@ public final class ConfigManager {
                     punishmentRules.add(new PunishmentRule(vl, action, cmd));
                 } catch (NumberFormatException ignored) {}
             }
-            // Descending: evaluatePunishments() walks this list and fires the FIRST rule whose
+            // Descending: PunishmentService#evaluate walks this list and fires the FIRST rule whose
             // threshold is met (with a non-blank command), then stops. With an ascending sort
             // that was always the lowest-severity rule (e.g. "kick" at VL 60), so a player who
             // blew straight past the "ban" threshold (VL 100) would only ever get kicked forever
