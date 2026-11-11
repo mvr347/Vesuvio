@@ -84,10 +84,21 @@ public final class SpeedCheck {
     private static final double MAX_TICK_GAP_MS = 120.0;
 
     /**
+     * Legacy entry point without vertical information: the current packet's ground flag is taken to equal the previous one and
+     * the player is assumed not to be rising.
+     */
+    public CheckResult check(UserData data, double deltaX, double deltaZ,
+                             double elapsedMs, double lagTolerance) {
+        return check(data, deltaX, deltaZ, 0.0, data == null || data.isLastOnGround(), elapsedMs, lagTolerance);
+    }
+
+    /**
+     * @param deltaY       vertical change of this packet (a jump is a ground flag at t-1 plus a rise or leaving the ground)
+     * @param onGroundNow  ground flag of THIS packet; becomes the t-1 flag of the next one
      * @param elapsedMs    real time since the previous position packet
      * @param lagTolerance multiplier from the lag compensator
      */
-    public CheckResult check(UserData data, double deltaX, double deltaZ,
+    public CheckResult check(UserData data, double deltaX, double deltaZ, double deltaY, boolean onGroundNow,
                              double elapsedMs, double lagTolerance) {
         if (data == null) return CheckResult.pass("Speed");
 
@@ -97,6 +108,7 @@ public final class SpeedCheck {
         if (!env.isFresh(System.currentTimeMillis(), 500L)) {
             data.clearPredictedVector();
             data.setPrevHorizontalSpeed(Math.hypot(deltaX, deltaZ));
+            data.shiftSpeedGround(onGroundNow);
             return CheckResult.pass("Speed");
         }
 
@@ -107,6 +119,7 @@ public final class SpeedCheck {
             data.setPrevHorizontalSpeed(hDist);
             data.setSpeedPredictionDebt(0.0);
             data.resetSpeedStreak();
+            data.shiftSpeedGround(onGroundNow);
             return CheckResult.pass("Speed");
         }
 
@@ -115,31 +128,44 @@ public final class SpeedCheck {
         if (elapsedMs > MAX_TICK_GAP_MS || elapsedMs <= 0) {
             data.clearPredictedVector();
             data.setPrevHorizontalSpeed(hDist);
+            data.shiftSpeedGround(onGroundNow);
             return CheckResult.pass("Speed");
         }
 
         double prev = data.getPrevHorizontalSpeed();
         data.setPrevHorizontalSpeed(hDist);
 
-        boolean onGround = env.solidBelow() && data.isLastOnGround();
-        int airborneTicks = data.getSpeedAirborneTicks();
-        data.updateSpeedGroundState(onGround);
+        // Vanilla reads the ground flag at the START of a tick: acceleration of this tick by the flag of packet t-1, the
+        // friction that decayed the previous displacement by the flag of packet t-2. A claimed ground state also needs a
+        // solid block nearby, so spoofing onGround in mid-air does not buy ground acceleration.
+        boolean groundAtStart = data.isSpeedGround1() && env.solidBelow();
+        boolean groundAtPrevStart = data.isSpeedGround2();
+        // Jump: was on the ground at the start of the tick and now rises or has left it. Under a 2-block ceiling the rise is
+        // tiny but the horizontal impulse is the same.
+        boolean jumped = groundAtStart && (deltaY > 0.0 || !onGroundNow);
+        data.shiftSpeedGround(onGroundNow);
 
-        Prediction prediction = predictMaxSpeed(env, prev, onGround, airborneTicks);
+        long nowMillis = System.currentTimeMillis();
+        double slip = slipperinessOf(env.blockBelow());
+        double carrySlip = data.slipperyMax(slip, nowMillis);
+        double accelSlip = data.slipperyMin(slip, nowMillis);
+
+        Prediction prediction = predictMaxSpeed(env, prev, groundAtStart, groundAtPrevStart, jumped, carrySlip, accelSlip);
         double predicted = prediction.total();
+        boolean onGround = groundAtStart;
 
         double allowed = prediction.carried()
                 + prediction.accel() * ACCEL_TOLERANCE
                 + ABSOLUTE_SLACK * Math.max(1.0, lagTolerance);
         double debt = data.getSpeedPredictionDebt();
         double excess = Math.max(0, hDist - allowed);
-        boolean stableGround = onGround && data.getGroundTicks() >= 3;
+        boolean stableGround = onGround && groundAtPrevStart && !jumped && data.getGroundTicks() >= 3;
         boolean collision = env.blockedPosX() || env.blockedNegX() || env.blockedPosZ() || env.blockedNegZ();
         if (data.hasPredictedVector() && stableGround && !collision && hDist > 0.03
                 && env.blockBelow() != Material.SLIME_BLOCK) {
             double residual = net.lovelace.vesuvio.engine.HorizontalMotionModel.residual(
                     data.getPredictedPreviousX(), data.getPredictedPreviousZ(), deltaX, deltaZ,
-                    slipperinessOf(env.blockBelow()) * AIR_FRICTION,
+                    carrySlip * AIR_FRICTION,
                     prediction.accel() * ACCEL_TOLERANCE, 0, ABSOLUTE_SLACK * Math.max(1, lagTolerance));
             excess = Math.max(excess, residual);
         }
@@ -165,6 +191,7 @@ public final class SpeedCheck {
                 details.put("excess", excess);
                 details.put("debt", debt);
                 details.put("onGround", onGround);
+                details.put("jumped", jumped);
                 details.put("blockBelow", env.blockBelow().name());
                 details.put("streak", data.getSpeedStreak());
 
@@ -197,13 +224,11 @@ public final class SpeedCheck {
         double total() { return carried + accel; }
     }
 
-    private Prediction predictMaxSpeed(EnvironmentSnapshot env, double prevSpeed, boolean onGround, int airborneTicks) {
-        double friction;
+    private Prediction predictMaxSpeed(EnvironmentSnapshot env, double prevSpeed, boolean groundAtStart,
+                                       boolean groundAtPrevStart, boolean jumped, double carrySlip, double accelSlip) {
         double accel;
-
-        if (onGround) {
-            double slipperiness = slipperinessOf(env.blockBelow());
-            friction = slipperiness * AIR_FRICTION;
+        if (groundAtStart) {
+            double friction = accelSlip * AIR_FRICTION;
             // Vanilla scales ground acceleration by 0.16277 / friction^3, which is what keeps a
             // player's top speed roughly constant across surfaces while ice lets momentum carry.
             double attribute = Double.isFinite(env.movementSpeed()) && env.movementSpeed() >= 0 ? env.movementSpeed() : GROUND_ACCEL;
@@ -212,16 +237,11 @@ public final class SpeedCheck {
             accel = attribute * (env.sprinting() ? 1.0 : SPRINT_MULTIPLIER)
                     * (0.16277136 / (friction * friction * friction));
         } else {
-            friction = AIR_FRICTION;
-            accel = AIR_ACCEL;
-        }
-
-        // Sprinting is a straight 1.3x on the applied acceleration.
-        if (!onGround) accel *= SPRINT_MULTIPLIER;
-
-        // Speed / Slowness style attribute modifiers are multiplicative on movement speed.
-        if (!onGround && env.speedAmplifier() >= 0) {
-            accel *= 1.0 + 0.20 * (env.speedAmplifier() + 1);
+            accel = AIR_ACCEL * SPRINT_MULTIPLIER;
+            // Speed / Slowness style attribute modifiers are multiplicative on movement speed.
+            if (env.speedAmplifier() >= 0) {
+                accel *= 1.0 + 0.20 * (env.speedAmplifier() + 1);
+            }
         }
 
         // Water movement: Depth Strider restores land-like control, Dolphin's Grace multiplies
@@ -238,15 +258,13 @@ public final class SpeedCheck {
             accel *= 1.0 + 0.30 * env.soulSpeed();
         }
 
+        // The previous displacement was decayed at the end of the previous tick by the friction of the state it STARTED in.
+        double friction = groundAtPrevStart ? carrySlip * AIR_FRICTION : AIR_FRICTION;
         double carried = prevSpeed * friction;
 
-        // A sprint-jump grants a one-off forward impulse at the moment of the jump - it is not a
-        // per-air-tick bonus. Granting it on the first couple of airborne ticks covers the jump
-        // and any packet/tick misalignment around it; granting it for the whole flight would push
-        // the airborne steady state past two blocks per tick and blind the check in the air, which
-        // is precisely where a speed cheat spends its time.
-        boolean justLeftGround = !onGround && airborneTicks <= 1;
-        if (justLeftGround || env.blockBelow() == Material.SLIME_BLOCK) {
+        // A sprint-jump grants a one-off forward impulse in the tick of the jump itself - not a per-air-tick bonus, which
+        // would raise the airborne steady state past two blocks per tick and blind the check in the air.
+        if (jumped || env.blockBelow() == Material.SLIME_BLOCK) {
             carried += SPRINT_JUMP_BOOST;
         }
 

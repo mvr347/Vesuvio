@@ -964,7 +964,7 @@ public final class CheckPipeline {
 
         // 3. Horizontal Speed check
         if (config.isSpeedEnabled()) {
-            CheckResult speedResult = speedCheck.check(data, deltaX, deltaZ, elapsedMs, lagTolerance);
+            CheckResult speedResult = speedCheck.check(data, deltaX, deltaZ, deltaY, onGround, elapsedMs, lagTolerance);
             if (speedResult.isFlag()) {
                 report(player, data, speedResult, speedResult.vl(), speedResult.confidence() * 8.0);
             }

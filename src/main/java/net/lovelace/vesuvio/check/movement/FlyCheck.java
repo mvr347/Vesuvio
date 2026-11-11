@@ -72,7 +72,20 @@ public final class FlyCheck {
     // always exceeds the tolerance for every velocity, not just small ones.
     private static final double CONSISTENCY_TOLERANCE_FIXED = 0.03;
     private static final double CONSISTENCY_TOLERANCE_RATIO = 0.015;
-    private static final int CONSISTENCY_REQUIRED_STREAK = 2;
+
+    // Evidence accumulator instead of a streak of N (2026-11-11): a streak is reset by one honest tick, and on the false side
+    // it fires on two bad ticks in a row, which a lag spike or a bunched-up packet batch produces without any cheat.
+    private static final double REQUIRED_SCORE = 3.0;
+    private static final int REQUIRED_EVENTS = 3;
+    private static final double HALF_LIFE_MS = 1500.0;
+
+    // A client standing in a chunk it has not received yet applies gravity -0.1 with 0.98 drag, i.e. a constant -0.098 per tick.
+    private static final double UNLOADED_CHUNK_FALL = -0.098;
+
+    private static boolean accumulate(UserData data, long nowNanos) {
+        double score = data.getFlyEvidence().reward(1.0, nowNanos, HALF_LIFE_MS);
+        return score >= REQUIRED_SCORE && data.getFlyEvidence().events() >= REQUIRED_EVENTS;
+    }
 
     // First-tick jump-impulse sanity bound. Generous on purpose: this pattern exists to catch an
     // instantly huge fake "jump" (an impulse no legitimate attribute value could produce), not to
@@ -87,6 +100,7 @@ public final class FlyCheck {
 
     public CheckResult check(UserData data, double deltaX, double deltaY, double deltaZ, boolean onGround) {
         if (data == null) return CheckResult.pass("Fly");
+        long nowNanos = System.nanoTime();
 
         EnvironmentSnapshot env = data.getEnvironment();
         // Without a fresh snapshot we cannot tell air from water, a ladder from a wall, or a
@@ -99,23 +113,23 @@ public final class FlyCheck {
         // Bypasses
         if (env.exemptGameMode()) {
             data.resetAirTicks();
-            data.resetFlyStreak();
+            data.getFlyEvidence().reset();
             data.setPrevAirDeltaY(0.0);
             return CheckResult.pass("Fly");
         }
         if (env.isMovementExempt()) {
             data.resetAirTicks();
-            data.resetFlyStreak();
+            data.getFlyEvidence().reset();
             data.setPrevAirDeltaY(0.0);
             return CheckResult.pass("Fly");
         }
         if (data.hasRecentVelocity()) {
-            data.resetFlyStreak();
+            data.getFlyEvidence().reset();
             data.setPrevAirDeltaY(deltaY);
             return CheckResult.pass("Fly");
         }
         if (env.levitation() || env.slowFalling()) {
-            data.resetFlyStreak();
+            data.getFlyEvidence().reset();
             data.setPrevAirDeltaY(deltaY);
             return CheckResult.pass("Fly");
         }
@@ -123,7 +137,16 @@ public final class FlyCheck {
         // Liquids float the player and break the gravity invariant legitimately.
         if (env.inWater() || env.inLava() || env.swimming()) {
             data.resetAirTicks();
-            data.resetFlyStreak();
+            data.getFlyEvidence().reset();
+            data.setPrevAirDeltaY(0.0);
+            return CheckResult.pass("Fly");
+        }
+
+        // Next to a ladder, honey, slime, berries, powder snow or water the client may be in a state the server snapshot does not
+        // show yet (it was entered between two ticks, or by a packet batch): the gravity invariant is not valid there.
+        if (env.nearClimbable() || env.nearLiquid() || env.nearStuck()) {
+            data.resetAirTicks();
+            data.getFlyEvidence().reset();
             data.setPrevAirDeltaY(0.0);
             return CheckResult.pass("Fly");
         }
@@ -135,7 +158,7 @@ public final class FlyCheck {
         // undetected.
         if (env.climbing() || env.inCobweb() || onGround) {
             data.resetAirTicks();
-            data.decrementFlyStreak();
+            data.getFlyEvidence().relieve(1.0, nowNanos, HALF_LIFE_MS);
             data.setPrevAirDeltaY(0.0);
             return CheckResult.pass("Fly");
         }
@@ -154,8 +177,8 @@ public final class FlyCheck {
             boolean notFalling = deltaY > -0.05;
             boolean gravityNotApplied = deltaY >= (prevDeltaY - GRAVITY_TOLERANCE);
             if (notFalling && gravityNotApplied && !hasJumpBoost) {
-                data.incrementFlyStreak();
-                if (data.getFlyStreak() >= 3) {
+                if (accumulate(data, nowNanos)) {
+                    data.getFlyEvidence().reset();
                     Map<String, Object> details = new HashMap<>();
                     details.put("deltaY", deltaY);
                     details.put("prevDeltaY", prevDeltaY);
@@ -167,14 +190,14 @@ public final class FlyCheck {
                             details);
                 }
             } else {
-                data.decrementFlyStreak();
+                data.getFlyEvidence().relieve(1.0, nowNanos, HALF_LIFE_MS);
             }
         }
 
         // Pattern 2: Hover / Horizontal Glide in air
         if (airTicks >= HOVER_AIR_TICKS && Math.abs(deltaY) < 0.08) {
-            data.incrementFlyStreak();
-            if (data.getFlyStreak() >= 2) {
+            if (accumulate(data, nowNanos)) {
+                data.getFlyEvidence().reset();
                 Map<String, Object> details = new HashMap<>();
                 details.put("deltaY", deltaY);
                 details.put("airTicks", airTicks);
@@ -198,8 +221,8 @@ public final class FlyCheck {
                 maxImpulse += JUMP_BOOST_MAX_BONUS;
             }
             if (deltaY > maxImpulse) {
-                data.incrementFlyStreak();
-                if (data.getFlyStreak() >= 2) {
+                if (accumulate(data, nowNanos)) {
+                    data.getFlyEvidence().reset();
                     Map<String, Object> details = new HashMap<>();
                     details.put("deltaY", deltaY);
                     details.put("jumpStrength", jumpStrength);
@@ -211,7 +234,7 @@ public final class FlyCheck {
                             details);
                 }
             } else {
-                data.decrementFlyStreak();
+                data.getFlyEvidence().relieve(1.0, nowNanos, HALF_LIFE_MS);
             }
         }
 
@@ -224,13 +247,15 @@ public final class FlyCheck {
         // must reduce velocity by ~GRAVITY*DRAG from wherever the player actually was a moment
         // ago, whatever that starting point was and wherever it came from.
         // -----------------------------------------------------------------
-        if (airTicks >= 2) {
+        // A pair of ticks at exactly -0.098 is the client sitting in a chunk it has not loaded: not evidence either way.
+        boolean unloadedChunkFall = Math.abs(deltaY - UNLOADED_CHUNK_FALL) < 0.002;
+        if (airTicks >= 2 && !unloadedChunkFall) {
             double predicted = net.lovelace.vesuvio.engine.HorizontalMotionModel.verticalVelocity(prevDeltaY, GRAVITY, DRAG);
             double tolerance = CONSISTENCY_TOLERANCE_FIXED + Math.abs(prevDeltaY) * CONSISTENCY_TOLERANCE_RATIO;
             double allowed = predicted + tolerance;
             if (deltaY > allowed) {
-                data.incrementFlyStreak();
-                if (data.getFlyStreak() >= CONSISTENCY_REQUIRED_STREAK) {
+                if (accumulate(data, nowNanos)) {
+                    data.getFlyEvidence().reset();
                     // A net increase over the previous tick is a fresh upward kick (a "double
                     // jump"); anything else is gravity simply failing to slow the player down.
                     String subType = deltaY > prevDeltaY + tolerance ? "AirJump" : "Ascension";
@@ -252,7 +277,7 @@ public final class FlyCheck {
                             details);
                 }
             } else {
-                data.decrementFlyStreak();
+                data.getFlyEvidence().relieve(1.0, nowNanos, HALF_LIFE_MS);
             }
         }
 

@@ -572,7 +572,7 @@ public final class UserData {
     public int getFlyStreak() { return flyStreak; }
     public void incrementFlyStreak() { this.flyStreak++; }
     public void decrementFlyStreak() { this.flyStreak = Math.max(0, this.flyStreak - 1); }
-    public void resetFlyStreak() { this.flyStreak = 0; }
+    public void resetFlyStreak() { this.flyStreak = 0; flyEvidence.reset(); }
 
     public int getSpeedStreak() { return speedStreak; }
     public void incrementSpeedStreak() { this.speedStreak++; }
@@ -605,6 +605,9 @@ public final class UserData {
     public long getLastContainerClosedMillis() { return lastContainerClosedMillis; }
     /** True when a close happened after {@code sinceMillis} (typically the snapshot capture time). */
     public boolean containerClosedAfter(long sinceMillis) { return lastContainerClosedMillis >= sinceMillis && lastContainerClosedMillis != 0L; }
+
+    private final DecayingEvidence flyEvidence = new DecayingEvidence();
+    public DecayingEvidence getFlyEvidence() { return flyEvidence; }
 
     public void recordVelocity() { this.lastVelocityMillis = System.currentTimeMillis(); }
     public boolean hasRecentVelocity() { return (System.currentTimeMillis() - lastVelocityMillis) < 1200L; }
@@ -1283,6 +1286,39 @@ public final class UserData {
             this.speedAirborneTicks++;
         }
         this.speedPrevOnGround = onGround;
+    }
+
+    // Ground flags of the two previous movement packets, as seen by SpeedCheck. Vanilla applies this tick's acceleration by the
+    // state at the START of the tick (= flag of packet t-1) but friction to the previous tick's displacement by the state at
+    // the start of THAT tick (= flag of packet t-2). Using the current packet's flag for both mis-judges the jump and landing ticks.
+    private volatile boolean speedGround1 = true;
+    private volatile boolean speedGround2 = true;
+    public boolean isSpeedGround1() { return speedGround1; }
+    public boolean isSpeedGround2() { return speedGround2; }
+    public synchronized void shiftSpeedGround(boolean onGroundNow) {
+        speedGround2 = speedGround1;
+        speedGround1 = onGroundNow;
+    }
+
+    // Slipperiness memory: friction uses the highest value seen in the last second (ice just left still carries momentum),
+    // acceleration the lowest seen in the last 150 ms (a bigger acceleration is the more permissive bound).
+    private double slipMax = 0.0;
+    private long slipMaxMillis = 0L;
+    private double slipMin = 1.0;
+    private long slipMinMillis = 0L;
+    public synchronized double slipperyMax(double current, long nowMillis) {
+        if (nowMillis - slipMaxMillis > 1000L || current >= slipMax) {
+            slipMax = current;
+            slipMaxMillis = nowMillis;
+        }
+        return slipMax;
+    }
+    public synchronized double slipperyMin(double current, long nowMillis) {
+        if (nowMillis - slipMinMillis > 150L || current <= slipMin) {
+            slipMin = current;
+            slipMinMillis = nowMillis;
+        }
+        return slipMin;
     }
 
     public double getSpeedPredictionDebt() { return speedPredictionDebt; }
