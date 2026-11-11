@@ -110,6 +110,8 @@ public final class SpectateManager {
                 activeSpectators.remove(entry.getKey());
                 activeBossBars.remove(entry.getKey());
                 originalGameModes.remove(entry.getKey());
+                // The saved Location holds a strong reference to its World.
+                originalLocations.remove(entry.getKey());
                 continue;
             }
 
@@ -162,5 +164,6 @@ public final class SpectateManager {
         activeSpectators.clear();
         activeBossBars.clear();
         originalGameModes.clear();
+        originalLocations.clear();
     }
 }

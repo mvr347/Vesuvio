@@ -181,4 +181,8 @@ public final class HitboxHistoryTracker {
     public void remove(UUID uuid) {
         history.remove(uuid);
     }
+
+    public void retainOnline(Set<UUID> online) {
+        history.keySet().retainAll(online);
+    }
 }

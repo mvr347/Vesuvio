@@ -86,6 +86,13 @@ public final class UserDataManager {
         }
     }
 
+    /** Drops everyone not in {@code online}, with the same teardown as {@link #remove}. */
+    public void retainOnline(Set<UUID> online) {
+        for (UUID id : users.keySet()) {
+            if (!online.contains(id)) remove(id);
+        }
+    }
+
     public void clear() {
         users.clear();
     }

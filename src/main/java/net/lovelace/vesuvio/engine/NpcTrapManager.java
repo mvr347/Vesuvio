@@ -146,4 +146,9 @@ public final class NpcTrapManager {
         activeTraps.remove(uuid);
         lastTrapMillis.remove(uuid);
     }
+
+    public void retainOnline(java.util.Set<UUID> online) {
+        activeTraps.keySet().retainAll(online);
+        lastTrapMillis.keySet().retainAll(online);
+    }
 }

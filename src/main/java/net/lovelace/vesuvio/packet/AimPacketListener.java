@@ -21,6 +21,9 @@ import java.util.concurrent.Executor;
  */
 public final class AimPacketListener extends PacketListenerAbstract {
 
+    private static final PacketWarnings WARNINGS = new PacketWarnings();
+
+
     private final UserDataManager userDataManager;
     private final CheckPipeline checkPipeline;
     private final Executor virtualExecutor;
@@ -86,7 +89,12 @@ public final class AimPacketListener extends PacketListenerAbstract {
             data.getAimBuffer().addRotation(yaw, pitch, now);
             data.recordRotationSample(yaw, pitch, now, deltaYaw + deltaPitch);
 
-            checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.processAim(player, data, deltaYaw, deltaPitch, signedDeltaYaw));
+            try {
+                checkPipeline.submitPacketCheck(data, virtualExecutor, () -> checkPipeline.processAim(player, data, deltaYaw, deltaPitch, signedDeltaYaw));
+            } catch (RuntimeException e) {
+                // A full or stopped executor must not turn into an exception on the netty thread for every packet.
+                WARNINGS.warn("Не удалось поставить проверку прицела в очередь для " + player.getName(), e);
+            }
         }
     }
 }

@@ -126,4 +126,8 @@ public final class LagCompensator {
     public void remove(UUID uuid) {
         pingHistory.remove(uuid);
     }
+
+    public void retainOnline(java.util.Set<UUID> online) {
+        pingHistory.keySet().retainAll(online);
+    }
 }

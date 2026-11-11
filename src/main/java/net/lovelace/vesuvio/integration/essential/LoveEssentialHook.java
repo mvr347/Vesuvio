@@ -64,6 +64,7 @@ public final class LoveEssentialHook implements Listener, AutoCloseable {
     private void bind() {
         requireMain();
         HandlerList.unregisterAll(stateEvents);
+        methodCache.clear();
         binding = null;
         legacy = null;
         for (Class<?> type : Bukkit.getServicesManager().getKnownServices()) {
@@ -181,13 +182,30 @@ public final class LoveEssentialHook implements Listener, AutoCloseable {
         var admin=Bukkit.getPluginManager().getPlugin("LoveWebAdmin");
         if(admin!=null&&admin.isEnabled()) {
             try {
-                var moderation=admin.getClass().getMethod("getModerationService").invoke(admin);
-                if(moderation!=null&&Boolean.TRUE.equals(moderation.getClass().getMethod("isFrozen",UUID.class).invoke(moderation,player.getUniqueId()))) {
+                // Resolved once per class (2026-11-11): getMethod used to run for every player on every tick.
+                Method getModeration = cachedMethod(admin.getClass(), "getModerationService");
+                var moderation = getModeration == null ? null : getModeration.invoke(admin);
+                Method isFrozen = moderation == null ? null : cachedMethod(moderation.getClass(), "isFrozen", UUID.class);
+                if(isFrozen!=null&&Boolean.TRUE.equals(isFrozen.invoke(moderation,player.getUniqueId()))) {
                     var combined=new HashSet<String>(states);combined.add("FROZEN");states=Set.copyOf(combined);
                 }
             }catch(ReflectiveOperationException ignored) { /* Optional integration unavailable. */ }
         }
         apply(data, states, false);
+    }
+
+    /** Reflection lookups of the optional LoveWebAdmin API, including the negative results. */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.Optional<Method>> methodCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private Method cachedMethod(Class<?> type, String name, Class<?>... params) {
+        return methodCache.computeIfAbsent(type.getName() + "#" + name, key -> {
+            try {
+                return java.util.Optional.of(type.getMethod(name, params));
+            } catch (NoSuchMethodException missing) {
+                return java.util.Optional.empty();
+            }
+        }).orElse(null);
     }
 
     private void apply(UserData data, Set<String> states, boolean pulse) {

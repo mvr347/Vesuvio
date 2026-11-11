@@ -425,6 +425,16 @@ public final class WorldInteractionListener implements Listener {
         bowDrawStartTick.remove(uuid);
     }
 
+    /** Drops state of players who are no longer online (see StateJanitor). */
+    public void retainOnline(java.util.Set<UUID> online) {
+        blockDamageTimes.keySet().retainAll(online);
+        fastBreakEvidence.keySet().retainAll(online);
+        placeWindows.keySet().retainAll(online);
+        towerWindows.keySet().retainAll(online);
+        eatStartTick.keySet().retainAll(online);
+        bowDrawStartTick.keySet().retainAll(online);
+    }
+
     private boolean hasAdjacentSolidBlock(Block b) {
         BlockFace[] faces = {BlockFace.DOWN, BlockFace.UP, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST};
         for (BlockFace face : faces) {

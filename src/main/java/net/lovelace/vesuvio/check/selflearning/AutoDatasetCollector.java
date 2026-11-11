@@ -306,4 +306,8 @@ public final class AutoDatasetCollector {
     public void forgetPlayer(UUID uuid) {
         lastLegitCollection.remove(uuid);
     }
+
+    public void retainOnline(java.util.Set<UUID> online) {
+        lastLegitCollection.keySet().retainAll(online);
+    }
 }
