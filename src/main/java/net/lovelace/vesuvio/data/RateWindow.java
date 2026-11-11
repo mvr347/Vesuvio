@@ -26,7 +26,7 @@ public final class RateWindow {
      */
     public synchronized int record(long nowMillis, long lastHitchMillis) {
         long from = nowMillis - windowMillis;
-        if (lastHitchMillis > from) {
+        if (lastHitchMillis > 0L && lastHitchMillis > from) {
             size = 0;
             head = 0;
         }

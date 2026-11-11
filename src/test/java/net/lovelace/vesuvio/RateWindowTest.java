@@ -26,7 +26,6 @@ class RateWindowTest {
         long hitchAt = 9_999;
         int last = 0;
         for (int i = 0; i < 35; i++) last = w.record(now, hitchAt);
-        assertEquals(1, w.record(now, hitchAt) > 1 ? 1 : 1);
         // A hang inside the window clears it on every record, so a count above the threshold can never build up from the burst.
         assertTrue(last <= 1);
     }
