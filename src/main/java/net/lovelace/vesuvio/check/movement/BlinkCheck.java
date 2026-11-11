@@ -53,6 +53,9 @@ import java.util.UUID;
  */
 public final class BlinkCheck {
 
+    /** 20-tick mandatory position reminder plus a margin. */
+    private static final double PROVEN_TICKS = 24.0;
+
     private final double minSilenceMs;
     private final double maxJudgedSilenceMs;
     private final double healthyRttFraction;
@@ -267,8 +270,12 @@ public final class BlinkCheck {
         long guardNanos = (long) (activityGuardMs * 1_000_000.0);
         long activityFrom = last + guardNanos;
         long activityTo = nowNanos - guardNanos;
+        // One swing in the middle is not proof any more (2026-11-11): a standing player who mines and turns the mouse 900-1000 ms
+        // after the last forced reminder produced exactly that. What proves a withheld packet is time the client demonstrably
+        // lived through: the sum over neighbouring swings of min(gap / 50 ms, 10) must reach 24 ticks, i.e. past the mandatory
+        // 20-tick reminder, so the silence cannot be the vanilla "nothing changed" behaviour.
         boolean clientWasAlive = activityTo > activityFrom
-                && data.hadMainLoopActivityBetween(activityFrom, activityTo);
+                && data.provenMainLoopTicks(activityFrom, activityTo, catchUpTickClamp) >= PROVEN_TICKS;
         if (clientWasAlive) {
             data.clearPendingBlink();
             return buildFlag(data, silenceMs, rtt, occurrences, shortBand, Evidence.ACTIVITY, 0.0, 0, 0);

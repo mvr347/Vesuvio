@@ -397,6 +397,28 @@ public final class UserData {
         swingCursor = (swingCursor + 1) % recentSwings.length;
         swingCount = Math.min(recentSwings.length, swingCount + 1);
     }
+    /**
+     * Client ticks that PROVABLY ran between two instants, from swing packets only the client's main loop produces: for
+     * every pair of neighbouring swings inside the window, min(gap / 50 ms, {@code maxPerGap}) ticks. The cap is the
+     * vanilla catch-up clamp (10 ticks per frame): a gap bigger than that can be a freeze that ran only its clamp, so it
+     * proves no more than the clamp. Fewer than two swings prove nothing. A sum of 24 or more means the client was past the
+     * mandatory 20-tick position reminder, so a silent movement stream was really withheld.
+     */
+    public synchronized double provenMainLoopTicks(long fromNanos, long toNanos, double maxPerGap) {
+        long[] inWindow = new long[swingCount];
+        int n = 0;
+        for (int i = 0; i < swingCount; i++) {
+            long t = recentSwings[i];
+            if (t > fromNanos && t <= toNanos) inWindow[n++] = t;
+        }
+        java.util.Arrays.sort(inWindow, 0, n);
+        double ticks = 0.0;
+        for (int i = 1; i < n; i++) {
+            ticks += Math.min((inWindow[i] - inWindow[i - 1]) / 50_000_000.0, maxPerGap);
+        }
+        return ticks;
+    }
+
     public synchronized boolean hasSwingNear(long attackNanos) {
         for (int i = 0; i < swingCount; i++) {
             if (Math.abs(recentSwings[i] - attackNanos) <= 150_000_000L) return true;
