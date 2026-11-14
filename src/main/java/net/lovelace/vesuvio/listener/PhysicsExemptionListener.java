@@ -14,6 +14,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.entity.EntityExhaustionEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerRiptideEvent;
 import org.bukkit.inventory.EquipmentSlot;
@@ -54,6 +55,24 @@ public final class PhysicsExemptionListener implements Listener {
         if (!config.isRiptideExemptionEnabled()) return;
         UserData data = userDataManager.get(event.getPlayer().getUniqueId());
         if (data != null) data.recordVelocity();
+    }
+
+    /** Vanilla Lunge applies enchantment exhaustion immediately before its horizontal impulse. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onLunge(EntityExhaustionEvent event) {
+        if (!config.isLungeExemptionEnabled() || !(event.getEntity() instanceof Player player)) return;
+        // Cancelling exhaustion changes hunger only; the following impulse still happens.
+        if (event.getExhaustionReason() != EntityExhaustionEvent.ExhaustionReason.ENCHANTMENT_EFFECT) return;
+        if (!hasLunge(player.getInventory().getItemInMainHand())
+                && !hasLunge(player.getInventory().getItemInOffHand())) return;
+        UserData data = userDataManager.get(player.getUniqueId());
+        if (data != null) data.recordVelocity();
+    }
+
+    private static boolean hasLunge(org.bukkit.inventory.ItemStack item) {
+        if (item == null || !item.getType().name().endsWith("_SPEAR")) return false;
+        return item.getEnchantments().entrySet().stream().anyMatch(entry -> entry.getValue() > 0
+                && entry.getKey().getKey().equals(org.bukkit.NamespacedKey.minecraft("lunge")));
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

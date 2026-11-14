@@ -639,6 +639,10 @@ public final class ConfigManager {
         return config.getBoolean("mechanics.movement.riptide-exemption.enabled", true);
     }
 
+    public boolean isLungeExemptionEnabled() {
+        return config.getBoolean("mechanics.movement.lunge-exemption.enabled", true);
+    }
+
     public boolean isPistonExemptionEnabled() {
         return config.getBoolean("mechanics.movement.piston-exemption.enabled", true);
     }
