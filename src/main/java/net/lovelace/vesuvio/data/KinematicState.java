@@ -771,7 +771,6 @@ final class KinematicState {
     volatile long teleportSentNanos;
 
     public synchronized void expectTeleport(int id) {
-        teleportHook.run();
         expectedTeleportId = id;
         teleportSentNanos = System.nanoTime();
         awaitingTeleport = true;
@@ -780,7 +779,6 @@ final class KinematicState {
     public synchronized boolean acknowledgeTeleport(int id) {
         if (!awaitingTeleport || id != expectedTeleportId) return false;
         awaitingTeleport = false;
-        teleportHook.run();
         return true;
     }
 
@@ -1002,9 +1000,6 @@ final class KinematicState {
         speedPrevOnGround = true;
         setSpeedPredictionDebt(0);
     }
-    /** Set by UserData: a teleport also invalidates combat state, which this class does not own. */
-    volatile Runnable teleportHook = () -> { };
-
     void markTeleport() {
         this.lastTeleportMillis = System.currentTimeMillis();
     }

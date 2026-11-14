@@ -19,7 +19,7 @@ class UserDataStateSplitTest {
         d.setLastPosition(1, 64, 1, true);
         d.addVl(5.0);
 
-        d.expectTeleport(7); // goes through the kinematic state, which must reach UserData#recordTeleport
+        d.expectTeleport(7); // UserData coordinates the movement/combat/environment reset before recording the ID.
 
         assertFalse(d.hasInitialRotation(), "combat rotation baseline reset");
         assertEquals(0L, d.getLastSwingNanos(), "swing history cleared");

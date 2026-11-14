@@ -68,21 +68,24 @@ public final class UserData {
         return mechanics;
     }
 
-    public synchronized void updateMechanics(
+    public void updateMechanics(
             java.util.Set<String> states, long now, long grace, boolean pulse) {
+        // The main-thread snapshot polls every player every tick. Reading this immutable,
+        // volatile publication must not wait for an in-flight packet check when nothing changed.
         if (!pulse && mechanics.states().equals(states)) return;
-        // Packet work is synchronized on this same object: old queued results cannot cross the
-        // reset.
-        resetMovementTracking();
-        getClickBuffer().reset();
-        getAimBuffer().reset();
-        getAimTrackingBuffer().reset();
-        setInitialRotation(false);
-        resetGcdStreak();
-        resetStrafeReversal();
-        mechanics =
-                new MechanicsState(
-                        states, grace > 0 ? now + grace : 0);
+        synchronized (this) {
+            if (!pulse && mechanics.states().equals(states)) return;
+            // Actual transitions still serialize with packet work: old queued results cannot
+            // cross the reset, and grace is published together with the cleared histories.
+            resetMovementTracking();
+            getClickBuffer().reset();
+            getAimBuffer().reset();
+            getAimTrackingBuffer().reset();
+            setInitialRotation(false);
+            resetGcdStreak();
+            resetStrafeReversal();
+            mechanics = new MechanicsState(states, grace > 0 ? now + grace : 0);
+        }
     }
 
     private final net.lovelace.vesuvio.engine.OrderedTaskQueue packetChecks =
@@ -93,7 +96,6 @@ public final class UserData {
     public UserData(UUID uuid, String username) {
         this.uuid = uuid;
         this.username = username;
-        this.kinematic.teleportHook = this::recordTeleport;
     }
 
     /** Reset kinematic history, never the player's accumulated violations. */
@@ -711,12 +713,17 @@ public final class UserData {
         return kinematic.getMovementResetNanos();
     }
 
-    public void expectTeleport(int id) {
+    public synchronized void expectTeleport(int id) {
+        // Cross-state operations always acquire UserData before KinematicState. Calling back
+        // from a synchronized kinematic method inverted that order against packet checks.
+        recordTeleport();
         kinematic.expectTeleport(id);
     }
 
-    public boolean acknowledgeTeleport(int id) {
-        return kinematic.acknowledgeTeleport(id);
+    public synchronized boolean acknowledgeTeleport(int id) {
+        if (!kinematic.acknowledgeTeleport(id)) return false;
+        recordTeleport();
+        return true;
     }
 
     public boolean hasRecentTeleport() {
