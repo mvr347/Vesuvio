@@ -39,7 +39,8 @@ import java.util.Map;
  * model - costs a little debt and is paid off within a second. Only a player who is consistently
  * out-running their own momentum accumulates enough to flag. This is what keeps the check
  * sensitive to small, sustained speed multipliers without turning every unusual block interaction
- * into a false positive.
+ * into a false positive. Debt alone is not confirmation: a separate decaying accumulator requires
+ * multiple supporting packets, so the size of a single server-driven displacement cannot prove Speed.
  *
  * Author: Lovelace
  */
@@ -76,6 +77,9 @@ public final class SpeedCheck {
     private static final double DEBT_FLAG_THRESHOLD = 0.85;
     private static final double DEBT_DECAY_PER_TICK = 0.045;
     private static final double DEBT_CEILING = 2.5;
+    // Require multiple supporting packets, regardless of the magnitude of one displacement.
+    private static final double EVIDENCE_HALF_LIFE_MS = 500.0;
+    private static final double EVIDENCE_REQUIRED_SCORE = 2.7;
 
     /**
      * Position packets further apart than this cover more than one tick of movement (idle player
@@ -108,6 +112,8 @@ public final class SpeedCheck {
         if (!env.isFresh(System.currentTimeMillis(), 500L)) {
             data.clearPredictedVector();
             data.setPrevHorizontalSpeed(Math.hypot(deltaX, deltaZ));
+            data.setSpeedPredictionDebt(0.0);
+            data.resetSpeedStreak();
             data.shiftSpeedGround(onGroundNow);
             return CheckResult.pass("Speed");
         }
@@ -126,6 +132,8 @@ public final class SpeedCheck {
         // A gap that does not correspond to one tick carries more than one tick of movement.
         // Reset momentum rather than predicting from a distance we cannot attribute to a tick.
         if (elapsedMs > MAX_TICK_GAP_MS || elapsedMs <= 0) {
+            data.setSpeedPredictionDebt(0.0);
+            data.resetSpeedStreak();
             data.clearPredictedVector();
             data.setPrevHorizontalSpeed(hDist);
             data.shiftSpeedGround(onGroundNow);
@@ -171,11 +179,14 @@ public final class SpeedCheck {
         }
         data.setPredictedVector(deltaX, deltaZ);
 
+        long evidenceNanos = System.nanoTime();
         if (excess > 0) {
+            double evidence = data.getSpeedEvidence().reward(1.0, evidenceNanos, EVIDENCE_HALF_LIFE_MS);
             debt = Math.min(DEBT_CEILING, debt + excess);
             data.setSpeedPredictionDebt(debt);
 
-            if (debt >= DEBT_FLAG_THRESHOLD) {
+            if (debt >= DEBT_FLAG_THRESHOLD && evidence >= EVIDENCE_REQUIRED_SCORE
+                    && data.getSpeedEvidence().events() >= 3) {
                 data.incrementSpeedStreak();
                 double confidence = Math.min(0.99, 0.76 + Math.min(0.20, debt * 0.12));
                 double vl = Math.min(6.0, 1.2 + debt * 2.0);
@@ -183,6 +194,8 @@ public final class SpeedCheck {
                 // Pay the debt down to just under the line so a sustained speed hack produces a
                 // steady stream of flags instead of one per packet after the first crossing.
                 data.setSpeedPredictionDebt(DEBT_FLAG_THRESHOLD * 0.4);
+                int observations = data.getSpeedEvidence().events();
+                data.getSpeedEvidence().reset();
 
                 Map<String, Object> details = new HashMap<>();
                 details.put("horizontalDistance", hDist);
@@ -194,14 +207,21 @@ public final class SpeedCheck {
                 details.put("jumped", jumped);
                 details.put("blockBelow", env.blockBelow().name());
                 details.put("streak", data.getSpeedStreak());
+                details.put("evidenceScore", evidence);
+                details.put("observations", observations);
+                details.put("elapsedMs", elapsedMs);
+                details.put("previousHorizontalDistance", prev);
+                details.put("movementSpeedAttribute", env.movementSpeed());
+                details.put("snapshotAgeMs", nowMillis - env.captureMillis());
 
                 return CheckResult.flag("Speed", confidence, vl,
                         String.format(Locale.US,
-                                "Превышена модель скорости (%.3f блока/такт при максимуме %.3f на %s, накопленное превышение %.2f)",
-                                hDist, allowed, env.blockBelow().name().toLowerCase(Locale.ROOT), debt),
+                                "Превышена модель скорости (%.3f блока/такт при максимуме %.3f на %s, накопленное превышение %.2f, подтверждение %.2f, интервал %.1f мс)",
+                                hDist, allowed, env.blockBelow().name().toLowerCase(Locale.ROOT), debt, evidence, elapsedMs),
                         details);
             }
         } else {
+            data.getSpeedEvidence().relieve(0.25, evidenceNanos, EVIDENCE_HALF_LIFE_MS);
             data.addSpeedPredictionDebt(-DEBT_DECAY_PER_TICK);
             data.decrementSpeedStreak();
         }

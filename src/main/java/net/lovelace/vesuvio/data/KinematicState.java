@@ -97,7 +97,10 @@ final class KinematicState {
 
     public void decrementSpeedStreak() { this.speedStreak = Math.max(0, this.speedStreak - 1); }
 
-    public void resetSpeedStreak() { this.speedStreak = 0; }
+    public void resetSpeedStreak() { this.speedStreak = 0; speedEvidence.reset(); }
+
+    private final DecayingEvidence speedEvidence = new DecayingEvidence();
+    public DecayingEvidence getSpeedEvidence() { return speedEvidence; }
 
     public int getNoFallStreak() { return noFallStreak; }
 
