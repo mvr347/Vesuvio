@@ -269,6 +269,10 @@ public final class UserData {
         return kinematic.containerClosedAfter(sinceMillis);
     }
 
+    public DecayingEvidence getSpeedEvidence() {
+        return kinematic.getSpeedEvidence();
+    }
+
     public DecayingEvidence getStepEvidence() {
         return kinematic.getStepEvidence();
     }
