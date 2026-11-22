@@ -187,6 +187,15 @@ public class TransactionManager {
             state.acknowledgedSequence = match.eventSequence;
             state.lastResponseNanos = now;
             state.responses.add(now, rttMs);
+            if (state.lastAckSentNanos != 0L) {
+                double ageBeforeMs = (now - state.lastAckSentNanos) / 1_000_000.0;
+                double existing = state.recentAckGapNanos == 0L ? 0.0
+                        : Math.max(0.0, state.recentAckGapMs - (now - state.recentAckGapNanos) / 1_000_000.0);
+                if (ageBeforeMs > existing) {
+                    state.recentAckGapMs = ageBeforeMs;
+                    state.recentAckGapNanos = now;
+                }
+            }
             // Packet accounting (see BlinkCheck): the sequence counts answered transactions, and
             // the send time is the SERVER's, so the span between two acks is a quantity the client
             // cannot influence at all - not by lagging, not by jitter, not by holding packets.
@@ -272,6 +281,28 @@ public class TransactionManager {
         }
     }
 
+    /**
+     * Catch-up headroom in milliseconds for TimerCheck. Preserves any recently drained ack gap
+     * across a short window so TCP burst-flushes (where Pong arrives right before the bunched
+     * movement packets) do not wipe out the floor before TimerCheck sees the burst.
+     */
+    public double getTimerHeadroomMs(UUID uuid) {
+        PlayerTransactions state = players.get(uuid);
+        if (state == null) return -1;
+        long now = clock.getAsLong();
+        synchronized (state) {
+            if (state.lastAckSentNanos == 0L) return -1;
+            double currentAge = (now - state.lastAckSentNanos) / 1_000_000.0;
+            if (state.recentAckGapNanos != 0L) {
+                double sincePeak = (now - state.recentAckGapNanos) / 1_000_000.0;
+                if (sincePeak >= 0.0 && sincePeak < 500.0) {
+                    return Math.max(currentAge, state.recentAckGapMs - sincePeak);
+                }
+            }
+            return currentAge;
+        }
+    }
+
     /** Number of transactions the client has not answered yet. */
     public int getPendingCount(UUID uuid) {
         PlayerTransactions state = players.get(uuid);
@@ -353,6 +384,8 @@ public class TransactionManager {
         long acknowledgedSequence = 0;
         long ackSequence = 0;
         long lastAckSentNanos = 0L;
+        double recentAckGapMs = 0.0;
+        long recentAckGapNanos = 0L;
 
         int nextId() {
             lastId--;

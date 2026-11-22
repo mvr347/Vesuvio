@@ -75,22 +75,25 @@ public final class LagCompensator {
      * few samples of sustained oscillation, so only a genuine, fresh latency jump still counts.
      */
     public boolean isNetworkSpike(Player player) {
-        double currentPing = latencyOf(player);
+        double currentPing = (transactionManager != null && config.isTransactionLatencyEnabled())
+                ? transactionManager.getLastPing(player.getUniqueId()) : -1.0;
+        if (currentPing < 0) currentPing = latencyOf(player);
+        final double pingSample = currentPing;
         java.util.concurrent.atomic.AtomicBoolean spike = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         // Single atomic read-modify-write per player key, so concurrent calls (click/attack/reach
         // checks can all run this on different virtual threads for the same player) can't race
         // on the EMA baseline.
         pingHistory.compute(player.getUniqueId(), (uuid, last) -> {
-            double ema = currentPing;
+            double ema = pingSample;
             if (last != null) {
-                double deviation = Math.abs(currentPing - last.emaPing());
-                if (currentPing > 350 || deviation > config.getMaxPingSpikeMs()) {
+                double deviation = Math.abs(pingSample - last.emaPing());
+                if (pingSample > 350 || deviation > config.getMaxPingSpikeMs()) {
                     spike.set(true);
                 }
-                ema = last.emaPing() + 0.25 * (currentPing - last.emaPing());
+                ema = last.emaPing() + 0.25 * (pingSample - last.emaPing());
             }
-            return new PingRecord((int) Math.round(currentPing), System.currentTimeMillis(), ema);
+            return new PingRecord((int) Math.round(pingSample), System.currentTimeMillis(), ema);
         });
 
         return spike.get();
