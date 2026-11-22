@@ -63,10 +63,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.ServicePriority;
 
 /**
- * Vesuvio 26.2 AntiCheat
+ * Vesuvio 26.3 AntiCheat
  * Author: Lovelace
  *
- * Next-Generation Hybrid 3-Layer AntiCheat for Paper & Purpur 1.21.11 / 26.2.
+ * Next-Generation Hybrid 3-Layer AntiCheat for Paper & Purpur 1.21.11 / 26.3.
  */
 public final class Vesuvio extends JavaPlugin {
 
@@ -130,7 +130,7 @@ public final class Vesuvio extends JavaPlugin {
         startTasks();
 
         long elapsed = System.currentTimeMillis() - startMs;
-        getLogger().info(String.format("Vesuvio 26.2 (автор: Lovelace) запущен за %d мс. Трёхуровневая система проверок активна.", elapsed));
+        getLogger().info(String.format("Vesuvio 26.3 (автор: Lovelace) запущен за %d мс. Трёхуровневая система проверок активна.", elapsed));
         getLogger().info("[Диагностика] Пороги проверки задержки движения: "
                 + BlinkCheck.fromConfig(configManager).describeThresholds());
     }
@@ -452,7 +452,7 @@ public final class Vesuvio extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        getLogger().info("Остановка Vesuvio 26.2...");
+        getLogger().info("Остановка Vesuvio 26.3...");
         if (configManager != null) configManager.setAnticheatEnabled(false);
 
         // Unregister Public API & Expansion
@@ -528,7 +528,7 @@ public final class Vesuvio extends JavaPlugin {
             PacketEvents.getAPI().terminate();
         } catch (Throwable ignored) {}
 
-        getLogger().info("Vesuvio 26.2 остановлен.");
+        getLogger().info("Vesuvio 26.3 остановлен.");
     }
 
     public PresetManager getPresetManager() {

@@ -97,7 +97,7 @@ public final class DiscordWebhookService {
 
         return String.format(Locale.US, """
             {
-              "username": "Античит Vesuvio 26.2",
+              "username": "Античит Vesuvio 26.3",
               "avatar_url": "https://i.imgur.com/8QZ8GqQ.png",
               "embeds": [
                 {
@@ -113,7 +113,7 @@ public final class DiscordWebhookService {
                     { "name": "Клиент", "value": "`%s`", "inline": true },
                     { "name": "Диагностика", "value": "%s", "inline": false }
                   ],
-                  "footer": { "text": "Vesuvio 26.2 • Панель управления" },
+                  "footer": { "text": "Vesuvio 26.3 • Панель управления" },
                   "timestamp": "%s"
                 }
               ]
