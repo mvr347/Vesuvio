@@ -1,11 +1,11 @@
-# Vesuvio 26.2 — рабочие заметки для Claude
+# Vesuvio 26.3 — рабочие заметки для Claude
 
 Файл-память проекта. Здесь только то, что уже стоило времени или ошибки: инварианты,
 которые нельзя нарушать, и грабли, на которые уже наступали. Общие best practices не дублируем.
 
 ## Сборка и окружение
 
-- **`paper-api` 26.2 требует JDK 25** (class file v69). Собирать так:
+- **`paper-api` 26.3 требует JDK 25** (class file v69). Собирать так:
   `JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn test`
   На JDK 21 падает с `UnsupportedClassVersionError` ещё на этапе компиляции.
 - `mvn -o` (offline) работает для `compile`/`test`, но **`package` в offline падает** —

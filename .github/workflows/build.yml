@@ -16,4 +16,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Vesuvio-Java25
-          path: target/vesuvio-26.2.jar
+          path: target/vesuvio-26.3.jar

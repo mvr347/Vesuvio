@@ -5,7 +5,7 @@
 
     <groupId>net.lovelace</groupId>
     <artifactId>vesuvio</artifactId>
-    <version>26.2</version>
+    <version>26.3</version>
     <packaging>jar</packaging>
 
     <name>Vesuvio</name>
@@ -14,8 +14,8 @@
     <properties>
         <java.version>25</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <paper.version>26.2.build.100-stable</paper.version>
-        <packetevents.version>2.13.0</packetevents.version>
+        <paper.version>26.3.build.200-stable</paper.version>
+        <packetevents.version>2.14.0</packetevents.version>
         <onnxruntime.version>1.20.0</onnxruntime.version>
         <hikaricp.version>5.1.0</hikaricp.version>
         <sqlite.version>3.47.1.0</sqlite.version>

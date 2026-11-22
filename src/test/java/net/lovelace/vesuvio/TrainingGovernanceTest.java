@@ -43,7 +43,7 @@ class TrainingGovernanceTest {
               DatasetManager.LabelSource.BAN,
               DatasetManager.LabelSource.TRUSTED,
               DatasetManager.LabelSource.TRAP))
-        assertTrue(ledger.record(sample(source.ordinal(), source, "session", "26.2")));
+        assertTrue(ledger.record(sample(source.ordinal(), source, "session", "26.3")));
       assertTrue(ledger.approved().isEmpty());
       assertEquals(3, ledger.recent(10).size());
     }
@@ -58,14 +58,14 @@ class TrainingGovernanceTest {
     var file = folder.resolve("labels.sqlite");
     var limits = new TrainingGovernance.Limits(2, 15000, 100);
     try (var ledger = new TrainingGovernance(file, limits)) {
-      assertTrue(ledger.record(sample(0, DatasetManager.LabelSource.BAN, "session", "26.2")));
-      assertFalse(ledger.record(sample(0, DatasetManager.LabelSource.BAN, "session", "26.2")));
+      assertTrue(ledger.record(sample(0, DatasetManager.LabelSource.BAN, "session", "26.3")));
+      assertFalse(ledger.record(sample(0, DatasetManager.LabelSource.BAN, "session", "26.3")));
     }
     try (var ledger = new TrainingGovernance(file, limits)) {
       assertFalse(
-          ledger.record(sample(0, DatasetManager.LabelSource.STAFF, "new-session", "26.2")));
-      assertTrue(ledger.record(sample(1, DatasetManager.LabelSource.BAN, "session", "26.2")));
-      assertFalse(ledger.record(sample(2, DatasetManager.LabelSource.BAN, "session", "26.2")));
+          ledger.record(sample(0, DatasetManager.LabelSource.STAFF, "new-session", "26.3")));
+      assertTrue(ledger.record(sample(1, DatasetManager.LabelSource.BAN, "session", "26.3")));
+      assertFalse(ledger.record(sample(2, DatasetManager.LabelSource.BAN, "session", "26.3")));
       assertEquals(2, ledger.recent(10).size());
     }
   }
@@ -75,12 +75,12 @@ class TrainingGovernanceTest {
     try (var ledger =
         new TrainingGovernance(
             folder.resolve("labels.sqlite"), TrainingGovernance.Limits.defaults())) {
-      ledger.record(sample(0, DatasetManager.LabelSource.TRUSTED, "session-a", "26.2"));
+      ledger.record(sample(0, DatasetManager.LabelSource.TRUSTED, "session-a", "26.3"));
       long first = id(ledger.recent(10).getFirst());
       assertEquals(1, ledger.verify(List.of(first), "Reviewer", "Проверена запись игры", ""));
       assertEquals(0, ledger.approved().getFirst().label());
-      ledger.record(sample(1, DatasetManager.LabelSource.TRUSTED, "session-b", "26.2"));
-      ledger.record(sample(2, DatasetManager.LabelSource.TRUSTED, "session-b", "26.3"));
+      ledger.record(sample(1, DatasetManager.LabelSource.TRUSTED, "session-b", "26.3"));
+      ledger.record(sample(2, DatasetManager.LabelSource.TRUSTED, "session-b", "26.4"));
       var ids =
           ledger.recent(10).stream()
               .filter(r -> "pending".equals(r.get("state")))
@@ -98,7 +98,7 @@ class TrainingGovernanceTest {
   void appealRevokesLabelsAndBlocksLateApprovalRace() {
     var file = folder.resolve("labels.sqlite");
     try (var ledger = new TrainingGovernance(file, TrainingGovernance.Limits.defaults())) {
-      ledger.record(sample(0, DatasetManager.LabelSource.BAN, "session", "26.2"));
+      ledger.record(sample(0, DatasetManager.LabelSource.BAN, "session", "26.3"));
       long id = id(ledger.recent(10).getFirst());
       assertThrows(
           IllegalArgumentException.class,
@@ -112,7 +112,7 @@ class TrainingGovernanceTest {
       assertEquals(0, ledger.revoke("lovewebadmin:ban:4", "System", "Повторная доставка"));
       assertTrue(ledger.approved().isEmpty());
       assertEquals(0, ledger.revoke("lovewebadmin:ban:5", "System", "Апелляция раньше вердикта"));
-      ledger.record(sample(1, DatasetManager.LabelSource.BAN, "session", "26.2"));
+      ledger.record(sample(1, DatasetManager.LabelSource.BAN, "session", "26.3"));
       long second = id(ledger.recent(10).getFirst());
       assertThrows(
           IllegalArgumentException.class,
@@ -133,7 +133,7 @@ class TrainingGovernanceTest {
     try (var close = new DatasetClose(folder, click, aim)) {
       var dataset = close.dataset;
       assertTrue(
-          dataset.submitSample(sample(0, DatasetManager.LabelSource.BAN, "session", "26.2")).get());
+          dataset.submitSample(sample(0, DatasetManager.LabelSource.BAN, "session", "26.3")).get());
       assertEquals(0, click.getTrainedSamplesCount());
       var output = folder.resolve("approved.csv");
       assertTrue(dataset.exportTrainingSnapshot(output));
@@ -172,11 +172,11 @@ class TrainingGovernanceTest {
         new TrainingGovernance(
             folder.resolve("labels.sqlite"), new TrainingGovernance.Limits(50, 15000, 100, 2))) {
       for (int i = 0; i < 4; i++)
-        assertTrue(ledger.record(sample(i, DatasetManager.LabelSource.STAFF, "session", "26.2")));
+        assertTrue(ledger.record(sample(i, DatasetManager.LabelSource.STAFF, "session", "26.3")));
       assertEquals(2, ledger.approved().size());
       assertEquals(at + 30000, ledger.approved().getFirst().timestamp());
       player = UUID.randomUUID();
-      assertTrue(ledger.record(sample(4, DatasetManager.LabelSource.STAFF, "other", "26.2")));
+      assertTrue(ledger.record(sample(4, DatasetManager.LabelSource.STAFF, "other", "26.3")));
       assertEquals(3, ledger.approved().size());
     }
   }
@@ -196,7 +196,7 @@ class TrainingGovernanceTest {
       }
       assertThrows(
           IllegalStateException.class,
-          () -> ledger.record(sample(0, DatasetManager.LabelSource.STAFF, "session", "26.2")));
+          () -> ledger.record(sample(0, DatasetManager.LabelSource.STAFF, "session", "26.3")));
       assertTrue(ledger.approved().isEmpty());
       assertTrue(ledger.recent(10).isEmpty());
     }
@@ -207,7 +207,7 @@ class TrainingGovernanceTest {
     try (var ledger =
         new TrainingGovernance(
             folder.resolve("labels.sqlite"), TrainingGovernance.Limits.defaults())) {
-      var first = sample(0, DatasetManager.LabelSource.BAN, "session", "26.2");
+      var first = sample(0, DatasetManager.LabelSource.BAN, "session", "26.3");
       assertTrue(ledger.record(first));
       var repeated =
           new DatasetManager.LabeledSample(
@@ -265,7 +265,7 @@ class TrainingGovernanceTest {
     dataset.close();
     assertTrue(
         dataset
-            .submitSample(sample(0, DatasetManager.LabelSource.STAFF, "session", "26.2"))
+            .submitSample(sample(0, DatasetManager.LabelSource.STAFF, "session", "26.3"))
             .isCompletedExceptionally());
   }
 
