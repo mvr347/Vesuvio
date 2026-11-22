@@ -15,19 +15,21 @@ class RuntimeControlsTest {
                     default -> throw new AssertionError("Unexpected plugin access: " + method.getName());
                 });
         var config = new net.lovelace.vesuvio.config.ConfigManager(plugin);
-        var wave = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(plugin, config, null, new net.lovelace.vesuvio.punishment.WaveStore(root.resolve("wave.db")));
-        var id = java.util.UUID.randomUUID();
-        wave.queuePunishment(id, "Player", "ban Player", "test");
-        assertEquals(1, wave.getQueueSize());
-        config.setPunishmentEnabled(false);
-        assertEquals(0, wave.executeWave());
-        wave.queuePunishment(java.util.UUID.randomUUID(), "Other", "ban Other", "test");
-        assertEquals(1, wave.getQueueSize());
-        config.reload();
-        assertFalse(config.isPunishmentEnabled(), "Reload must preserve observation mode");
-        config.setPunishmentEnabled(true);
-        config.setAnticheatEnabled(false);
-        assertEquals(0, wave.executeWave());
+        try (var waveStore = new net.lovelace.vesuvio.punishment.WaveStore(root.resolve("wave.db"))) {
+            var wave = new net.lovelace.vesuvio.punishment.PunishmentWaveManager(plugin, config, null, waveStore);
+            var id = java.util.UUID.randomUUID();
+            wave.queuePunishment(id, "Player", "ban Player", "test");
+            assertEquals(1, wave.getQueueSize());
+            config.setPunishmentEnabled(false);
+            assertEquals(0, wave.executeWave());
+            wave.queuePunishment(java.util.UUID.randomUUID(), "Other", "ban Other", "test");
+            assertEquals(1, wave.getQueueSize());
+            config.reload();
+            assertFalse(config.isPunishmentEnabled(), "Reload must preserve observation mode");
+            config.setPunishmentEnabled(true);
+            config.setAnticheatEnabled(false);
+            assertEquals(0, wave.executeWave());
+        }
     }
 
     @Test void observationModeKeepsChecksAndInvalidatesQueuedPunishments() {

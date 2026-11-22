@@ -102,6 +102,23 @@ public final class TransactionPacketListener extends PacketListenerAbstract {
             }
             return;
         }
+        if (event.getPacketType() == PacketType.Play.Server.OPEN_WINDOW) {
+            if (event.getPlayer() instanceof Player player) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) {
+                    long seq = transactionManager != null ? transactionManager.onServerEvent(player.getUniqueId()) : 0L;
+                    data.markContainerOpened(seq);
+                }
+            }
+            return;
+        }
+        if (event.getPacketType() == PacketType.Play.Server.CLOSE_WINDOW) {
+            if (event.getPlayer() instanceof Player player) {
+                UserData data = userDataManager.get(player.getUniqueId());
+                if (data != null) data.markContainerClosed();
+            }
+            return;
+        }
         if (!config.isAnticheatEnabled()) return;
         if (event.getPacketType() == PacketType.Play.Server.EXPLOSION) {
             // A wind charge or an explosion pushes the player WITHOUT an ENTITY_VELOCITY packet: the push rides inside the

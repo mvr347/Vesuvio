@@ -3,10 +3,12 @@ package net.lovelace.vesuvio.check.movement;
 import net.lovelace.vesuvio.check.CheckResult;
 import net.lovelace.vesuvio.data.UserData;
 import net.lovelace.vesuvio.engine.EnvironmentSnapshot;
+import net.lovelace.vesuvio.engine.TransactionManager;
 
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Detects CheatUtils Inv Move hack (moving/sprinting/jumping while an inventory GUI is open).
@@ -35,6 +37,16 @@ public final class InvMoveCheck {
      * @param rttMs transaction round-trip time (never {@code Player#getPing()}, which a client can spoof), or negative if unknown
      */
     public CheckResult check(UserData data, double deltaX, double deltaZ, double deltaY, double rttMs) {
+        return check(null, data, deltaX, deltaZ, deltaY, null, rttMs);
+    }
+
+    public CheckResult check(UUID uuid, UserData data, double deltaX, double deltaZ, double deltaY,
+                             TransactionManager transactions) {
+        return check(uuid, data, deltaX, deltaZ, deltaY, transactions, -1.0);
+    }
+
+    private CheckResult check(UUID uuid, UserData data, double deltaX, double deltaZ, double deltaY,
+                              TransactionManager transactions, double rttMs) {
         if (data == null) return CheckResult.pass("InvMove");
 
         long nowMillis = System.currentTimeMillis();
@@ -58,15 +70,29 @@ public final class InvMoveCheck {
             return CheckResult.pass("InvMove");
         }
 
+        if (transactions != null && uuid != null && data.hasPendingContainerOpen()) {
+            if (!transactions.isAcknowledged(uuid, data.getContainerOpenSequence())) {
+                data.setInvMovePrevHorizontal(Math.hypot(deltaX, deltaZ));
+                return CheckResult.pass("InvMove");
+            }
+            data.markContainerOpenAcknowledged(nowMillis);
+        }
+
         long openSince = data.getContainerOpenSinceMillis();
         if (openSince == 0L) {
             data.setContainerOpenSinceMillis(nowMillis);
             return CheckResult.pass("InvMove");
         }
         if (env.containerOpenSinceMillis() != 0L) openSince = Math.min(openSince, env.containerOpenSinceMillis());
+        if (data.getContainerOpenAckMillis() != 0L) {
+            openSince = Math.max(openSince, data.getContainerOpenAckMillis());
+        }
         // The jump or sprint that began before the menu opened keeps going for the time it takes the client to learn it
-        // opened: grace of at least 400 ms, longer for a high round-trip time.
-        double graceMs = Math.max(OPEN_GRACE_MS, 2.0 * Math.max(0.0, rttMs) + 150.0);
+        // opened: grace of at least 400 ms, longer for a high round-trip time or a sudden latency spike.
+        double effectiveRttMs = transactions != null && uuid != null
+                ? Math.max(transactions.getTransactionPing(uuid), transactions.getLastPing(uuid))
+                : rttMs;
+        double graceMs = Math.max(OPEN_GRACE_MS, 2.0 * Math.max(0.0, effectiveRttMs) + 150.0);
         if (nowMillis - openSince < graceMs) {
             data.setInvMovePrevHorizontal(Math.hypot(deltaX, deltaZ));
             return CheckResult.pass("InvMove");

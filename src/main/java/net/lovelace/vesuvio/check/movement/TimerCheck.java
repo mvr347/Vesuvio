@@ -90,7 +90,9 @@ public final class TimerCheck {
         data.setTimerLastPacketNanos(now);
 
         if (last == 0L) {
-            // First packet of the session - no interval to measure yet.
+            // First packet after join or a state reset (e.g. teleport/chunk load): seed catch-up
+            // headroom so an immediate post-reset freeze burst does not start at zero credit.
+            data.setTimerBalanceMs(BALANCE_FLOOR_MS);
             return CheckResult.pass("Timer");
         }
 
@@ -104,6 +106,9 @@ public final class TimerCheck {
         double floor = -(Math.max(0.0, msSinceLastAckSent) - BALANCE_FLOOR_MS);
         double balance = data.getTimerBalanceMs() + (TICK_MS - elapsedMs);
         if (balance < floor) balance = floor;
+        if (balance < 0.0 && elapsedMs >= 40.0 && elapsedMs <= 60.0) {
+            balance = Math.min(0.0, balance + 2.0);
+        }
         data.setTimerBalanceMs(balance);
 
         // Smoothed packet interval, kept purely so a flag can report a meaningful speed ratio.

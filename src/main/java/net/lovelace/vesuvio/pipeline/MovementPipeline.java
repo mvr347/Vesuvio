@@ -100,9 +100,11 @@ final class MovementPipeline {
         // a textbook blink.
         if (player.isInvulnerable()) {
             data.resetKinematicState();
+            data.resetTimerBalance();
             data.setLastAnyMovementNanos(packetReceiptNanos);
             if (hasPos) {
                 data.setLastPosition(x, y, z, onGround);
+                data.setLastPositionNanos(packetReceiptNanos);
             }
             return;
         }
@@ -117,9 +119,11 @@ final class MovementPipeline {
         // the transition, and the silence up to it is not Blink's to read either.
         if (data.hasRecentGameModeChange()) {
             data.resetKinematicState();
+            data.resetTimerBalance();
             data.setLastAnyMovementNanos(packetReceiptNanos);
             if (hasPos) {
                 data.setLastPosition(x, y, z, onGround);
+                data.setLastPositionNanos(packetReceiptNanos);
             }
             return;
         }
@@ -131,7 +135,7 @@ final class MovementPipeline {
         // 1. Timer check runs on every movement packet
         if (config.isTimerEnabled()) {
             CheckResult timerResult = timerCheck.check(data, lagTolerance, packetReceiptNanos,
-                    transactionManager != null ? transactionManager.getMsSinceLastAckSent(player.getUniqueId()) : -1.0);
+                    transactionManager != null ? transactionManager.getTimerHeadroomMs(player.getUniqueId()) : -1.0);
             if (timerResult.isFlag()) {
                 reporter.report(player, data, timerResult, timerResult.vl(), timerResult.confidence() * 10.0);
             }
@@ -265,8 +269,8 @@ final class MovementPipeline {
 
         // 6. InvMove check
         if (config.isInvMoveEnabled()) {
-            CheckResult invMoveResult = invMoveCheck.check(data, deltaX, deltaZ, deltaY,
-                    transactionManager != null ? transactionManager.getTransactionPing(player.getUniqueId()) : -1.0);
+            CheckResult invMoveResult = invMoveCheck.check(player.getUniqueId(), data, deltaX, deltaZ, deltaY,
+                    transactionManager);
             if (invMoveResult.isFlag()) {
                 reporter.report(player, data, invMoveResult, invMoveResult.vl(), invMoveResult.confidence() * 8.0);
             }

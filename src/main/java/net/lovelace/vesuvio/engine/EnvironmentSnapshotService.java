@@ -116,6 +116,16 @@ public final class EnvironmentSnapshotService implements org.bukkit.event.Listen
         sticky.keySet().retainAll(online);
     }
 
+    /** Opening a container resets the open timestamp so switching views does not reuse stale grace time. */
+    @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInventoryOpen(org.bukkit.event.inventory.InventoryOpenEvent event) {
+        UUID id = event.getPlayer().getUniqueId();
+        Sticky st = sticky.get(id);
+        if (st != null) st.containerSince = System.currentTimeMillis();
+        UserData data = userDataManager.get(id);
+        if (data != null) data.setContainerOpenSinceMillis(0L);
+    }
+
     /** Closing a container is applied by the server at once; the snapshot of this tick still shows it open. */
     @org.bukkit.event.EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
     public void onInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent event) {

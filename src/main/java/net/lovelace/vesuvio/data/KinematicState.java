@@ -134,14 +134,49 @@ final class KinematicState {
 
     // A container (chest, furnace, ...) was closed. The close arrives as a packet and as an event, both before the server
     // snapshot of the next tick shows it, so the checks that read the snapshot consult this timestamp too.
-    volatile long lastContainerClosedMillis = 0L;
+    private static final long CONTAINER_CLOSE_SNAPSHOT_RACE_MS = 150L;
 
-    public void markContainerClosed() { this.lastContainerClosedMillis = System.currentTimeMillis(); }
+    volatile long lastContainerClosedMillis = 0L;
+    volatile long lastContainerOpenedMillis = 0L;
+    volatile long containerOpenSequence = -1L;
+    volatile boolean containerOpenPending = false;
+    volatile long containerOpenAckMillis = 0L;
+
+    public void markContainerOpened(long sequence) {
+        this.lastContainerOpenedMillis = System.currentTimeMillis();
+        this.lastContainerClosedMillis = 0L;
+        this.containerOpenSequence = sequence;
+        this.containerOpenPending = sequence > 0L;
+        this.containerOpenAckMillis = 0L;
+        this.containerOpenSinceMillis = 0L;
+        this.invMoveEvidence.reset();
+    }
+
+    public boolean hasPendingContainerOpen() { return containerOpenPending; }
+
+    public long getContainerOpenSequence() { return containerOpenSequence; }
+
+    public void markContainerOpenAcknowledged(long nowMillis) {
+        this.containerOpenPending = false;
+        this.containerOpenAckMillis = nowMillis;
+    }
+
+    public long getContainerOpenAckMillis() { return containerOpenAckMillis; }
+
+    public void markContainerClosed() {
+        this.lastContainerClosedMillis = System.currentTimeMillis();
+        this.containerOpenPending = false;
+        this.containerOpenAckMillis = 0L;
+    }
 
     public long getLastContainerClosedMillis() { return lastContainerClosedMillis; }
 
-    /** True when a close happened after {@code sinceMillis} (typically the snapshot capture time). */
-    public boolean containerClosedAfter(long sinceMillis) { return lastContainerClosedMillis >= sinceMillis && lastContainerClosedMillis != 0L; }
+    /** True when a close happened after {@code sinceMillis} (or within the netty/main-thread snapshot race window). */
+    public boolean containerClosedAfter(long sinceMillis) {
+        return lastContainerClosedMillis != 0L
+                && lastContainerClosedMillis >= lastContainerOpenedMillis
+                && lastContainerClosedMillis >= sinceMillis - CONTAINER_CLOSE_SNAPSHOT_RACE_MS;
+    }
 
     final DecayingEvidence stepEvidence = new DecayingEvidence();
 
@@ -991,6 +1026,9 @@ final class KinematicState {
         resetPhaseEntry();
         phaseEvidence.reset();
         invMoveEvidence.reset();
+        containerOpenPending = false;
+        containerOpenAckMillis = 0L;
+        containerOpenSequence = -1L;
         resetTimerBalance();
         resetMovementAckBucket();
         clearBlinkFlushWindow();

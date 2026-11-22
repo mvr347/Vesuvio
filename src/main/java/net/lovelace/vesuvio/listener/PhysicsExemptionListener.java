@@ -70,7 +70,7 @@ public final class PhysicsExemptionListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFireworkBoost(PlayerInteractEvent event) {
         if (!config.isElytraEnabled()) return;
-        if (event.getHand() != EquipmentSlot.HAND) return; // avoid double-counting the off-hand event
+        if (event.getHand() != EquipmentSlot.HAND && event.getHand() != EquipmentSlot.OFF_HAND) return;
         Player player = event.getPlayer();
         if (!player.isGliding()) return;
 

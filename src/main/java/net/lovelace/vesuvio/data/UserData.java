@@ -257,6 +257,26 @@ public final class UserData {
         return kinematic.getLastVelocityMillis();
     }
 
+    public void markContainerOpened(long sequence) {
+        kinematic.markContainerOpened(sequence);
+    }
+
+    public boolean hasPendingContainerOpen() {
+        return kinematic.hasPendingContainerOpen();
+    }
+
+    public long getContainerOpenSequence() {
+        return kinematic.getContainerOpenSequence();
+    }
+
+    public void markContainerOpenAcknowledged(long nowMillis) {
+        kinematic.markContainerOpenAcknowledged(nowMillis);
+    }
+
+    public long getContainerOpenAckMillis() {
+        return kinematic.getContainerOpenAckMillis();
+    }
+
     public void markContainerClosed() {
         kinematic.markContainerClosed();
     }
